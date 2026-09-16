@@ -1,0 +1,15 @@
+{
+  "categories": {
+    "correctness": "error"
+  },
+  "ignorePatterns": [
+    "dist",
+    ".output",
+    ".wrangler",
+    "node_modules",
+    ".react-router",
+    ".generated",
+    "build",
+    "data"
+  ]
+}

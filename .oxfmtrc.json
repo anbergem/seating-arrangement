@@ -1,0 +1,20 @@
+{
+  "tabWidth": 2,
+  "useTabs": false,
+  "printWidth": 80,
+  "trailingComma": "all",
+  "proseWrap": "preserve",
+  "sortImports": true,
+  "ignorePatterns": [
+    "docs",
+    ".agents",
+    "dist",
+    ".output",
+    ".wrangler",
+    "node_modules",
+    ".react-router",
+    ".generated",
+    "build",
+    "data"
+  ]
+}

@@ -1,0 +1,633 @@
+# Architecture
+
+This document explains how the application is put together and why. It uses the sample Job
+domain throughout, because a concrete example is easier to check against the code than a
+description of a pattern.
+
+Read `AGENTS.md` for the rules a change must obey. This file is the reasoning behind them.
+
+- [1. High-level runtime](#1-high-level-runtime)
+- [2. Request flow](#2-request-flow)
+- [3. Action and use-case flow](#3-action-and-use-case-flow)
+- [4. Human and agent parity](#4-human-and-agent-parity)
+- [5. Authentication versus authorization](#5-authentication-versus-authorization)
+- [6. Organization scoping](#6-organization-scoping)
+- [7. Layer boundaries](#7-layer-boundaries)
+- [8. Integration ports and adapters](#8-integration-ports-and-adapters)
+- [9. Audit, history and undo](#9-audit-history-and-undo)
+- [10. Two schema owners](#10-two-schema-owners)
+- [11. CI and CD](#11-ci-and-cd)
+- [12. Staging and production separation](#12-staging-and-production-separation)
+- [13. Backup and recovery](#13-backup-and-recovery)
+- [14. What this design deliberately avoids](#14-what-this-design-deliberately-avoids)
+
+---
+
+## 1. High-level runtime
+
+One Worker serves everything: the static React shell, the framework's own endpoints, the
+application's actions, the agent chat stream and the MCP endpoint. There is one database.
+
+```mermaid
+flowchart TB
+  subgraph Browser
+    SHELL["React app<br/>(static shell + client routing)"]
+  end
+  subgraph CF["Cloudflare"]
+    ASSETS["ASSETS binding<br/>dist/ static files"]
+    W["Worker<br/>dist/_worker.js/index.js"]
+    D1[("D1<br/>DB binding")]
+  end
+  ANTHROPIC["Anthropic API"]
+  VENDOR["Accounting vendor<br/>(mock in this starter)"]
+
+  SHELL -->|"GET /, /jobs, assets"| ASSETS
+  SHELL -->|"POST /_agent-native/actions/*"| W
+  SHELL -->|"POST /_agent-native/agent-chat"| W
+  MCPC["MCP client"] -->|"POST /mcp"| W
+  W --> D1
+  W -->|"agent turns"| ANTHROPIC
+  W -->|"invoice draft"| VENDOR
+```
+
+Two things about this picture are worth knowing before you debug anything.
+
+**`/` is a static file.** The Cloudflare build renders `dist/index.html` at build time and the
+`ASSETS` binding serves it for `GET /` before the Worker runs. The redirect to `/jobs` is
+therefore client-side (`<Navigate to="/jobs" replace />` in `app/routes/_index.tsx`); a loader
+`redirect()` there breaks the static-shell render, and a smoke test must expect 200 from `/`,
+never a 302.
+
+**The sync channel polls.** The framework's `useDbSync` prefers an `EventSource` on
+`/_agent-native/events`, which is a response held open with no pending I/O. The Workers runtime
+cancels exactly that shape, and under `wrangler dev` the cancellation kills the dev server. So
+`app/root.tsx` passes `sseUrl: false` and the framework's `/_agent-native/poll` transport is
+used instead. Streams that produce data and finish — agent chat — are unaffected.
+
+The build is `NITRO_PRESET=cloudflare_pages`, whose single-file bundle boots on workerd, and
+the output is deployed as a **Worker with static assets** through our own `wrangler.jsonc`, not
+as a Pages project. Two Node built-in stubs in that bundle are patched after every build by
+`scripts/patch-worker-bundle.mjs`, which fails loudly if the framework changes their shape;
+`docs/upgrade-playbook.md` is what to do when it does.
+
+## 2. Request flow
+
+A mutation from the browser, end to end:
+
+```mermaid
+sequenceDiagram
+  participant B as Browser
+  participant M as Nitro middleware
+  participant A as actions/complete-job.ts
+  participant R as runAppAction
+  participant U as completeJob (use case)
+  participant D as src/domain/job.ts
+  participant Repo as JobRepository (D1)
+  participant Audit as agent_audit_log
+
+  B->>M: POST /_agent-native/actions/complete-job<br/>X-Agent-Native-Frontend: 1
+  M->>M: security headers; session -> userEmail, orgId
+  M->>A: validate args against the Zod schema
+  A->>R: run(args, ctx)
+  R->>Repo: getRole(orgId, userEmail)
+  R->>U: completeJob(deps, actor, args)
+  U->>U: requireCapability(actor, "jobs:transition")
+  U->>Repo: getById(orgId, jobId)
+  U->>D: completeJob(job, now)
+  D-->>U: next job, version + 1
+  U->>Repo: commit({ job: next, expectedVersion, operation })
+  Repo->>Repo: one atomic batch, both statements guarded on expectedVersion
+  Repo-->>U: ok, or CONFLICT when zero rows matched
+  U-->>R: { resource, operationId }
+  R->>R: one JSON log line
+  R-->>A: result
+  A->>Audit: framework writes the audit row
+  A-->>B: 200 { resource, operationId }
+```
+
+Everything the request needs to be safe happens in the middle of that diagram, on the server:
+identity from the session, role from the database, capability from the policy module, invariant
+from the domain, concurrency from the SQL guard. The browser contributes arguments and nothing
+else.
+
+Failures leave through one door. `runAppAction` catches everything, maps it to an `AppError`
+and returns the framework's `fail(...)`, which is the only way a message, an `errorCode` and an
+HTTP status survive to the caller. A bare `throw` would become an opaque 500.
+
+| `AppErrorCode`   | HTTP | Meaning                                                              |
+| ---------------- | ---- | -------------------------------------------------------------------- |
+| `VALIDATION`     | 400  | The arguments are wrong.                                             |
+| `AUTHENTICATION` | 401  | Nobody is signed in.                                                 |
+| `AUTHORIZATION`  | 403  | Signed in, not allowed, or not a member of this organization.        |
+| `NOT_FOUND`      | 404  | No such record **in your organization**.                             |
+| `CONFLICT`       | 409  | Somebody else changed it first.                                      |
+| `INVARIANT`      | 422  | A domain rule refuses this transition.                               |
+| `EXTERNAL`       | 502  | A vendor call did not confirm.                                       |
+| `INTERNAL`       | 500  | Something unanticipated. The message is always `"Unexpected error"`. |
+
+## 3. Action and use-case flow
+
+An action file is a declaration. It carries the description the agent reads, the Zod schema,
+the audit metadata and one call to `runAppAction`. It contains no logic, and it is not allowed
+to import infrastructure.
+
+```mermaid
+flowchart TB
+  AF["actions/complete-job.ts<br/><br/>description (what the agent reads)<br/>schema (Zod)<br/>audit: target + summary<br/>mcpTool: true"]
+  RA["runAppAction(ctx, name, fn)<br/><br/>1. getDependencies()<br/>2. resolveActor(ctx) — session only<br/>3. fn(actor, deps)<br/>4. one structured log line<br/>5. fail(message, code, status)"]
+  UC["completeJob(deps, actor, input)<br/><br/>1. requireCapability<br/>2. load, scoped to actor.orgId<br/>3. expectedVersion check<br/>4. domain transition<br/>5. build the Operation + inverse<br/>6. one atomic commit"]
+  AF --> RA --> UC
+```
+
+The whole of `actions/complete-job.ts`, minus the strings:
+
+```ts
+export default defineAction({
+  description: "Mark a job as completed. …Reversible with undo-operation…",
+  schema: z.object({
+    jobId: z.string().min(1).describe("Id of the job to complete"),
+    expectedVersion: z
+      .number()
+      .int()
+      .positive()
+      .optional()
+      .describe("…CONFLICT if it changed"),
+  }),
+  mcpTool: true,
+  audit: {
+    target: (args) => ({ type: "job", id: args.jobId, visibility: "org" }),
+    summary: (args) => `Completed job ${args.jobId}`,
+  },
+  run: (args, ctx) =>
+    runAppAction(ctx, "complete-job", (actor, deps) =>
+      completeJob(deps, actor, args),
+    ),
+});
+```
+
+And the use case it delegates to, `src/application/use-cases/complete-job.ts`: require
+`jobs:transition`; load the job scoped to `actor.orgId` and 404 if it is not there; refuse with
+`CONFLICT` if `expectedVersion` disagrees; call the domain's `completeJob(job, now)`, which
+throws `INVARIANT` from `completed` or `archived`; build an `Operation` whose `inverse` is
+`{ type: "restore-job-status", previous: { status, completedAt, archivedAt } }`; and commit the
+new job and that operation in one atomic batch, both statements guarded on the version the
+caller read.
+
+The action name is the file name. `actions/complete-job.ts` is `complete-job` as an agent tool,
+as `POST /_agent-native/actions/complete-job`, as an MCP tool, and as
+`pnpm action complete-job`. That is the mechanism behind parity: there is nowhere else to put a
+second implementation.
+
+`docs/actions-and-use-cases.md` has the full anatomy, the error table, the idempotency rules
+and the action catalogue.
+
+## 4. Human and agent parity
+
+```mermaid
+flowchart LR
+  subgraph "Five surfaces"
+    direction TB
+    S1["UI: useActionMutation('complete-job')"]
+    S2["Agent: tool call complete-job"]
+    S3["MCP: tools/call complete-job"]
+    S4["HTTP: POST /_agent-native/actions/complete-job"]
+    S5["CLI: pnpm action complete-job"]
+  end
+  S1 --> ACT
+  S2 --> ACT
+  S3 --> ACT
+  S4 --> ACT
+  S5 --> ACT
+  ACT["actions/complete-job.ts"] --> UC["completeJob use case"]
+  UC --> DOM["domain + D1"]
+  UC --> AUD["audit row<br/>caller differs, nothing else"]
+```
+
+| Surface       | How it is invoked                          | `ctx.caller` | Identity from                      |
+| ------------- | ------------------------------------------ | ------------ | ---------------------------------- |
+| UI click      | `useActionMutation("complete-job")`        | `frontend`   | Session cookie                     |
+| Agent request | the model calls the `complete-job` tool    | `tool`       | The signed-in user's session       |
+| MCP call      | `tools/call` with `complete-job`           | `mcp`        | Bearer token or session            |
+| HTTP call     | `POST /_agent-native/actions/complete-job` | `http`       | Session cookie                     |
+| CLI call      | `pnpm action complete-job '{"jobId":"…"}'` | `cli`        | `AGENT_USER_EMAIL`, `AGENT_ORG_ID` |
+
+All five reach the same action, the same use case, the same capability check and the same SQL.
+`tests/e2e/parity.spec.ts` proves it the only way that counts: it performs the same completion
+through the UI and over HTTP as different users and asserts the two audit rows differ **only**
+in `caller`.
+
+The agent's tool surface is deliberately narrow: `frameworkTools: { preset: "minimal",
+database: "off", audit: true }`. The framework's generic database tools are off on every
+surface, so the agent cannot read or write a table; it has our semantic actions, `view-screen`
+and `navigate`. MCP exposes the semantic actions only. `agent/AGENTS.md` is the deployed
+agent's system prompt and describes the same actions in the same terms.
+
+## 5. Authentication versus authorization
+
+Two different questions, answered in two different places, in this order. Before either one,
+the global request policy rejects framework organization self-admission routes; only invitation
+acceptance can give a signed-in person a membership. The first owner is provisioned by the
+trusted operator bootstrap procedure in `docs/bootstrap.md`.
+
+```mermaid
+flowchart TB
+  REQ["Request"] --> SESS{"Session cookie<br/>valid?"}
+  SESS -->|no| E401["AUTHENTICATION 401<br/>Sign in required"]
+  SESS -->|yes| ORG{"ctx.orgId<br/>present?"}
+  ORG -->|no| E403A["AUTHORIZATION 403<br/>No active organization"]
+  ORG -->|yes| MEM{"row in org_members<br/>for (orgId, email)?"}
+  MEM -->|no| E403B["AUTHORIZATION 403<br/>Not a member of the active organization"]
+  MEM -->|yes| ACTOR["Actor { userEmail, orgId, role, caller }"]
+  ACTOR --> CAP{"role has the<br/>required capability?"}
+  CAP -->|no| E403C["AUTHORIZATION 403<br/>Role member may not customers:archive"]
+  CAP -->|yes| RUN["the use case runs"]
+```
+
+**Authentication** is the framework's: Better Auth, the `an_session` cookie, Google or
+password depending on the environment. The application never implements it and never inspects
+a token.
+
+**Authorization** is ours, and it is not the framework's `authorize` hook. `src/application/authorization.ts`
+maps the three organization roles to ten capabilities, and every use case calls
+`requireCapability(actor, cap)` on itself. Two reasons: the check is then unit-testable with
+plain in-memory doubles and no framework, and it is provably identical on every surface because
+there is one call site per use case and no way to reach the use case without passing it.
+
+| Capability                                                       | member | admin | owner |
+| ---------------------------------------------------------------- | :----: | :---: | :---: |
+| `customers:read`, `customers:create`                             |   ✓    |   ✓   |   ✓   |
+| `jobs:read`, `jobs:create`, `jobs:transition`, `jobs:reschedule` |   ✓    |   ✓   |   ✓   |
+| `history:read`, `history:undo`                                   |   ✓    |   ✓   |   ✓   |
+| `customers:archive`                                              |   —    |   ✓   |   ✓   |
+| `jobs:export`                                                    |   —    |   ✓   |   ✓   |
+
+The UI hides the archive button from a member using `useOrgRole()`. That is courtesy, not
+security: `tests/e2e/authorization.spec.ts` calls `archive-customer` over HTTP as a member and
+asserts 403.
+
+History has its own rule, because undo must not become a capability laundering service:
+reversing an operation requires `history:undo` **and** the capability for the business effect
+the reversal has. A member may compensate their own `create-customer` (it archives the customer
+they just made), but may not undo an admin's archive — that needs `customers:archive`.
+`src/application/history-policy.ts` is the whole policy, and the activity feed's Undo/Redo
+buttons are computed from it, evaluated against the caller's **current** role.
+
+## 6. Organization scoping
+
+Tenancy is not a middleware and not an ORM feature. It is a parameter that every read and write
+carries, and a predicate in every statement.
+
+```mermaid
+flowchart LR
+  CTX["ctx.userEmail, ctx.orgId<br/>from the session"] --> RA["resolveActor"]
+  RA --> ACTOR["Actor.orgId"]
+  ACTOR --> UC["every use case call<br/>repo.getById(actor.orgId, id)"]
+  UC --> SQL["every statement:<br/>WHERE org_id = ? AND …"]
+  SQL --> ROWS[("only this organization's rows")]
+  ARG["an orgId argument"] -.->|"does not exist"| X["actions never accept one"]
+```
+
+Four properties hold together:
+
+1. **Actions never take an `orgId`.** The active organization comes from the request context
+   only, so a caller cannot ask about another one. There is no argument to tamper with.
+2. **The role is read fresh** from `org_members` for that `(orgId, email)` pair on every call.
+   A session carrying a stale `orgId` finds no membership and is refused.
+3. **Every SQL constant contains `org_id = ?`.** `tests/unit/infrastructure/sql-scoping.test.ts`
+   imports `src/infrastructure/d1/sql.ts` and asserts it for every exported statement; the
+   optional filter fragments are checked against a fixed `AND <column> <op> ?` allow-list, so
+   no caller value can reach the SQL text.
+4. **A foreign record is `NOT_FOUND`, never `AUTHORIZATION`.** "That job exists but is not
+   yours" is information; the seed's second organization (`org_other`) exists so every layer can
+   be tested for the leak. `tests/e2e/isolation.spec.ts` navigates an outsider to
+   `/jobs/job_scheduled` and asserts the not-found state, and `get-job` returns 404 over HTTP.
+
+## 7. Layer boundaries
+
+```mermaid
+flowchart TB
+  UI["app/ — React Router routes and components<br/>may import: @agent-native/core/client/*, react, src/domain types"]
+  ACT["actions/ — defineAction declarations<br/>may import: src/interface, src/application types, zod"]
+  INT["src/interface/ — runAppAction<br/>may import: src/application, src/infrastructure, @agent-native/core/action"]
+  APP["src/application/ — use cases, ports, authorization, actor, errors<br/>may import: src/domain, src/application"]
+  DOM["src/domain/ — customer, job, operation, errors<br/>may import: src/domain. Nothing else. Not even zod."]
+  INF["src/infrastructure/ — D1 repositories, clock, ids, logging, container<br/>may import: src/domain, src/application, @agent-native/core/db|org|server, node:crypto"]
+
+  UI --> ACT
+  ACT --> INT
+  INT --> APP
+  INT --> INF
+  APP --> DOM
+  INF --> APP
+  INF --> DOM
+```
+
+The rules are in a table in `AGENTS.md` and enforced by `scripts/check-boundaries.mjs`, which
+parses every TS and TSX file with a pinned `@babel/parser` and fails the build with a file, a
+line and the offending specifier. It understands multiline imports, side-effect imports,
+dynamic `import("…")` with a literal, type-only imports and re-exports, so formatting cannot
+hide a violation. Its own regression fixtures prove it still catches each form.
+
+Why each rule earns its keep:
+
+- **`src/domain` imports nothing.** Not `zod`, not `node:*`, not the framework. Time is an
+  argument, ids are arguments, there is no I/O. That is what makes the transition rules
+  testable in microseconds and readable without any context, and it is why upgrading the
+  framework cannot change what "completing a job" means.
+- **`src/application` cannot see the framework.** A use case that could reach `getDbExec()`
+  would eventually reach it, and the layer would stop being testable with in-memory doubles.
+  Dependencies arrive as a `Dependencies` object of plain interfaces.
+- **`app/` cannot see `src/application`.** A UI that can call a use case directly will one day
+  call it without the action wrapper, and lose the audit row, the log line and the error
+  mapping. Route components fetch through `useActionQuery` and mutate through
+  `useActionMutation`; the only thing they may import from `src` is a domain **type**.
+- **`actions/` cannot see `src/infrastructure`.** An action that builds its own repository is an
+  action that has its own idea of tenancy.
+
+`src/infrastructure/container.ts` is the one file that knows which adapter implements which
+port. It memoises the repository objects but never the executor: `getDbExec()` resolves the D1
+binding of the request being served, so a cached executor could outlive its request.
+
+## 8. Integration ports and adapters
+
+The interesting case is not "we call an API". It is "we call an API and the call may have
+succeeded even though we never found out". The boundary is designed for that.
+
+```mermaid
+flowchart TB
+  UC["sendJobToAccounting use case"]
+  PORT{{"ExternalAccountingSystem port<br/>createInvoiceDraft(idempotencyKey, org, customer, job)"}}
+  MOCK["src/infrastructure/mock/mock-accounting.ts<br/>deterministic, vendor-idempotent, injectable failures"]
+  REAL["src/infrastructure/&lt;vendor&gt;/…<br/>your real adapter"]
+  EXPORTS[("accounting_exports<br/>durable pending request")]
+  JOBS[("jobs<br/>accounting_reference")]
+
+  UC -->|"1. durable pending insert, version-guarded"| EXPORTS
+  UC -->|"2. vendor call with the stored payload"| PORT
+  PORT --> MOCK
+  PORT -.->|"swap in the container"| REAL
+  UC -->|"3. record result + operation, atomically"| JOBS
+```
+
+Three rules, and `send-job-to-accounting` exists to demonstrate them with tests:
+
+1. **A local write and a vendor call are two steps, never one transaction.** D1 has no
+   distributed transaction and neither does the vendor. So an immutable pending request is
+   written first, carrying the exact payload and an idempotency key derived from our resource
+   id (`job:<jobId>`); only then is the vendor called; the "sent" state is a separate,
+   version-guarded commit. Nothing may precede the durable insert.
+2. **A retry reconciles, it does not repeat.** A timeout may mean the draft was accepted. The
+   request stays pending and the use case returns `EXTERNAL` with a message saying a retry will
+   reconcile it. The retry finds the stored request, asks the vendor with the same key, and
+   records the answer — even if the job has been archived in the meantime.
+3. **Undo applies only to data we own.** An external effect is classified `compensatable` (a
+   documented compensating command exists) or `irreversible`, never `reversible`.
+   `send-job-to-accounting` is `irreversible`, its action sets `needsApproval: true` so the
+   agent must obtain a human approval for that exact call, and a durable accounting intent
+   blocks any undo that would reopen the completed job — rechecked inside the atomic write, not
+   only before it.
+
+Swapping the mock for a real vendor is one new directory implementing the port plus one line in
+the container. Nothing above the port changes. `docs/integrations.md` walks the whole flow and
+says where the vendor's credentials belong.
+
+## 9. Audit, history and undo
+
+Two records, deliberately separate.
+
+```mermaid
+flowchart LR
+  CMD["a mutating action"] --> AUD[("agent_audit_log<br/>framework-owned<br/>who, when, which surface,<br/>redacted input, success/error")]
+  CMD --> OPS[("operations<br/>app-owned<br/>version_before/after,<br/>classification, inverse, payload")]
+  AUD --> WHY["the trail: what happened, forever"]
+  OPS --> UNDO["the ledger: what can still be reversed"]
+```
+
+`agent_audit_log` is the framework's, written automatically for every non-GET action including
+the ones that failed or were denied, and it is not something the application can rewrite. The
+`operations` table is ours, and it exists because undoing a change needs something the audit
+trail does not carry: the versions the change moved the record between, and the inverse command
+that reverses it.
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant UO as undoOperation
+  participant OP as operations
+  participant J as jobs
+  U->>UO: undo-operation { operationId: op1 }
+  UO->>OP: load op1
+  UO->>J: load the job
+  UO->>UO: canUndo(op1, job.version)
+  Note over UO: ok only when kind is forward or redo,<br/>classification is not irreversible,<br/>undone_by_operation_id is null,<br/>and job.version === op1.version_after
+  UO->>UO: apply op1.inverse through the domain
+  UO->>J: one atomic batch: restore the job,<br/>insert the undo operation,<br/>mark op1 undone — all guarded
+  UO-->>U: { resource, operationId: undoOp }
+```
+
+The version rule is the whole point. Completing `job_in_progress` moves it 2 → 3 and records
+`version_after: 3`. Undo is allowed only while the job is still at version 3. If anyone changed
+it since — the same user in another tab, a coworker, the agent — undo is refused with
+`CONFLICT: Newer changes exist; undo refused` rather than silently discarding that change.
+`tests/e2e/undo-conflict.spec.ts` performs exactly that race through the real UI and HTTP.
+
+An undo is itself an operation row (kind `undo`), which is what makes it visible in `/activity`
+and what makes redo possible. `redo-operation` takes that undo row, walks to the forward
+operation it points at, and re-runs the original domain transition with the stored `payload`
+under the same version rule. Classification per command:
+
+| Command                                    | Classification  | Reversed by                                                   |
+| ------------------------------------------ | --------------- | ------------------------------------------------------------- |
+| `create-customer`, `create-job`            | `compensatable` | Archiving the new record; creates are never deleted or redone |
+| `archive-customer`                         | `reversible`    | `restore-customer` (needs `customers:archive`)                |
+| `reschedule-job`                           | `reversible`    | `restore-job-schedule` to the previous instant                |
+| `start-job`, `complete-job`, `archive-job` | `reversible`    | `restore-job-status` to the exact recorded triple             |
+| `send-job-to-accounting`                   | `irreversible`  | Nothing. The action says so, and undo refuses.                |
+
+`docs/undo-and-history.md` has the algorithm, the refusal messages and the UI behaviour.
+
+## 10. Two schema owners
+
+The single most surprising thing about this stack, and the source of most confusing first-run
+failures.
+
+```mermaid
+flowchart TB
+  subgraph DB["one D1 database"]
+    FW["framework-owned (~50 tables)<br/>users, sessions, accounts,<br/>organizations, org_members, org_invitations,<br/>agent_audit_log, settings, agent runs"]
+    APP["app-owned (5 tables)<br/>customers, jobs, operations,<br/>idempotency_keys, accounting_exports"]
+  end
+  R1["the framework's own migration runners<br/>_better_auth_migrations, _org_migrations, …"] --> FW
+  R2["migrations/*.sql<br/>wrangler d1 migrations apply | scripts/migrate-local.mjs"] --> APP
+```
+
+**The framework owns its tables and migrates them itself, at runtime, on the first database
+touch.** Not at deploy time, not from a file you can read. The Node dev server does it at boot;
+`wrangler dev` and a deployed Worker do it during the first request that touches the database —
+`GET /_agent-native/health` is enough — and it takes a few seconds once.
+`AGENT_NATIVE_SKIP_ENSURE_TABLES` is never set.
+
+**We own ours**, in `migrations/*.sql`, applied by `wrangler d1 migrations apply` on D1 and by
+`scripts/migrate-local.mjs` on the Node dev server's SQLite file. Same files, same order, every
+environment. No `drizzle-kit push` anywhere; `server/db/schema.ts` is a typed mirror the
+framework and its doctor expect, not the source of truth.
+
+Three consequences you will meet:
+
+- **A freshly migrated database has no `organizations` table.** So `pnpm db:reset && pnpm db:seed`
+  fails unless a server has opened the database in between: the seed inserts organization rows.
+  Start the app first. `scripts/seed.mjs` recognises the error and prints that instruction.
+- **Hermetic tests that never start a server** must create those two tables themselves from the
+  framework's DDL. `tests/integration/framework-tables.ts` does exactly that, and is the only
+  copy of a framework table definition in the repository.
+- **`/api/ready` only counts app migrations.** It compares `d1_migrations` against
+  `src/infrastructure/migrations-manifest.ts`, which the build embeds from `migrations/`
+  because a Worker has no filesystem to count files with. The framework's tables are not its
+  business.
+
+`docs/database-and-migrations.md` covers expand/contract, the deploy ordering constraint, and
+why a Worker rollback does not roll back D1.
+
+## 11. CI and CD
+
+```mermaid
+flowchart TB
+  PR["pull request"] --> CI
+  PUSH["push to main"] --> CI
+  subgraph CI["ci.yml"]
+    direction LR
+    V["verify<br/>pnpm check<br/>pnpm test:integration"] --> WK["worker<br/>pnpm verify:worker<br/>upload worker-bundle"]
+    WK --> E2E["e2e<br/>download the bundle<br/>pnpm test:e2e"]
+  end
+  CI -->|"workflow_run: success on main"| ST
+  subgraph ST["deploy-staging.yml — environment: staging"]
+    direction TB
+    S1["validate: this SHA has a successful CI run on main"] --> S2["build once"]
+    S2 --> S3["upload worker-bundle-&lt;sha&gt; + deployment-manifest<br/>90-day retention"]
+    S3 --> S4["migrate -> deploy -> reset QA scenario -> staging smoke"]
+  end
+  ST -->|"manual: gh workflow run -f staging_run_id"| PR2
+  subgraph PR2["deploy-production.yml — environment: production, reviewer required"]
+    direction TB
+    P1["validate the staging run and its manifest"] --> P2["check out that exact SHA"]
+    P2 --> P3["download that exact bundle; verify BUILD_INFO.sha,<br/>HEAD and the PATCHED.json hash"]
+    P3 --> P4["record a D1 Time Travel bookmark"]
+    P4 --> P5["migrate -> deploy -> read-only production smoke"]
+  end
+```
+
+The bundle is built **once**, by the staging run, and production downloads that artifact. So
+the bytes serving production are the bytes that passed staging — not a rebuild that happens to
+come from the same commit.
+
+Provenance is a manifest, not a workflow-run field. A `workflow_run`-triggered run's `head_sha`
+describes the context the workflow file was loaded from, so two runs can report the same
+`head_sha` having deployed different commits. Staging therefore proves the SHA at the moment it
+deploys and writes an immutable `deployment-manifest` artifact `{ repository, sha,
+sourceCiRunId }`; production re-validates that manifest, the staging run's workflow path,
+repository, branch, status and conclusion, and the CI run that actually verified that SHA. Then
+it checks that SHA out and refuses unless `dist/BUILD_INFO.json.sha`, `git rev-parse HEAD` and
+the manifest agree, and `dist/_worker.js/PATCHED.json` matches the SHA-256 of the downloaded
+bundle. A missing patch marker fails the promotion.
+`tests/guards/deployment-validation.test.mjs` unit-tests every one of those refusals.
+
+## 12. Staging and production separation
+
+```mermaid
+flowchart LR
+  subgraph LOCAL["local"]
+    L1["pnpm dev — Node, file:./data/app.db"]
+    L2["pnpm dev:worker — workerd, local D1"]
+  end
+  subgraph STAGING["staging"]
+    S["Worker &lt;app&gt;-staging<br/>D1 &lt;app&gt;-staging (EU)<br/>seeded QA org, password sign-in allowed"]
+  end
+  subgraph PRODUCTION["production"]
+    P["Worker &lt;app&gt;-production<br/>D1 &lt;app&gt;-production (EU)<br/>Google only, never seeded"]
+  end
+  LOCAL -->|"merge to main, CI green"| STAGING
+  STAGING -->|"manual promotion of the artifact"| PRODUCTION
+```
+
+Separate Workers, separate databases, separate secrets, separate GitHub environments. Nothing
+is shared, and no credential reaches both.
+
+|                  | local                | CI / local worker | staging           | production                 |
+| ---------------- | -------------------- | ----------------- | ----------------- | -------------------------- |
+| `APP_ENV`        | `local`              | `ci`              | `staging`         | `production`               |
+| Database         | `file:./data/app.db` | local D1          | D1, EU            | D1, EU                     |
+| Password sign-up | yes                  | yes               | yes (QA)          | **refused**                |
+| Google sign-in   | —                    | —                 | configured        | required, per organization |
+| `SEED_ENABLED`   | `1`                  | `1`               | `1` (QA org only) | **forbidden**              |
+| Audit retention  | —                    | —                 | 365 days          | forever (`0`)              |
+
+`server/plugins/00-env-check.ts` refuses to start a misconfigured deployment. Production
+requires `BETTER_AUTH_SECRET` (32+ characters), `OAUTH_STATE_SECRET`, an https `APP_URL`, the
+Google credentials and `ANTHROPIC_API_KEY`, and forbids `AUTH_DISABLED`, `SEED_ENABLED`,
+`ACCESS_TOKEN(S)`, `AGENT_PROD_CODE_EXECUTION` and any `DATABASE_URL`. Local refuses
+`APP_ENV=production` and any `DATABASE_URL` that is not a local `file:`. Violation messages
+never contain a value. `scripts/check-config-hygiene.mjs` fails the build if a secret is parked
+in `wrangler.jsonc` `vars`, or a telemetry key appears anywhere.
+
+## 13. Backup and recovery
+
+```mermaid
+flowchart TB
+  PROD[("production D1")]
+  PROD -->|"always on"| TT["D1 Time Travel<br/>bookmark recorded before every migration"]
+  PROD -->|"nightly 03:00 UTC + dispatch"| EXP["wrangler d1 export<br/>gzip, optional age encryption"]
+  EXP --> DEST["S3-compatible bucket in another account<br/>(or a 30-day GitHub artifact)"]
+  DEST --> CHK["scripts/restore-d1-check.sh<br/>test restore into scratch local D1"]
+  TT -->|"we broke the data an hour ago"| R1["restore in place"]
+  DEST -->|"we lost the account"| R2["import into a NEW database, then move the binding"]
+  WORKER["Worker code"] -->|"wrangler rollback"| RB["previous version"]
+```
+
+Two layers, because they fail differently. Time Travel is Cloudflare's, always on, and restores
+the same database in place — it answers "we broke the data an hour ago". SQL exports are our
+own copies and survive losing the Cloudflare account — they answer "we lost the account" and
+"we need last month's rows". Restore is always into a **new** database, never in place.
+
+Three things a backup does not cover, and it matters: R2 objects (this starter stores none),
+Worker secrets (`wrangler secret put` values cannot be read back — a restore with a different
+`BETTER_AUTH_SECRET` invalidates every session), and the Worker script itself (rolled back with
+`wrangler rollback`, or redeployed from the 90-day promotion artifact).
+
+Rolling the Worker back does **not** roll back D1. A migration that ran is still applied. That
+is why every migration must be backwards compatible with the version still serving traffic,
+and why the bookmark is recorded before the migration rather than after.
+
+`docs/backups.md` has the configuration, the coverage list, the verification procedure and the
+step-by-step restore. `docs/runbook.md` is the incident-time version.
+
+## 14. What this design deliberately avoids
+
+Each of these is a real option that was considered and rejected for this class of application —
+one company, 1–20 users, modest data, years of it.
+
+- **Generic CRUD actions.** `updateJob({ status })` moves the business rules to the caller and
+  gives the agent a tool whose name means nothing. `complete-job` carries the transition rule,
+  the audit summary, the inverse and the description the model reads.
+- **Direct frontend database access.** Every authorization check would have to be reimplemented
+  in the client, where it is advice rather than enforcement. The browser gets actions.
+- **Unrestricted agent database access.** `database: "off"`. Model output is untrusted input;
+  a generic `db-query` tool turns a prompt injection into an exfiltration primitive, and a
+  generic `db-exec` turns it into a delete.
+- **Event sourcing.** The `operations` table gives history, audit and undo for the two
+  aggregates that need them. Rebuilding all state from an event log would cost a projection
+  layer and a replay story to answer questions nobody is asking.
+- **Microservices.** Two deployables would need a network protocol, two deployment pipelines
+  and distributed failure handling, to separate code that ships together and shares a database.
+- **A message broker.** Nothing here is asynchronous by requirement. The one external write
+  uses a durable pending request and idempotent retries, which is the same reliability property
+  a queue would provide, with one table instead of one more piece of infrastructure.
+- **Kubernetes.** A Worker with static assets and a SQL database has no orchestration problem
+  to solve.
+- **Multi-region.** One D1 database in the EU jurisdiction, chosen for data residency rather
+  than latency. A single small company's users are not distributed enough for replication to
+  pay for its consistency cost.
+- **Cloudflare Access on production.** The application authenticates its own users; a second
+  identity fence in front of it would double the sign-in surface. Access stays an optional
+  documented fence for staging.
+- **An elaborate DI container.** `src/infrastructure/container.ts` is one function returning
+  one object literal.

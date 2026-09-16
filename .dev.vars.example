@@ -1,0 +1,10 @@
+# Wrangler local secrets (`pnpm dev:worker`). Copy to `.dev.vars`, which is git-ignored.
+# Secrets only. Non-secret Worker vars live in `wrangler.jsonc` `vars`, per environment.
+
+# 32 characters or more. Generate with: openssl rand -hex 32
+BETTER_AUTH_SECRET=
+
+SEED_PASSWORD=Example-Seed-Password-2026
+
+# Optional locally: only the agent chat and the evals need it.
+ANTHROPIC_API_KEY=

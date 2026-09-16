@@ -1,0 +1,52 @@
+name: Backup production D1
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: backup-production-d1
+  cancel-in-progress: false
+jobs:
+  backup:
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production-backup
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
+      BACKUP_S3_BUCKET: ${{ secrets.BACKUP_S3_BUCKET }}
+      BACKUP_S3_ENDPOINT: ${{ secrets.BACKUP_S3_ENDPOINT }}
+      BACKUP_S3_REGION: ${{ vars.BACKUP_S3_REGION }}
+      BACKUP_S3_ACCESS_KEY_ID: ${{ secrets.BACKUP_S3_ACCESS_KEY_ID }}
+      BACKUP_S3_SECRET_ACCESS_KEY: ${{ secrets.BACKUP_S3_SECRET_ACCESS_KEY }}
+      BACKUP_S3_PREFIX: ${{ vars.BACKUP_S3_PREFIX }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/heads/main
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Initialize backup path
+        run: echo "BACKUP_DIR=$RUNNER_TEMP/d1-backups" >> "$GITHUB_ENV"
+      - run: pnpm install --frozen-lockfile
+      - name: Install age
+        if: env.BACKUP_AGE_RECIPIENT != ''
+        run: sudo apt-get update && sudo apt-get install -y age
+      - name: Export and verify backup
+        id: backup
+        run: bash scripts/backup-d1.sh
+      - name: Upload workflow artifact
+        if: env.BACKUP_S3_BUCKET == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-d1-${{ github.run_id }}
+          path: ${{ steps.backup.outputs.artifact }}
+          retention-days: 30
+          if-no-files-found: error

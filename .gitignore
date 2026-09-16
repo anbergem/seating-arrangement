@@ -1,0 +1,77 @@
+# React Router generated types
+.react-router/
+.generated/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+node_modules
+build/
+dist
+dist/
+dist-ssr
+.output/
+.netlify/
+.deploy-tmp/
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Environment
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+# Bootstrap input (T24): one file holding the Cloudflare API token, the Google client secret,
+# the provider key and the QA password. Only the names-only example is committed.
+.bootstrap.env
+!.bootstrap.env.example
+.tmp/
+
+# Data
+data/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/uploads/
+data/settings.json
+data/.sessions.json
+
+# Cloudflare / Wrangler
+.wrangler/
+
+# Database backups and restore reports (T21) — never commit customer or user rows
+backups/
+restore-report-*.log
+
+# Tests
+tests/e2e/.auth/
+test-results/
+playwright-report/
+
+# Eval evidence (T24 follow-up): a model-backed run's JSON report carries prompts,
+# model output and provider request ids. Record the outcome in the release notes,
+# not the raw artifact.
+eval-evidence*.json
+
+# Learnings (personal preferences and memory — use learnings.defaults.md for tracked defaults)
+learnings.md
+
+.vercel/
+.agent-native/
+
+.pnpm-store/

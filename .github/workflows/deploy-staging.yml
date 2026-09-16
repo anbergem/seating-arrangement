@@ -1,0 +1,130 @@
+name: Deploy staging
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main' &&
+       github.event.workflow_run.head_repository.full_name == github.repository) ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: staging
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      SEED_PASSWORD: ${{ secrets.SEED_PASSWORD }}
+      STAGING_URL: ${{ vars.STAGING_URL }}
+      DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+    steps:
+      # First, and before install or build: this is the only step that needs no
+      # repository, and it exercises the exact pairing that a wrong credential
+      # breaks — this token, on this account, against D1. A stale token sent the
+      # first real deployment through three minutes of install, build and two
+      # artifact uploads before failing on `d1 migrations apply` with a bare
+      # "[code: 7403]" (DISCREPANCIES.md, 2026-09-14). Only the API's own error
+      # lines are printed; the response body is never echoed.
+      - name: Preflight — Cloudflare credentials reach D1
+        shell: bash
+        run: |
+          body="$RUNNER_TEMP/d1-preflight.json"
+          status=$(curl -sS -o "$body" -w '%{http_code}' \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database?per_page=1")
+          if [[ "$status" != "200" ]]; then
+            echo "::error::Cloudflare credentials cannot reach D1 on this account (HTTP $status)"
+            jq -r '.errors[]? | "  [\(.code)] \(.message)"' "$body" 2>/dev/null || true
+            echo "CLOUDFLARE_API_TOKEN needs D1 Edit (the \"Edit Cloudflare Workers\" template does not include it),"
+            echo "and CLOUDFLARE_ACCOUNT_ID must be the account that token belongs to."
+            echo "Re-set them with: node scripts/bootstrap.mjs --yes --only github-secrets"
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Initialize temporary paths
+        run: |
+          {
+            echo "CI_RUN_JSON=$RUNNER_TEMP/ci-run.json"
+            echo "DEPLOYMENT_MANIFEST=$RUNNER_TEMP/deployment-manifest.json"
+          } >> "$GITHUB_ENV"
+      - name: Read triggering CI run
+        if: github.event_name == 'workflow_run'
+        env:
+          SOURCE_CI_RUN_ID: ${{ github.event.workflow_run.id }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_CI_RUN_ID" > "$CI_RUN_JSON"
+      - name: Find exact CI run for manual deployment
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh api --method GET
+          "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$DEPLOY_SHA&branch=main&status=success&per_page=100"
+          > "$CI_RUN_JSON"
+      - name: Validate exact CI run
+        id: ci
+        run: node scripts/validate-ci-run.mjs
+      - name: Write immutable deployment manifest
+        env:
+          SOURCE_CI_RUN_ID: ${{ steps.ci.outputs.run_id }}
+        run: node scripts/write-deployment-manifest.mjs
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:worker
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-bundle-${{ env.DEPLOY_SHA }}
+          path: dist/
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-manifest
+          path: ${{ env.DEPLOYMENT_MANIFEST }}
+          retention-days: 90
+      - run: pnpm db:migrate:staging
+      - run: pnpm deploy:staging
+      - name: Reset QA scenario
+        run: >-
+          node scripts/seed.mjs --target d1-remote --env staging --reset
+          --base-url "$STAGING_URL"
+      # A remote smoke is not a local one: every request crosses the internet to
+      # the Worker and then to remote D1, where the local runs this default was
+      # calibrated against answer from a file in 0-2ms. 120s (the script's
+      # default) was exhausted by the eighth check on the first real staging
+      # smoke (DISCREPANCIES.md, 2026-09-14), including a cold start on the
+      # first request after a fresh deploy.
+      - name: Smoke staging
+        run: >-
+          node scripts/worker-smoke.mjs --base-url "$STAGING_URL" --mode staging
+          --qa-email owner@example.invalid --qa-password "$SEED_PASSWORD"
+          --expect-org-id org_acme --timeout-ms 300000
+      - name: Record deployment
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          SOURCE_CI_RUN_ID: ${{ steps.ci.outputs.run_id }}
+        run: |
+          {
+            echo "### Staging deployment"
+            echo "- Commit: \`$DEPLOY_SHA\`"
+            echo "- Source CI run: \`$SOURCE_CI_RUN_ID\`"
+            echo "- Promotion artifact: \`worker-bundle-$DEPLOY_SHA\`"
+            echo "- Deploy and smoke: $JOB_STATUS"
+          } >> "$GITHUB_STEP_SUMMARY"

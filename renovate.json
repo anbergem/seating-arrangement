@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "dependencyDashboard": true,
+  "schedule": ["before 6am on monday"],
+  "rangeStrategy": "pin",
+  "packageRules": [
+    {
+      "matchPackageNames": ["/^@agent-native\\//"],
+      "groupName": "agent-native framework",
+      "automerge": false,
+      "minimumReleaseAge": "3 days",
+      "labels": ["framework-upgrade"]
+    },
+    {
+      "matchPackageNames": ["wrangler"],
+      "groupName": "wrangler",
+      "automerge": false
+    },
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "matchPackageNames": ["!/^@agent-native\\//", "!wrangler"],
+      "groupName": "minor and patch",
+      "automerge": false
+    },
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github actions",
+      "automerge": false
+    }
+  ]
+}
