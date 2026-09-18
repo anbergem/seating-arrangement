@@ -8,7 +8,7 @@ import { MIGRATION_FILES } from "../../../src/infrastructure/migrations-manifest
  * build expects?
  *
  * Both migration runners record the bare file name — verified on Wrangler 4.129.0:
- * `wrangler d1 migrations apply example-jobs-local --local` followed by
+ * `wrangler d1 migrations apply seating-arrangement-local --local` followed by
  * `select * from d1_migrations` returns `name = "0001_init.sql"`, and
  * `scripts/migrate-local.mjs` inserts the same string. So the recorded names compare
  * directly against `MIGRATION_FILES`, which the build embeds from `migrations/` because the

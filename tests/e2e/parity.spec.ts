@@ -1,48 +1,68 @@
-import { JOB_IN_PROGRESS_ID } from "../fixtures/scenario";
-import { auditEventsForJob, auditShape, recentActivity } from "./api";
+import { SEAT_LABEL_ADA, TABLE_HEAD_ID } from "../fixtures/scenario";
+import { auditEventsForTarget, auditShape, recentActivity } from "./api";
 import { expect, test } from "./fixtures";
 
 test("the UI and a direct HTTP call run the same action and differ only in caller", async ({
   memberPage,
 }) => {
   const main = memberPage.locator("main");
-  await memberPage.goto(`/jobs/${JOB_IN_PROGRESS_ID}`);
-  await memberPage.getByTestId("complete-job").click();
-  await expect(main.getByTestId("job-status")).toHaveText("Completed");
+  const head = main.getByTestId(`seating-table-${TABLE_HEAD_ID}`);
+  await memberPage.goto("/events");
+  await main.getByRole("link").first().click();
+  await expect(head).toBeVisible();
 
-  // Undo the browser's completion so the same action can run again, this time
-  // as an ordinary HTTP client (no frontend header, so `caller: "http"`).
+  // The same seat, written from the browser…
+  await head.getByRole("button", { name: /^Seat 1, / }).click();
+  const field = main.getByRole("textbox", { name: /^Seat 1, Head table$/ });
+  await field.fill("Katherine Johnson");
+  await field.press("Enter");
+  await expect(memberPage.getByText("Seat updated")).toBeVisible();
+
+  // …undone, so the identical call can be made again as an ordinary HTTP
+  // client (no frontend header, so `caller: "http"`).
   const activity = await recentActivity(memberPage.request);
-  const completion = activity.find(
-    (item) => item.action === "complete-job" && item.kind === "forward",
+  const written = activity.find(
+    (item) => item.action === "label-seat" && item.kind === "forward",
   );
-  expect(completion, JSON.stringify(activity)).toBeDefined();
+  expect(written, JSON.stringify(activity)).toBeDefined();
   const undone = await memberPage.request.post(
     "/_agent-native/actions/undo-operation",
-    { data: { operationId: completion?.id } },
+    { data: { operationId: written?.id } },
   );
   expect(undone.status(), await undone.text()).toBe(200);
 
   const overHttp = await memberPage.request.post(
-    "/_agent-native/actions/complete-job",
-    { data: { jobId: JOB_IN_PROGRESS_ID } },
+    "/_agent-native/actions/label-seat",
+    {
+      data: {
+        tableId: TABLE_HEAD_ID,
+        seat: 0,
+        label: "Katherine Johnson",
+      },
+    },
   );
   expect(overHttp.status(), await overHttp.text()).toBe(200);
 
-  const events = await auditEventsForJob(
+  const events = await auditEventsForTarget(
     memberPage.request,
-    JOB_IN_PROGRESS_ID,
+    "seating_table",
+    TABLE_HEAD_ID,
   );
-  const completions = events.filter((event) => event.action === "complete-job");
-  expect(completions).toHaveLength(2);
-  expect(completions.map((event) => event.caller).sort()).toEqual([
+  const writes = events.filter(
+    (event) =>
+      event.action === "label-seat" &&
+      event.summary === "Seated Katherine Johnson at seat 1",
+  );
+  expect(writes).toHaveLength(2);
+  expect(writes.map((event) => event.caller).sort()).toEqual([
     "frontend",
     "http",
   ]);
-  const [first, second] = completions;
+  const [first, second] = writes;
   expect(auditShape(first!)).toEqual(auditShape(second!));
 
   // The browser reflects the change the HTTP client made.
-  await memberPage.goto(`/jobs/${JOB_IN_PROGRESS_ID}`);
-  await expect(main.getByTestId("job-status")).toHaveText("Completed");
+  await memberPage.reload();
+  await expect(head.getByText("Katherine Johnson")).toBeVisible();
+  await expect(head.getByText(SEAT_LABEL_ADA)).toHaveCount(0);
 });

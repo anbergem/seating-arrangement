@@ -3,18 +3,18 @@
  *
  * Every use-case test builds one of these instead of touching D1: the
  * behaviour mirrors the real repositories closely enough that a use case
- * cannot tell the difference — `getById`/`list` filter by `orgId`, job
- * creation requires an active customer in the same org, `commit` is
- * version-guarded and CONFLICTs on a stale version, and the clock and id
- * generator are both fixed so tests stay deterministic.
+ * cannot tell the difference — `getById`/`list` filter by `orgId`, a table
+ * requires an active event in the same org and free space to stand in,
+ * `commit` is version-guarded and CONFLICTs on a stale version, and the clock
+ * and id generator are both fixed so tests stay deterministic.
  *
  * `state` is exposed directly so tests (and `tests/fixtures/scenario.ts`)
  * can seed or inspect it without going through the repository interfaces,
  * which run the same preconditions a real adapter would.
  *
  * Every `list` returns rows in the order the matching D1 statement in
- * `src/infrastructure/d1/sql.ts` does — customers by `name, id`, jobs by
- * `scheduled_at, id`, operations by `performed_at DESC, id DESC`. A `Map`
+ * `src/infrastructure/d1/sql.ts` does — events by `starts_at, id`, tables by
+ * `created_at, id`, operations by `performed_at DESC, id DESC`. A `Map`
  * iterates in insertion order, which is not an order any database promises,
  * so without this a unit test and the integration test for the same use case
  * could disagree (DISCREPANCIES, 2026-09-06 T08).
@@ -24,19 +24,21 @@ import type { Role } from "../../src/application/authorization";
 import { AppError } from "../../src/application/errors";
 import type {
   Clock,
-  AccountingExport,
-  AccountingExportRepository,
-  CustomerRepository,
   Dependencies,
+  EventRepository,
   IdempotencyStore,
   IdGenerator,
-  JobRepository,
   MembershipReader,
   OperationRepository,
+  SeatingTableRepository,
 } from "../../src/application/ports";
-import type { ExternalAccountingSystem } from "../../src/application/ports/external-accounting";
-import type { Customer, Job, Operation, ResourceType } from "../../src/domain";
-import { createMockAccountingSystem } from "../../src/infrastructure/mock/mock-accounting";
+import type {
+  Event,
+  Operation,
+  ResourceType,
+  SeatingTable,
+} from "../../src/domain";
+import { cellKey, cellsOf } from "../../src/domain";
 
 /** The clock value every `createInMemoryDependencies()` call uses unless
  * `options.now` overrides it — "today" in this fixture's fictional
@@ -45,16 +47,16 @@ import { createMockAccountingSystem } from "../../src/infrastructure/mock/mock-a
 const DEFAULT_NOW = "2026-09-06T12:00:00.000Z";
 
 export interface InMemoryState {
-  customers: Map<string, Customer>;
-  jobs: Map<string, Job>;
+  events: Map<string, Event>;
+  seatingTables: Map<string, SeatingTable>;
   operations: Map<string, Operation>;
   /** Keyed by `orgId`, `action` and `key` joined with a space (see
    * `idempotencyMapKey` below) → the resourceId that call created. */
   idempotency: Map<string, string>;
-  accountingExports: Map<string, AccountingExport>;
   /** Tests may install one one-shot mutation immediately before a guarded
-   * job write to model an intervening request. */
-  beforeJobCommit?: () => void | Promise<void>;
+   * seating-table write: it is how a test models
+   * somebody else taking the space between the check and the commit. */
+  beforeSeatingTableCommit?: () => void | Promise<void>;
   /** orgId → (lower-cased email → role). */
   memberships: Map<string, Map<string, Role>>;
 }
@@ -67,7 +69,6 @@ export interface InMemoryDependenciesOptions {
    * so a test that asserts on ids notices an unexpected extra call. */
   ids?: string[];
   state?: InMemoryState;
-  accounting?: ExternalAccountingSystem;
 }
 
 export interface InMemoryDependencies extends Dependencies {
@@ -145,45 +146,33 @@ function applyMarkUndone(
     state.operations.set(markUndone, { ...op, undoneByOperationId: undoneBy });
 }
 
-function createCustomerRepository(state: InMemoryState): CustomerRepository {
+function createEventRepository(state: InMemoryState): EventRepository {
   return {
     getById: async (orgId, id) => {
-      const found = state.customers.get(id);
+      const found = state.events.get(id);
       return found && found.orgId === orgId ? found : null;
     },
-    list: async (orgId, filter) => {
-      return (
-        Array.from(state.customers.values())
-          .filter((c) => c.orgId === orgId)
-          .filter((c) => (filter.status ? c.status === filter.status : true))
-          .filter((c) =>
-            filter.search
-              ? c.name.toLowerCase().includes(filter.search.toLowerCase())
-              : true,
-          )
-          // `SELECT_CUSTOMERS_PARTS.order`: ORDER BY name ASC, id ASC.
-          .sort((a, b) => byTextThenId(a.name, b.name, a.id, b.id))
-      );
-    },
-    create: async ({ customer, operation, idempotency }) => {
-      state.customers.set(customer.id, customer);
+    list: async (orgId, filter) =>
+      Array.from(state.events.values())
+        .filter((e) => e.orgId === orgId)
+        .filter((e) => (filter.status ? e.status === filter.status : true))
+        // `SELECT_EVENTS_PARTS.order`: ORDER BY starts_at ASC, id ASC.
+        .sort((a, b) => byTextThenId(a.startsAt, b.startsAt, a.id, b.id)),
+    create: async ({ event, operation, idempotency }) => {
+      state.events.set(event.id, event);
       state.operations.set(operation.id, operation);
       if (idempotency) {
         state.idempotency.set(
-          idempotencyMapKey(
-            customer.orgId,
-            idempotency.action,
-            idempotency.key,
-          ),
-          customer.id,
+          idempotencyMapKey(event.orgId, idempotency.action, idempotency.key),
+          event.id,
         );
       }
     },
-    commit: async ({ customer, expectedVersion, operation, markUndone }) => {
-      const existing = state.customers.get(customer.id);
+    commit: async ({ event, expectedVersion, operation, markUndone }) => {
+      const existing = state.events.get(event.id);
       if (
         !existing ||
-        existing.orgId !== customer.orgId ||
+        existing.orgId !== event.orgId ||
         existing.version !== expectedVersion
       ) {
         throw new AppError(
@@ -191,163 +180,154 @@ function createCustomerRepository(state: InMemoryState): CustomerRepository {
           "The record was changed by someone else",
         );
       }
-      state.customers.set(customer.id, customer);
+      state.events.set(event.id, event);
       state.operations.set(operation.id, operation);
       applyMarkUndone(state, markUndone, operation.id);
     },
   };
 }
 
-function createJobRepository(state: InMemoryState): JobRepository {
+/**
+ * Mirrors `src/infrastructure/d1/seating-tables-repository.ts`, including the
+ * part that matters most: the no-overlap rule is enforced *by the write*, not
+ * before it. There it is the `seating_cells` primary key; here it is this
+ * function, and the two have to agree cell for cell, or a use-case test and its
+ * integration twin would disagree about when a move is refused.
+ */
+function spaceIsTaken(state: InMemoryState, table: SeatingTable): boolean {
+  if (table.status !== "active") return false;
+  const taken = new Set<string>();
+  for (const other of state.seatingTables.values()) {
+    if (
+      other.orgId !== table.orgId ||
+      other.eventId !== table.eventId ||
+      other.id === table.id ||
+      other.status !== "active"
+    ) {
+      continue;
+    }
+    for (const cell of cellsOf(other)) taken.add(cellKey(cell.x, cell.y));
+  }
+  return cellsOf(table).some((cell) => taken.has(cellKey(cell.x, cell.y)));
+}
+
+function createSeatingTableRepository(
+  state: InMemoryState,
+): SeatingTableRepository {
   return {
     getById: async (orgId, id) => {
-      const found = state.jobs.get(id);
+      const found = state.seatingTables.get(id);
       return found && found.orgId === orgId ? found : null;
     },
-    list: async (orgId, filter) => {
-      return (
-        Array.from(state.jobs.values())
-          .filter((j) => j.orgId === orgId)
-          .filter((j) => (filter.status ? j.status === filter.status : true))
-          .filter((j) =>
-            filter.customerId ? j.customerId === filter.customerId : true,
-          )
-          // Half-open window, the same as `SELECT_JOBS_PARTS` in
-          // `src/infrastructure/d1/sql.ts`: `from` inclusive, `to` exclusive.
-          .filter((j) => (filter.from ? j.scheduledAt >= filter.from : true))
-          .filter((j) => (filter.to ? j.scheduledAt < filter.to : true))
-          // `SELECT_JOBS_PARTS.order`: ORDER BY scheduled_at ASC, id ASC.
-          .sort((a, b) =>
-            byTextThenId(a.scheduledAt, b.scheduledAt, a.id, b.id),
-          )
-      );
-    },
-    create: async ({ job, operation, idempotency }) => {
-      const customer = state.customers.get(job.customerId);
-      if (
-        !customer ||
-        customer.orgId !== job.orgId ||
-        customer.status !== "active"
-      ) {
-        throw new AppError("NOT_FOUND", "Customer not found or archived");
+    list: async (orgId, filter) =>
+      Array.from(state.seatingTables.values())
+        .filter((t) => t.orgId === orgId)
+        .filter((t) => (filter.eventId ? t.eventId === filter.eventId : true))
+        .filter((t) => (filter.status ? t.status === filter.status : true))
+        // `SELECT_SEATING_TABLES_PARTS.order`: ORDER BY created_at ASC, id ASC.
+        .sort((a, b) => byTextThenId(a.createdAt, b.createdAt, a.id, b.id)),
+    create: async ({ table, operation, idempotency }) => {
+      const event = state.events.get(table.eventId);
+      if (!event || event.orgId !== table.orgId || event.status !== "active") {
+        throw new AppError("NOT_FOUND", "Event not found or archived");
       }
-      state.jobs.set(job.id, job);
+      if (spaceIsTaken(state, table)) {
+        throw new AppError("CONFLICT", "That space is already occupied");
+      }
+      state.seatingTables.set(table.id, table);
       state.operations.set(operation.id, operation);
       if (idempotency) {
         state.idempotency.set(
-          idempotencyMapKey(job.orgId, idempotency.action, idempotency.key),
-          job.id,
+          idempotencyMapKey(table.orgId, idempotency.action, idempotency.key),
+          table.id,
         );
       }
     },
-    commit: async ({
-      job,
-      expectedVersion,
-      operation,
-      markUndone,
-      requireNoAccountingExport,
-    }) => {
-      const hook = state.beforeJobCommit;
-      state.beforeJobCommit = undefined;
-      await hook?.();
-      const existing = state.jobs.get(job.id);
+    /** Mirrors `createLayout`: all-or-nothing, and the event's version is what
+     * the whole batch hangs off. Built into a scratch map first so a collision
+     * halfway through leaves nothing behind, the way a rolled-back batch
+     * does. */
+    createLayout: async ({ event, expectedVersion, tables, operation }) => {
+      const stored = state.events.get(event.id);
       if (
-        !existing ||
-        existing.orgId !== job.orgId ||
-        existing.version !== expectedVersion ||
-        (requireNoAccountingExport &&
-          state.accountingExports.has(`${job.orgId} ${job.id}`))
+        !stored ||
+        stored.orgId !== event.orgId ||
+        stored.version !== expectedVersion
       ) {
         throw new AppError(
           "CONFLICT",
           "The record was changed by someone else",
         );
       }
-      state.jobs.set(job.id, job);
+      if (stored.status !== "active") {
+        throw new AppError("NOT_FOUND", "Event not found or archived");
+      }
+      const scratch = new Map(state.seatingTables);
+      for (const table of tables) {
+        if (spaceIsTaken({ ...state, seatingTables: scratch }, table)) {
+          throw new AppError("CONFLICT", "That space is already occupied");
+        }
+        scratch.set(table.id, table);
+      }
+      state.seatingTables = scratch;
+      state.events.set(event.id, event);
+      state.operations.set(operation.id, operation);
+    },
+    archiveLayout: async ({
+      event,
+      expectedVersion,
+      tables,
+      operation,
+      markUndone,
+    }) => {
+      const stored = state.events.get(event.id);
+      if (
+        !stored ||
+        stored.orgId !== event.orgId ||
+        stored.version !== expectedVersion
+      ) {
+        throw new AppError(
+          "CONFLICT",
+          "The record was changed by someone else",
+        );
+      }
+      for (const { table, expectedVersion: was } of tables) {
+        const existing = state.seatingTables.get(table.id);
+        if (!existing || existing.version !== was) {
+          throw new AppError(
+            "CONFLICT",
+            "The record was changed by someone else",
+          );
+        }
+      }
+      for (const { table } of tables) state.seatingTables.set(table.id, table);
+      state.events.set(event.id, event);
       state.operations.set(operation.id, operation);
       applyMarkUndone(state, markUndone, operation.id);
     },
-  };
-}
-
-function accountingExportMapKey(orgId: string, jobId: string): string {
-  return `${orgId} ${jobId}`;
-}
-
-function createAccountingExportRepository(
-  state: InMemoryState,
-): AccountingExportRepository {
-  return {
-    getByJobId: async (orgId, jobId) =>
-      state.accountingExports.get(accountingExportMapKey(orgId, jobId)) ?? null,
-    createPending: async ({ export: pending, expectedVersion }) => {
-      const key = accountingExportMapKey(pending.orgId, pending.jobId);
-      const winner = state.accountingExports.get(key);
-      if (winner) return winner;
-      const job = state.jobs.get(pending.jobId);
-      if (
-        !job ||
-        job.orgId !== pending.orgId ||
-        job.version !== expectedVersion ||
-        job.status !== "completed" ||
-        job.accountingReference !== null
-      ) {
-        throw new AppError(
-          "CONFLICT",
-          "The record was changed by someone else",
-        );
-      }
-      state.accountingExports.set(key, pending);
-      return pending;
-    },
-    recordAccepted: async ({ orgId, jobId, externalReference }) => {
-      const key = accountingExportMapKey(orgId, jobId);
-      const pending = state.accountingExports.get(key);
-      if (
-        !pending ||
-        (pending.externalReference !== null &&
-          pending.externalReference !== externalReference)
-      ) {
-        throw new AppError(
-          "CONFLICT",
-          "The record was changed by someone else",
-        );
-      }
-      const accepted = {
-        ...pending,
-        externalReference: pending.externalReference ?? externalReference,
-      };
-      state.accountingExports.set(key, accepted);
-      return accepted;
-    },
-    complete: async ({ export: pending, job, expectedVersion, operation }) => {
-      const hook = state.beforeJobCommit;
-      state.beforeJobCommit = undefined;
+    commit: async ({ table, expectedVersion, operation, markUndone }) => {
+      const hook = state.beforeSeatingTableCommit;
+      state.beforeSeatingTableCommit = undefined;
       await hook?.();
-      const key = accountingExportMapKey(pending.orgId, pending.jobId);
-      const stored = state.accountingExports.get(key);
-      const current = state.jobs.get(job.id);
+      const existing = state.seatingTables.get(table.id);
       if (
-        !stored ||
-        stored.status !== "pending" ||
-        stored.externalReference !== pending.externalReference ||
-        !current ||
-        current.orgId !== job.orgId ||
-        current.version !== expectedVersion
+        !existing ||
+        existing.orgId !== table.orgId ||
+        existing.version !== expectedVersion
       ) {
         throw new AppError(
           "CONFLICT",
           "The record was changed by someone else",
         );
       }
-      state.jobs.set(job.id, job);
+      // Every commit restates occupancy, exactly as the real one does, so no
+      // caller has to say whether this particular change moved anything.
+      if (spaceIsTaken(state, table)) {
+        throw new AppError("CONFLICT", "That space is already occupied");
+      }
+      state.seatingTables.set(table.id, table);
       state.operations.set(operation.id, operation);
-      state.accountingExports.set(key, {
-        ...stored,
-        status: "completed",
-        operationId: operation.id,
-        completedAt: operation.performedAt,
-      });
+      applyMarkUndone(state, markUndone, operation.id);
     },
   };
 }
@@ -421,21 +401,15 @@ function createIdempotencyStore(state: InMemoryState): IdempotencyStore {
   };
 }
 
-/**
- * Trivial stand-in for the real vendor adapter (blueprint B22), just enough
- * to make `Dependencies` complete for tests that do not exercise
- * `sendJobToAccounting` themselves. T27 adds the real, independently tested
- * mock at `src/infrastructure/mock/mock-accounting.ts`.
- */
+/** A complete `Dependencies`, backed by the maps above. */
 export function createInMemoryDependencies(
   options: InMemoryDependenciesOptions = {},
 ): InMemoryDependencies {
   const state: InMemoryState = options.state ?? {
-    customers: new Map(),
-    jobs: new Map(),
+    events: new Map(),
+    seatingTables: new Map(),
     operations: new Map(),
     idempotency: new Map(),
-    accountingExports: new Map(),
     memberships: new Map(),
   };
 
@@ -443,12 +417,10 @@ export function createInMemoryDependencies(
     clock: createClock(options.now ?? DEFAULT_NOW),
     ids: createIdGenerator(options.ids),
     membership: createMembershipReader(state),
-    customers: createCustomerRepository(state),
-    jobs: createJobRepository(state),
+    events: createEventRepository(state),
+    seatingTables: createSeatingTableRepository(state),
     operations: createOperationRepository(state),
     idempotency: createIdempotencyStore(state),
-    accounting: options.accounting ?? createMockAccountingSystem(),
-    accountingExports: createAccountingExportRepository(state),
     state,
   };
 }

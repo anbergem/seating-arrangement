@@ -78,7 +78,7 @@ A fork keeps git ancestry, which makes `git merge upstream/main` possible. That 
 advantage and is mostly a trap for this kind of application:
 
 - **The interesting changes conflict.** An application replaces the sample domain entirely.
-  Every upstream change to `src/domain/job.ts` conflicts with a file the application deleted,
+  Every upstream change to `src/domain/seating-table.ts` conflicts with a file the application deleted,
   and every upstream change to the sample UI conflicts with a UI that looks nothing like it.
 - **Merging becomes a habit rather than a decision.** The whole point of taking an upstream
   change is deciding you want it. A merge that mostly succeeds invites accepting things nobody
@@ -183,7 +183,7 @@ gh pr create
 
 Before you send it, check the change carries nothing of the customer's: no company name, no
 real email address, no hostname, no account id, no database id, no data. The template's own
-rule is that sample names are `Acme Services`, `Example Customer A` and addresses under
+rule is that sample names are `Acme Services`, `Spring Gala` and addresses under
 `example.invalid` — hold a contribution to the same standard.
 
 If the fix is in the framework rather than in this template, it goes to
@@ -252,7 +252,8 @@ For whoever maintains this repository:
 - **The sample application is documentation.** It exists so the architecture is visible, and it
   earns its keep by being small enough to read in an afternoon. Adding a feature to it makes
   every application built from it start heavier. The bar is: does this demonstrate a boundary
-  nothing else demonstrates? `send-job-to-accounting` met it. A second integration would not.
+  nothing else demonstrates? The accounting export the template once shipped met it; a second
+  integration would not. (`docs/integrations.md` keeps the pattern; the code is gone.)
 - **Every document must stay runnable.** Every command in every document in this repository
   either exists in `package.json` or is a `scripts/` entry point, and the pull request that
   changed a script also changed the document that names it. A document that lies is worse than

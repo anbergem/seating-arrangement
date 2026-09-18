@@ -39,7 +39,7 @@ import stylesheet from "./global.css?url";
 configureTracking({
   getDefaultProps: (_name, properties) => ({
     ...properties,
-    app: "example-jobs",
+    app: "seating-arrangement",
     template: "chat",
   }),
 });
@@ -136,14 +136,7 @@ function AppContent() {
           </CommandMenu.Item>
           <CommandMenu.Item
             onSelect={() => navigate("/settings/agent")}
-            keywords={[
-              "agent",
-              "context",
-              "files",
-              "connections",
-              "jobs",
-              "access",
-            ]}
+            keywords={["agent", "context", "files", "connections", "access"]}
           >
             <IconHierarchy2 size={16} />
             {t("settings.openAgentSettings")}

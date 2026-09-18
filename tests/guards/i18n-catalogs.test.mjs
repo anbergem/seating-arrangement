@@ -97,11 +97,17 @@ test("guard rejects a placeholder the framework never substitutes", () => {
 });
 
 test("guard expands finite dynamic translation families", () => {
+  // `activity.kinds.` is one of the registered families in
+  // `scripts/check-i18n-catalogs.mjs`; a catalog that carries only one of its
+  // three members has to be reported for the other two.
   const result = fixture(
-    '{ status: { active: "Active" } }',
-    '{ status: { active: "Aktiv" } }',
-    "export const x = (status: string) => t(`status.${status}`);",
+    '{ activity: { kinds: { forward: "Change" } } }',
+    '{ activity: { kinds: { forward: "Endring" } } }',
+    "export const x = (kind: string) => t(`activity.kinds.${kind}`);",
   );
   assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /missing dynamic en-US key status\.all/);
+  assert.match(
+    result.stderr,
+    /missing dynamic en-US key activity\.kinds\.undo/,
+  );
 });

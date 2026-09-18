@@ -2,7 +2,7 @@
 set -euo pipefail
 umask 077
 
-D1_DATABASE="${D1_DATABASE:-example-jobs-production}"
+D1_DATABASE="${D1_DATABASE:-seating-arrangement-production}"
 WRANGLER_ENV="${WRANGLER_ENV:-production}"
 BACKUP_DIR="${BACKUP_DIR:-backups}"
 BACKUP_S3_REGION="${BACKUP_S3_REGION:-auto}"
@@ -29,7 +29,7 @@ sql_file="${BACKUP_DIR}/${base}"
 pnpm exec wrangler d1 export "$D1_DATABASE" --remote --env "$WRANGLER_ENV" --output "$sql_file" --skip-confirmation
 test -s "$sql_file"
 grep -Fq "CREATE TABLE" "$sql_file"
-grep -Fq "customers" "$sql_file"
+grep -Fq "events" "$sql_file"
 gzip -9 "$sql_file"
 artifact="${sql_file}.gz"
 

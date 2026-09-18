@@ -15,19 +15,22 @@
  * history, it just cannot be undone.
  */
 
-import type { AccountingExport } from "../../application/ports";
-import type { AccountingInvoiceDraft } from "../../application/ports/external-accounting";
 import type {
-  Customer,
-  CustomerStatus,
+  Event,
+  EventStatus,
   InverseCommand,
-  Job,
-  JobStatus,
   Operation,
   OperationClassification,
   OperationKind,
   ResourceType,
+  Seat,
+  Rotation,
+  SeatingTable,
+  SeatingTableStatus,
+  TableShape,
+  TableShapeKind,
 } from "../../domain";
+import { ROTATIONS, seatCount, TABLE_SHAPE_KINDS } from "../../domain";
 import { logWarning } from "../logging";
 
 export type Row = Record<string, unknown>;
@@ -61,6 +64,16 @@ function integer(row: Row, column: string): number {
   return fail(column, value);
 }
 
+/** SQLite has no boolean: the column is `INTEGER NOT NULL CHECK (c IN (0, 1))`
+ * and comes back as a number, or as a bigint on a driver in that integer mode.
+ * A value outside 0/1 is a corrupt row, not a truthiness question. */
+function boolean(row: Row, column: string): boolean {
+  const value = integer(row, column);
+  if (value === 0) return false;
+  if (value === 1) return true;
+  return fail(column, row[column]);
+}
+
 /** The column is a CHECK-constrained enum in the schema (B10); this is the
  * TypeScript half of the same constraint. */
 function enumeration<T extends string>(
@@ -74,15 +87,14 @@ function enumeration<T extends string>(
     : fail(column, value);
 }
 
-const CUSTOMER_STATUSES: readonly CustomerStatus[] = ["active", "archived"];
-const JOB_STATUSES: readonly JobStatus[] = [
-  "scheduled",
-  "in_progress",
-  "completed",
+const OPERATION_KINDS: readonly OperationKind[] = ["forward", "undo", "redo"];
+const RESOURCE_TYPES: readonly ResourceType[] = ["event", "seating_table"];
+const EVENT_STATUSES: readonly EventStatus[] = ["active", "archived"];
+const SEATING_TABLE_STATUSES: readonly SeatingTableStatus[] = [
+  "active",
   "archived",
 ];
-const OPERATION_KINDS: readonly OperationKind[] = ["forward", "undo", "redo"];
-const RESOURCE_TYPES: readonly ResourceType[] = ["customer", "job"];
+const SHAPE_KINDS: readonly TableShapeKind[] = TABLE_SHAPE_KINDS;
 const CLASSIFICATIONS: readonly OperationClassification[] = [
   "reversible",
   "compensatable",
@@ -127,15 +139,57 @@ function jsonObject(
   return parsed as Record<string, unknown>;
 }
 
-export function toCustomer(row: Row): Customer {
+/**
+ * Parses the `seats` column, strictly.
+ *
+ * Unlike `operations.payload`, this is not optional decoration: a seating table
+ * whose seats cannot be read is not a domain object at all, so a bad value
+ * throws the way every other column does rather than degrading to `null`. The
+ * seat list is also cross-checked against the columns that determine its
+ * shape, so a row whose JSON and whose `kind`/`size`/`end_seats` disagree is
+ * refused here instead of producing a table that renders wrong.
+ */
+/** The arm lengths, as stored. Their number and range are the domain's
+ * business; all this insists on is a short array of whole numbers. */
+/**
+ * The authored half of each seat, in the same clockwise order the shape
+ * derives. The count is cross-checked against the shape, so a row whose seats
+ * and whose kind, size and end seats disagree is refused here rather than
+ * rendering wrong.
+ */
+function seats(row: Row, shape: TableShape): Seat[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text(row, "seats"));
+  } catch {
+    return fail("seats", row.seats);
+  }
+  if (!Array.isArray(parsed) || parsed.length !== seatCount(shape)) {
+    return fail("seats", row.seats);
+  }
+  return parsed.map((entry) => {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return fail("seats", row.seats);
+    }
+    const seat = entry as Record<string, unknown>;
+    const label = seat.label;
+    const present = seat.present;
+    if (typeof label !== "string" || typeof present !== "boolean") {
+      return fail("seats", row.seats);
+    }
+    return { label, present };
+  });
+}
+
+export function toEvent(row: Row): Event {
   return {
     id: text(row, "id"),
     orgId: text(row, "org_id"),
     name: text(row, "name"),
-    email: nullableText(row, "email"),
-    phone: nullableText(row, "phone"),
-    notes: nullableText(row, "notes"),
-    status: enumeration(row, "status", CUSTOMER_STATUSES),
+    startsAt: text(row, "starts_at"),
+    roomWidth: integer(row, "room_width"),
+    roomHeight: integer(row, "room_height"),
+    status: enumeration(row, "status", EVENT_STATUSES),
     version: integer(row, "version"),
     createdBy: text(row, "created_by"),
     createdAt: text(row, "created_at"),
@@ -143,20 +197,27 @@ export function toCustomer(row: Row): Customer {
   };
 }
 
-export function toJob(row: Row): Job {
+export function toSeatingTable(row: Row): SeatingTable {
+  const rotation = integer(row, "rotation");
+  if (!(ROTATIONS as readonly number[]).includes(rotation)) {
+    fail("rotation", row.rotation);
+  }
+  const shape: TableShape = {
+    kind: enumeration(row, "kind", SHAPE_KINDS),
+    size: integer(row, "size"),
+    endSeats: boolean(row, "end_seats"),
+    rotation: rotation as Rotation,
+  };
   return {
     id: text(row, "id"),
     orgId: text(row, "org_id"),
-    customerId: text(row, "customer_id"),
-    title: text(row, "title"),
-    description: text(row, "description"),
-    status: enumeration(row, "status", JOB_STATUSES),
-    scheduledAt: text(row, "scheduled_at"),
-    assignedTo: nullableText(row, "assigned_to"),
-    completedAt: nullableText(row, "completed_at"),
-    archivedAt: nullableText(row, "archived_at"),
-    accountingReference: nullableText(row, "accounting_reference"),
-    accountingSentAt: nullableText(row, "accounting_sent_at"),
+    eventId: text(row, "event_id"),
+    name: text(row, "name"),
+    ...shape,
+    gridX: integer(row, "grid_x"),
+    gridY: integer(row, "grid_y"),
+    seats: seats(row, shape),
+    status: enumeration(row, "status", SEATING_TABLE_STATUSES),
     version: integer(row, "version"),
     createdBy: text(row, "created_by"),
     createdAt: text(row, "created_at"),
@@ -164,26 +225,58 @@ export function toJob(row: Row): Job {
   };
 }
 
-export function toAccountingExport(row: Row): AccountingExport {
-  const raw = text(row, "request_json");
-  let request: unknown;
-  try {
-    request = JSON.parse(raw);
-  } catch {
-    throw new Error("database row: accounting export request_json is invalid");
-  }
-  return {
-    orgId: text(row, "org_id"),
-    jobId: text(row, "job_id"),
-    idempotencyKey: text(row, "idempotency_key"),
-    request: request as AccountingInvoiceDraft,
-    status: enumeration(row, "status", ["pending", "completed"] as const),
-    externalReference: nullableText(row, "external_reference"),
-    operationId: nullableText(row, "operation_id"),
-    requestedBy: text(row, "requested_by"),
-    requestedAt: text(row, "requested_at"),
-    completedAt: nullableText(row, "completed_at"),
-  };
+/** The writer-side argument order for `INSERT_EVENT`, written once. */
+export function eventInsertArgs(event: Event): unknown[] {
+  return [
+    event.id,
+    event.orgId,
+    event.name,
+    event.startsAt,
+    event.roomWidth,
+    event.roomHeight,
+    event.status,
+    event.version,
+    event.createdBy,
+    event.createdAt,
+    event.updatedAt,
+  ];
+}
+
+/** The writer-side argument order for `UPDATE_EVENT_VERSIONED`'s SET list,
+ * written once. The three guard arguments are the caller's. */
+export function eventUpdateArgs(event: Event): unknown[] {
+  return [
+    event.name,
+    event.startsAt,
+    event.roomWidth,
+    event.roomHeight,
+    event.status,
+    event.version,
+    event.updatedAt,
+  ];
+}
+
+/** The writer-side argument order for `INSERT_SEATING_TABLE_IF_ACTIVE_EVENT`,
+ * written once. */
+export function seatingTableInsertArgs(table: SeatingTable): unknown[] {
+  return [
+    table.id,
+    table.orgId,
+    table.eventId,
+    table.name,
+    table.kind,
+    table.size,
+    table.endSeats ? 1 : 0,
+    table.rotation,
+    table.gridX,
+    table.gridY,
+    JSON.stringify(table.seats),
+    table.status,
+    table.version,
+    table.createdBy,
+    table.createdAt,
+    table.updatedAt,
+  ];
 }
 
 export function toOperation(row: Row): Operation {

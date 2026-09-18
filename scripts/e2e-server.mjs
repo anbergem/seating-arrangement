@@ -29,7 +29,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("E2E_PORT must be an integer from 1 to 65535");
 }
 const baseUrl = `http://127.0.0.1:${port}`;
-const temporary = mkdtempSync(path.join(tmpdir(), "example-jobs-e2e-"));
+const temporary = mkdtempSync(path.join(tmpdir(), "seating-arrangement-e2e-"));
 const persistTo = path.join(temporary, "wrangler-state");
 const configFile = path.join(temporary, "wrangler.json");
 // Playwright passes this path explicitly (`--state-file`) so the reset helper
@@ -151,7 +151,7 @@ try {
   rmSync(stateFile, { force: true });
   await assertPortAvailable(port);
   const config = {
-    name: "example-jobs-e2e",
+    name: "seating-arrangement-e2e",
     main: path.join(repoRoot, "dist/_worker.js/index.js"),
     compatibility_date: "2026-09-05",
     compatibility_flags: ["nodejs_compat"],
@@ -169,7 +169,7 @@ try {
     d1_databases: [
       {
         binding: "DB",
-        database_name: "example-jobs-local",
+        database_name: "seating-arrangement-local",
         database_id: "00000000-0000-0000-0000-000000000000",
         migrations_dir: path.join(repoRoot, "migrations"),
       },
@@ -182,7 +182,7 @@ try {
     "d1",
     "migrations",
     "apply",
-    "example-jobs-local",
+    "seating-arrangement-local",
     "--local",
     "--persist-to",
     persistTo,
@@ -233,7 +233,9 @@ try {
 
   await startWorker();
 
-  const directory = mkdtempSync(path.join(tmpdir(), "example-jobs-e2e-seed-"));
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "seating-arrangement-e2e-seed-"),
+  );
   try {
     const sqlFile = path.join(directory, "scenario.sql");
     writeFileSync(sqlFile, `${scenarioSql().scenarioSql.join("\n")}\n`);
@@ -242,7 +244,7 @@ try {
       "wrangler",
       "d1",
       "execute",
-      "example-jobs-local",
+      "seating-arrangement-local",
       "--local",
       "--persist-to",
       persistTo,

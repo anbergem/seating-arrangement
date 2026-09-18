@@ -13,8 +13,7 @@ import {
   type ChatHistoryItem,
 } from "@agent-native/toolkit/chat-history";
 import {
-  IconBriefcase,
-  IconBuilding,
+  IconArmchair,
   IconHistory,
   IconLayoutSidebarLeftCollapse,
   IconLayoutSidebarLeftExpand,
@@ -37,15 +36,9 @@ import { cn } from "@/lib/utils";
 
 const navItems = [
   {
-    icon: IconBriefcase,
-    labelKey: "navigation.jobs",
-    href: "/jobs",
-    view: "app",
-  },
-  {
-    icon: IconBuilding,
-    labelKey: "navigation.customers",
-    href: "/customers",
+    icon: IconArmchair,
+    labelKey: "navigation.events",
+    href: "/events",
     view: "app",
   },
   {

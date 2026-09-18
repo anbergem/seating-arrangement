@@ -91,15 +91,19 @@ for (const key of new Set([...english.keys(), ...norwegian.keys()])) {
 
 const dynamicFamilies = {
   "activity.actions.": [
-    "archive-customer",
-    "archive-job",
-    "complete-job",
-    "create-customer",
-    "create-job",
+    "archive-event",
+    "archive-seating-table",
+    "bootstrap-event-layout",
+    "create-event",
+    "create-seating-table",
+    "label-seat",
+    "move-seating-table",
     "redo-operation",
-    "reschedule-job",
-    "send-job-to-accounting",
-    "start-job",
+    "remove-seat",
+    "reshape-seating-table",
+    "resize-room",
+    "restore-seat",
+    "rotate-seating-table",
     "undo-operation",
   ],
   "activity.kinds.": ["forward", "redo", "undo"],
@@ -115,14 +119,6 @@ const dynamicFamilies = {
     "NOT_FOUND",
     "UNKNOWN",
     "VALIDATION",
-  ],
-  "status.": [
-    "active",
-    "all",
-    "archived",
-    "completed",
-    "in_progress",
-    "scheduled",
   ],
 };
 

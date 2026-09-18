@@ -26,13 +26,14 @@ export interface ActivityItem {
   redoable: boolean;
 }
 
-/** The framework's own audit trail for one job, newest first. */
-export async function auditEventsForJob(
+/** The framework's own audit trail for one resource, newest first. */
+export async function auditEventsForTarget(
   request: APIRequestContext,
-  jobId: string,
+  targetType: string,
+  targetId: string,
 ): Promise<AuditEvent[]> {
   const response = await request.get(
-    `/_agent-native/actions/list-audit-events?targetType=job&targetId=${jobId}`,
+    `/_agent-native/actions/list-audit-events?targetType=${targetType}&targetId=${targetId}`,
   );
   expect(response.status(), await response.text()).toBe(200);
   const body = (await response.json()) as { events?: AuditEvent[] };

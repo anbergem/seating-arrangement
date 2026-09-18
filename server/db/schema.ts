@@ -1,4 +1,4 @@
-// Typed mirror of the app-owned tables in `migrations/0001_init.sql` (blueprint B10).
+// Typed mirror of the app-owned tables in `migrations/` (blueprint B10).
 //
 // This file is NOT the source of truth for the schema and it never creates or alters a
 // table: `migrations/*.sql` is applied by `wrangler d1 migrations apply` on D1 and by
@@ -11,18 +11,19 @@
 //
 // Constraints that Drizzle cannot express here (CHECK constraints, the composite
 // `PRIMARY KEY (org_id, action, key)` on `idempotency_keys`, the compound foreign key from
-// `jobs` to `customers`, and the indexes) live in the migration only. Columns and their
-// nullability are mirrored exactly.
+// `seating_tables` to `events`, and the indexes) live in the migration only. Columns and
+// their nullability are mirrored exactly.
 
 import { integer, table, text } from "@agent-native/core/db/schema";
 
-export const customers = table("customers", {
+export const events = table("events", {
   id: text("id").primaryKey(),
   orgId: text("org_id").notNull(),
   name: text("name").notNull(),
-  email: text("email"),
-  phone: text("phone"),
-  notes: text("notes"),
+  startsAt: text("starts_at").notNull(),
+  // The floor this event's tables stand on, in grid cells.
+  roomWidth: integer("room_width").notNull(),
+  roomHeight: integer("room_height").notNull(),
   status: text("status", { enum: ["active", "archived"] }).notNull(),
   version: integer("version").notNull(),
   createdBy: text("created_by").notNull(),
@@ -30,21 +31,26 @@ export const customers = table("customers", {
   updatedAt: text("updated_at").notNull(),
 });
 
-export const jobs = table("jobs", {
+export const seatingTables = table("seating_tables", {
   id: text("id").primaryKey(),
   orgId: text("org_id").notNull(),
-  customerId: text("customer_id").notNull(),
-  title: text("title").notNull(),
-  description: text("description").notNull().default(""),
-  status: text("status", {
-    enum: ["scheduled", "in_progress", "completed", "archived"],
-  }).notNull(),
-  scheduledAt: text("scheduled_at").notNull(),
-  assignedTo: text("assigned_to"),
-  completedAt: text("completed_at"),
-  archivedAt: text("archived_at"),
-  accountingReference: text("accounting_reference"),
-  accountingSentAt: text("accounting_sent_at"),
+  eventId: text("event_id").notNull(),
+  name: text("name").notNull(),
+  kind: text("kind", { enum: ["rectangle", "round"] }).notNull(),
+  // A rectangle's length, or a round table's diameter, in cells.
+  size: integer("size").notNull(),
+  // SQLite has no boolean; 0 or 1, per the migration's CHECK. Always 0 for a
+  // round table, which has no ends to seat.
+  endSeats: integer("end_seats").notNull(),
+  // Quarter turns clockwise: 0, 90, 180 or 270. Always 0 for a round table,
+  // whose square body turns into itself.
+  rotation: integer("rotation").notNull(),
+  gridX: integer("grid_x").notNull(),
+  gridY: integer("grid_y").notNull(),
+  // JSON text: the ordered seat list, `{label, present}` each. The footprint
+  // is derived from the shape, so no width or height is stored.
+  seats: text("seats").notNull(),
+  status: text("status", { enum: ["active", "archived"] }).notNull(),
   version: integer("version").notNull(),
   createdBy: text("created_by").notNull(),
   createdAt: text("created_at").notNull(),
@@ -56,7 +62,9 @@ export const operations = table("operations", {
   orgId: text("org_id").notNull(),
   kind: text("kind", { enum: ["forward", "undo", "redo"] }).notNull(),
   action: text("action").notNull(),
-  resourceType: text("resource_type", { enum: ["customer", "job"] }).notNull(),
+  resourceType: text("resource_type", {
+    enum: ["event", "seating_table"],
+  }).notNull(),
   resourceId: text("resource_id").notNull(),
   classification: text("classification", {
     enum: ["reversible", "compensatable", "irreversible"],
@@ -80,17 +88,4 @@ export const idempotencyKeys = table("idempotency_keys", {
   key: text("key").notNull(),
   resourceId: text("resource_id").notNull(),
   createdAt: text("created_at").notNull(),
-});
-
-export const accountingExports = table("accounting_exports", {
-  orgId: text("org_id").notNull(),
-  jobId: text("job_id").notNull(),
-  idempotencyKey: text("idempotency_key").notNull(),
-  requestJson: text("request_json").notNull(),
-  status: text("status", { enum: ["pending", "completed"] }).notNull(),
-  externalReference: text("external_reference"),
-  operationId: text("operation_id"),
-  requestedBy: text("requested_by").notNull(),
-  requestedAt: text("requested_at").notNull(),
-  completedAt: text("completed_at"),
 });

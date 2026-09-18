@@ -1,8 +1,9 @@
 # Architecture
 
-This document explains how the application is put together and why. It uses the sample Job
-domain throughout, because a concrete example is easier to check against the code than a
-description of a pattern.
+This document explains how the application is put together and why. It uses the seating
+domain throughout — events, the tables on their floor plans, and the seats around those tables
+— because a concrete example is easier to check against the code than a description of a
+pattern.
 
 Read `AGENTS.md` for the rules a change must obey. This file is the reasoning behind them.
 
@@ -39,9 +40,8 @@ flowchart TB
     D1[("D1<br/>DB binding")]
   end
   ANTHROPIC["Anthropic API"]
-  VENDOR["Accounting vendor<br/>(mock in this starter)"]
 
-  SHELL -->|"GET /, /jobs, assets"| ASSETS
+  SHELL -->|"GET /, /events, assets"| ASSETS
   SHELL -->|"POST /_agent-native/actions/*"| W
   SHELL -->|"POST /_agent-native/agent-chat"| W
   MCPC["MCP client"] -->|"POST /mcp"| W
@@ -53,8 +53,8 @@ flowchart TB
 Two things about this picture are worth knowing before you debug anything.
 
 **`/` is a static file.** The Cloudflare build renders `dist/index.html` at build time and the
-`ASSETS` binding serves it for `GET /` before the Worker runs. The redirect to `/jobs` is
-therefore client-side (`<Navigate to="/jobs" replace />` in `app/routes/_index.tsx`); a loader
+`ASSETS` binding serves it for `GET /` before the Worker runs. The redirect to `/events` is
+therefore client-side (`<Navigate to="/events" replace />` in `app/routes/_index.tsx`); a loader
 `redirect()` there breaks the static-shell render, and a smoke test must expect 200 from `/`,
 never a 302.
 
@@ -78,24 +78,24 @@ A mutation from the browser, end to end:
 sequenceDiagram
   participant B as Browser
   participant M as Nitro middleware
-  participant A as actions/complete-job.ts
+  participant A as actions/move-seating-table.ts
   participant R as runAppAction
-  participant U as completeJob (use case)
-  participant D as src/domain/job.ts
-  participant Repo as JobRepository (D1)
+  participant U as moveSeatingTable (use case)
+  participant D as src/domain/seating-table.ts
+  participant Repo as SeatingTableRepository (D1)
   participant Audit as agent_audit_log
 
-  B->>M: POST /_agent-native/actions/complete-job<br/>X-Agent-Native-Frontend: 1
+  B->>M: POST /_agent-native/actions/move-seating-table<br/>X-Agent-Native-Frontend: 1
   M->>M: security headers; session -> userEmail, orgId
   M->>A: validate args against the Zod schema
   A->>R: run(args, ctx)
   R->>Repo: getRole(orgId, userEmail)
-  R->>U: completeJob(deps, actor, args)
-  U->>U: requireCapability(actor, "jobs:transition")
-  U->>Repo: getById(orgId, jobId)
-  U->>D: completeJob(job, now)
-  D-->>U: next job, version + 1
-  U->>Repo: commit({ job: next, expectedVersion, operation })
+  R->>U: moveSeatingTable(deps, actor, args)
+  U->>U: requireCapability(actor, "seating:write")
+  U->>Repo: getById(orgId, tableId), list(orgId, { eventId })
+  U->>D: moveSeatingTable(table, to, siblings, now)
+  D-->>U: next table, version + 1
+  U->>Repo: commit({ table: next, expectedVersion, operation })
   Repo->>Repo: one atomic batch, both statements guarded on expectedVersion
   Repo-->>U: ok, or CONFLICT when zero rows matched
   U-->>R: { resource, operationId }
@@ -133,19 +133,22 @@ to import infrastructure.
 
 ```mermaid
 flowchart TB
-  AF["actions/complete-job.ts<br/><br/>description (what the agent reads)<br/>schema (Zod)<br/>audit: target + summary<br/>mcpTool: true"]
+  AF["actions/move-seating-table.ts<br/><br/>description (what the agent reads)<br/>schema (Zod)<br/>audit: target + summary<br/>mcpTool: true"]
   RA["runAppAction(ctx, name, fn)<br/><br/>1. getDependencies()<br/>2. resolveActor(ctx) — session only<br/>3. fn(actor, deps)<br/>4. one structured log line<br/>5. fail(message, code, status)"]
-  UC["completeJob(deps, actor, input)<br/><br/>1. requireCapability<br/>2. load, scoped to actor.orgId<br/>3. expectedVersion check<br/>4. domain transition<br/>5. build the Operation + inverse<br/>6. one atomic commit"]
+  UC["moveSeatingTable(deps, actor, input)<br/><br/>1. requireCapability<br/>2. load, scoped to actor.orgId<br/>3. expectedVersion check<br/>4. domain transition<br/>5. build the Operation + inverse<br/>6. one atomic commit"]
   AF --> RA --> UC
 ```
 
-The whole of `actions/complete-job.ts`, minus the strings:
+The whole of `actions/move-seating-table.ts`, minus the strings:
 
 ```ts
 export default defineAction({
-  description: "Mark a job as completed. …Reversible with undo-operation…",
+  description:
+    "Move a table to a different place on its event's floor plan. …Reversible…",
   schema: z.object({
-    jobId: z.string().min(1).describe("Id of the job to complete"),
+    tableId: z.string().min(1).describe("Id of the table to move"),
+    gridX: z.number().int().min(0).describe("New left edge in grid cells"),
+    gridY: z.number().int().min(0).describe("New top edge in grid cells"),
     expectedVersion: z
       .number()
       .int()
@@ -155,28 +158,52 @@ export default defineAction({
   }),
   mcpTool: true,
   audit: {
-    target: (args) => ({ type: "job", id: args.jobId, visibility: "org" }),
-    summary: (args) => `Completed job ${args.jobId}`,
+    target: (args) => ({
+      type: "seating_table",
+      id: args.tableId,
+      visibility: "org",
+    }),
+    summary: (args) =>
+      `Moved table ${args.tableId} to ${args.gridX},${args.gridY}`,
   },
   run: (args, ctx) =>
-    runAppAction(ctx, "complete-job", (actor, deps) =>
-      completeJob(deps, actor, args),
+    runAppAction(ctx, "move-seating-table", (actor, deps) =>
+      moveSeatingTable(deps, actor, args),
     ),
 });
 ```
 
-And the use case it delegates to, `src/application/use-cases/complete-job.ts`: require
-`jobs:transition`; load the job scoped to `actor.orgId` and 404 if it is not there; refuse with
-`CONFLICT` if `expectedVersion` disagrees; call the domain's `completeJob(job, now)`, which
-throws `INVARIANT` from `completed` or `archived`; build an `Operation` whose `inverse` is
-`{ type: "restore-job-status", previous: { status, completedAt, archivedAt } }`; and commit the
-new job and that operation in one atomic batch, both statements guarded on the version the
-caller read.
+And the use case it delegates to, `src/application/use-cases/move-seating-table.ts`: require
+`seating:write`; load the table scoped to `actor.orgId` and 404 if it is not there; refuse with
+`CONFLICT` if `expectedVersion` disagrees; load the event's other tables and call the domain's
+`moveSeatingTable(table, to, siblings, now)`, which throws `INVARIANT` when the destination is
+off the grid or on top of one of them; build an `Operation` whose `inverse` is
+`{ type: "restore-seating-table-position", previous: { gridX, gridY } }`; and commit the new
+table, that operation and the table's whole occupancy in one atomic batch, every statement
+guarded on the version the caller read.
 
-The action name is the file name. `actions/complete-job.ts` is `complete-job` as an agent tool,
-as `POST /_agent-native/actions/complete-job`, as an MCP tool, and as
-`pnpm action complete-job`. That is the mechanism behind parity: there is nowhere else to put a
-second implementation.
+Occupancy is worth pausing on, because it is the one rule in this application that a version
+check cannot express. Two people dragging two _different_ tables onto the same cell each pass
+their own version check — neither has touched the other's row — and each passed the domain's
+overlap check against a snapshot taken before the other wrote.
+
+So it is stated as data instead. `seating_cells` holds one row per cell a table covers, keyed
+`(org_id, event_id, x, y)`, and every seating write rewrites its table's cells inside the same
+batch as the table itself. The second writer violates that primary key, loses the whole batch,
+and is told `CONFLICT` rather than leaving an overlapping floor plan behind. The domain check
+stays because it produces the better message in the ordinary single-user case; the database is
+the authority.
+
+Cells rather than a bounding rectangle, because a rectangle cannot describe the shapes people
+build. A table with end seats leaves its four corners empty, and a seat that has been taken
+away leaves its own cell empty — which is exactly how two tables are brought together at a
+right angle to make an L or a U: the chairs at the join come off, and the other
+table's body stands where they were.
+
+The action name is the file name. `actions/move-seating-table.ts` is `move-seating-table` as an
+agent tool, as `POST /_agent-native/actions/move-seating-table`, as an MCP tool, and as
+`pnpm action move-seating-table`. That is the mechanism behind parity: there is nowhere else to
+put a second implementation.
 
 `docs/actions-and-use-cases.md` has the full anatomy, the error table, the idempotency rules
 and the action catalogue.
@@ -187,34 +214,33 @@ and the action catalogue.
 flowchart LR
   subgraph "Five surfaces"
     direction TB
-    S1["UI: useActionMutation('complete-job')"]
-    S2["Agent: tool call complete-job"]
-    S3["MCP: tools/call complete-job"]
-    S4["HTTP: POST /_agent-native/actions/complete-job"]
-    S5["CLI: pnpm action complete-job"]
+    S1["UI: useActionMutation('label-seat')"]
+    S2["Agent: tool call label-seat"]
+    S3["MCP: tools/call label-seat"]
+    S4["HTTP: POST /_agent-native/actions/label-seat"]
+    S5["CLI: pnpm action label-seat"]
   end
   S1 --> ACT
   S2 --> ACT
   S3 --> ACT
   S4 --> ACT
   S5 --> ACT
-  ACT["actions/complete-job.ts"] --> UC["completeJob use case"]
+  ACT["actions/label-seat.ts"] --> UC["labelSeat use case"]
   UC --> DOM["domain + D1"]
   UC --> AUD["audit row<br/>caller differs, nothing else"]
 ```
 
-| Surface       | How it is invoked                          | `ctx.caller` | Identity from                      |
-| ------------- | ------------------------------------------ | ------------ | ---------------------------------- |
-| UI click      | `useActionMutation("complete-job")`        | `frontend`   | Session cookie                     |
-| Agent request | the model calls the `complete-job` tool    | `tool`       | The signed-in user's session       |
-| MCP call      | `tools/call` with `complete-job`           | `mcp`        | Bearer token or session            |
-| HTTP call     | `POST /_agent-native/actions/complete-job` | `http`       | Session cookie                     |
-| CLI call      | `pnpm action complete-job '{"jobId":"…"}'` | `cli`        | `AGENT_USER_EMAIL`, `AGENT_ORG_ID` |
+| Surface       | How it is invoked                             | `ctx.caller` | Identity from                      |
+| ------------- | --------------------------------------------- | ------------ | ---------------------------------- |
+| UI click      | `useActionMutation("label-seat")`             | `frontend`   | Session cookie                     |
+| Agent request | the model calls the `label-seat` tool         | `tool`       | The signed-in user's session       |
+| MCP call      | `tools/call` with `label-seat`                | `mcp`        | Bearer token or session            |
+| HTTP call     | `POST /_agent-native/actions/label-seat`      | `http`       | Session cookie                     |
+| CLI call      | `pnpm action label-seat '{"tableId":"…", …}'` | `cli`        | `AGENT_USER_EMAIL`, `AGENT_ORG_ID` |
 
 All five reach the same action, the same use case, the same capability check and the same SQL.
-`tests/e2e/parity.spec.ts` proves it the only way that counts: it performs the same completion
-through the UI and over HTTP as different users and asserts the two audit rows differ **only**
-in `caller`.
+`tests/e2e/parity.spec.ts` proves it the only way that counts: it writes the same seat label
+through the UI and over HTTP and asserts the two audit rows differ **only** in `caller`.
 
 The agent's tool surface is deliberately narrow: `frameworkTools: { preset: "minimal",
 database: "off", audit: true }`. The framework's generic database tools are off on every
@@ -239,7 +265,7 @@ flowchart TB
   MEM -->|no| E403B["AUTHORIZATION 403<br/>Not a member of the active organization"]
   MEM -->|yes| ACTOR["Actor { userEmail, orgId, role, caller }"]
   ACTOR --> CAP{"role has the<br/>required capability?"}
-  CAP -->|no| E403C["AUTHORIZATION 403<br/>Role member may not customers:archive"]
+  CAP -->|no| E403C["AUTHORIZATION 403<br/>Role member may not events:archive"]
   CAP -->|yes| RUN["the use case runs"]
 ```
 
@@ -248,27 +274,31 @@ password depending on the environment. The application never implements it and n
 a token.
 
 **Authorization** is ours, and it is not the framework's `authorize` hook. `src/application/authorization.ts`
-maps the three organization roles to ten capabilities, and every use case calls
+maps the three organization roles to seven capabilities, and every use case calls
 `requireCapability(actor, cap)` on itself. Two reasons: the check is then unit-testable with
 plain in-memory doubles and no framework, and it is provably identical on every surface because
 there is one call site per use case and no way to reach the use case without passing it.
 
-| Capability                                                       | member | admin | owner |
-| ---------------------------------------------------------------- | :----: | :---: | :---: |
-| `customers:read`, `customers:create`                             |   ✓    |   ✓   |   ✓   |
-| `jobs:read`, `jobs:create`, `jobs:transition`, `jobs:reschedule` |   ✓    |   ✓   |   ✓   |
-| `history:read`, `history:undo`                                   |   ✓    |   ✓   |   ✓   |
-| `customers:archive`                                              |   —    |   ✓   |   ✓   |
-| `jobs:export`                                                    |   —    |   ✓   |   ✓   |
+| Capability                      | member | admin | owner |
+| ------------------------------- | :----: | :---: | :---: |
+| `events:read`, `events:create`  |   ✓    |   ✓   |   ✓   |
+| `seating:read`, `seating:write` |   ✓    |   ✓   |   ✓   |
+| `history:read`, `history:undo`  |   ✓    |   ✓   |   ✓   |
+| `events:archive`                |   —    |   ✓   |   ✓   |
+
+Every seating change shares one capability on purpose: there is no role that should be able to
+move a table but not label a seat, and the rule of thumb in `docs/adding-a-feature.md` is to
+reuse a capability unless a role should hold one half of it. `events:archive` is separate
+because it hides a whole floor plan at once.
 
 The UI hides the archive button from a member using `useOrgRole()`. That is courtesy, not
-security: `tests/e2e/authorization.spec.ts` calls `archive-customer` over HTTP as a member and
+security: `tests/e2e/authorization.spec.ts` calls `archive-event` over HTTP as a member and
 asserts 403.
 
 History has its own rule, because undo must not become a capability laundering service:
 reversing an operation requires `history:undo` **and** the capability for the business effect
-the reversal has. A member may compensate their own `create-customer` (it archives the customer
-they just made), but may not undo an admin's archive — that needs `customers:archive`.
+the reversal has. A member may compensate their own `create-event` (it archives the event they
+just made), but may not undo an admin's archive — that needs `events:archive`.
 `src/application/history-policy.ts` is the whole policy, and the activity feed's Undo/Redo
 buttons are computed from it, evaluated against the caller's **current** role.
 
@@ -297,20 +327,20 @@ Four properties hold together:
    imports `src/infrastructure/d1/sql.ts` and asserts it for every exported statement; the
    optional filter fragments are checked against a fixed `AND <column> <op> ?` allow-list, so
    no caller value can reach the SQL text.
-4. **A foreign record is `NOT_FOUND`, never `AUTHORIZATION`.** "That job exists but is not
+4. **A foreign record is `NOT_FOUND`, never `AUTHORIZATION`.** "That event exists but is not
    yours" is information; the seed's second organization (`org_other`) exists so every layer can
    be tested for the leak. `tests/e2e/isolation.spec.ts` navigates an outsider to
-   `/jobs/job_scheduled` and asserts the not-found state, and `get-job` returns 404 over HTTP.
+   `/events/evt_gala` and asserts the not-found state, and `get-event` returns 404 over HTTP.
 
 ## 7. Layer boundaries
 
 ```mermaid
 flowchart TB
-  UI["app/ — React Router routes and components<br/>may import: @agent-native/core/client/*, react, src/domain types"]
+  UI["app/ — React Router routes and components<br/>may import: @agent-native/core/client/*, react, src/domain types and pure helpers"]
   ACT["actions/ — defineAction declarations<br/>may import: src/interface, src/application types, zod"]
   INT["src/interface/ — runAppAction<br/>may import: src/application, src/infrastructure, @agent-native/core/action"]
   APP["src/application/ — use cases, ports, authorization, actor, errors<br/>may import: src/domain, src/application"]
-  DOM["src/domain/ — customer, job, operation, errors<br/>may import: src/domain. Nothing else. Not even zod."]
+  DOM["src/domain/ — event, seating-table, operation, errors<br/>may import: src/domain. Nothing else. Not even zod."]
   INF["src/infrastructure/ — D1 repositories, clock, ids, logging, container<br/>may import: src/domain, src/application, @agent-native/core/db|org|server, node:crypto"]
 
   UI --> ACT
@@ -333,7 +363,7 @@ Why each rule earns its keep:
 - **`src/domain` imports nothing.** Not `zod`, not `node:*`, not the framework. Time is an
   argument, ids are arguments, there is no I/O. That is what makes the transition rules
   testable in microseconds and readable without any context, and it is why upgrading the
-  framework cannot change what "completing a job" means.
+  framework cannot change what "two tables may not overlap" means.
 - **`src/application` cannot see the framework.** A use case that could reach `getDbExec()`
   would eventually reach it, and the layer would stop being testable with in-memory doubles.
   Dependencies arrive as a `Dependencies` object of plain interfaces.
@@ -350,46 +380,50 @@ binding of the request being served, so a cached executor could outlive its requ
 
 ## 8. Integration ports and adapters
 
+This application calls no external system, so there is no adapter to read here. The section
+stays because the boundary it describes is part of the architecture, and because the moment a
+seating plan has to be handed to a caterer, a venue or a printer, this is the shape that call
+has to take.
+
 The interesting case is not "we call an API". It is "we call an API and the call may have
-succeeded even though we never found out". The boundary is designed for that.
+succeeded even though we never found out".
 
 ```mermaid
 flowchart TB
-  UC["sendJobToAccounting use case"]
-  PORT{{"ExternalAccountingSystem port<br/>createInvoiceDraft(idempotencyKey, org, customer, job)"}}
-  MOCK["src/infrastructure/mock/mock-accounting.ts<br/>deterministic, vendor-idempotent, injectable failures"]
-  REAL["src/infrastructure/&lt;vendor&gt;/…<br/>your real adapter"]
-  EXPORTS[("accounting_exports<br/>durable pending request")]
-  JOBS[("jobs<br/>accounting_reference")]
+  UC["the use case"]
+  PORT{{"a port in src/application/ports/<br/>a plain interface, no vendor types"}}
+  MOCK["src/infrastructure/mock/…<br/>deterministic, vendor-idempotent, injectable failures"]
+  REAL["src/infrastructure/&lt;vendor&gt;/…<br/>the real adapter"]
+  PENDING[("a pending-request table<br/>durable, carries the payload and the key")]
+  OWNED[("the app-owned row<br/>the external reference")]
 
-  UC -->|"1. durable pending insert, version-guarded"| EXPORTS
+  UC -->|"1. durable pending insert, version-guarded"| PENDING
   UC -->|"2. vendor call with the stored payload"| PORT
   PORT --> MOCK
   PORT -.->|"swap in the container"| REAL
-  UC -->|"3. record result + operation, atomically"| JOBS
+  UC -->|"3. record result + operation, atomically"| OWNED
 ```
 
-Three rules, and `send-job-to-accounting` exists to demonstrate them with tests:
+Three rules any such feature has to obey:
 
 1. **A local write and a vendor call are two steps, never one transaction.** D1 has no
    distributed transaction and neither does the vendor. So an immutable pending request is
-   written first, carrying the exact payload and an idempotency key derived from our resource
-   id (`job:<jobId>`); only then is the vendor called; the "sent" state is a separate,
-   version-guarded commit. Nothing may precede the durable insert.
-2. **A retry reconciles, it does not repeat.** A timeout may mean the draft was accepted. The
-   request stays pending and the use case returns `EXTERNAL` with a message saying a retry will
-   reconcile it. The retry finds the stored request, asks the vendor with the same key, and
-   records the answer — even if the job has been archived in the meantime.
+   written first, carrying the exact payload and an idempotency key derived from our own
+   resource id; only then is the vendor called; the "sent" state is a separate, version-guarded
+   commit. Nothing may precede the durable insert.
+2. **A retry reconciles, it does not repeat.** A timeout may mean the request was accepted. The
+   pending row stays, the use case returns `EXTERNAL` with a message saying a retry will
+   reconcile it, and the retry asks the vendor with the same key and records the answer — even
+   if the local record has moved on in the meantime.
 3. **Undo applies only to data we own.** An external effect is classified `compensatable` (a
-   documented compensating command exists) or `irreversible`, never `reversible`.
-   `send-job-to-accounting` is `irreversible`, its action sets `needsApproval: true` so the
-   agent must obtain a human approval for that exact call, and a durable accounting intent
-   blocks any undo that would reopen the completed job — rechecked inside the atomic write, not
-   only before it.
+   documented compensating command exists) or `irreversible`, never `reversible`. An
+   irreversible action sets `needsApproval: true`, so the agent must obtain a human approval for
+   that exact call, and any undo that would contradict the external state has to be refused
+   inside the atomic write, not only before it.
 
-Swapping the mock for a real vendor is one new directory implementing the port plus one line in
-the container. Nothing above the port changes. `docs/integrations.md` walks the whole flow and
-says where the vendor's credentials belong.
+`docs/integrations.md` walks a worked example of the whole flow and says where a vendor's
+credentials belong. Nothing in this repository implements it today: the example there is
+illustrative, not a file you can open.
 
 ## 9. Audit, history and undo
 
@@ -414,21 +448,28 @@ sequenceDiagram
   participant U as User
   participant UO as undoOperation
   participant OP as operations
-  participant J as jobs
+  participant T as seating_tables
   U->>UO: undo-operation { operationId: op1 }
   UO->>OP: load op1
-  UO->>J: load the job
-  UO->>UO: canUndo(op1, job.version)
-  Note over UO: ok only when kind is forward or redo,<br/>classification is not irreversible,<br/>undone_by_operation_id is null,<br/>and job.version === op1.version_after
+  UO->>T: load the table, and its event's other tables
+  UO->>UO: canUndo(op1, table.version)
+  Note over UO: ok only when kind is forward or redo,<br/>classification is not irreversible,<br/>undone_by_operation_id is null,<br/>and table.version === op1.version_after
   UO->>UO: apply op1.inverse through the domain
-  UO->>J: one atomic batch: restore the job,<br/>insert the undo operation,<br/>mark op1 undone — all guarded
+  UO->>T: one atomic batch: restore the table,<br/>insert the undo operation,<br/>mark op1 undone — all guarded
   UO-->>U: { resource, operationId: undoOp }
 ```
 
-The version rule is the whole point. Completing `job_in_progress` moves it 2 → 3 and records
-`version_after: 3`. Undo is allowed only while the job is still at version 3. If anyone changed
-it since — the same user in another tab, a coworker, the agent — undo is refused with
+The version rule is the whole point. Labelling a seat on `tbl_head` moves it 3 → 4 and records
+`version_after: 4`. Undo is allowed only while the table is still at version 4. If anyone
+changed it since — the same user in another tab, a coworker, the agent — undo is refused with
 `CONFLICT: Newer changes exist; undo refused` rather than silently discarding that change.
+
+Seating adds a second way an undo can legitimately fail, and it is the more interesting one. A
+seating inverse restores a _place_, not just a value: `restore-seating-table-position` puts a
+table back where it stood, and that space may have been taken while it was away. So the restore
+functions in `src/domain/seating-table.ts` re-run the placement rules, and the write carries the
+same free-space predicate a forward move does. An undo that cannot be granted says so, with
+`INVARIANT: Tables may not overlap`, instead of producing a plan that violates its own rule.
 `tests/e2e/undo-conflict.spec.ts` performs exactly that race through the real UI and HTTP.
 
 An undo is itself an operation row (kind `undo`), which is what makes it visible in `/activity`
@@ -436,13 +477,16 @@ and what makes redo possible. `redo-operation` takes that undo row, walks to the
 operation it points at, and re-runs the original domain transition with the stored `payload`
 under the same version rule. Classification per command:
 
-| Command                                    | Classification  | Reversed by                                                   |
-| ------------------------------------------ | --------------- | ------------------------------------------------------------- |
-| `create-customer`, `create-job`            | `compensatable` | Archiving the new record; creates are never deleted or redone |
-| `archive-customer`                         | `reversible`    | `restore-customer` (needs `customers:archive`)                |
-| `reschedule-job`                           | `reversible`    | `restore-job-schedule` to the previous instant                |
-| `start-job`, `complete-job`, `archive-job` | `reversible`    | `restore-job-status` to the exact recorded triple             |
-| `send-job-to-accounting`                   | `irreversible`  | Nothing. The action says so, and undo refuses.                |
+| Command                                | Classification  | Reversed by                                                    |
+| -------------------------------------- | --------------- | -------------------------------------------------------------- |
+| `create-event`, `create-seating-table` | `compensatable` | Archiving the new record; creates are never deleted or redone  |
+| `archive-event`                        | `reversible`    | `restore-event` (needs `events:archive`)                       |
+| `move-seating-table`                   | `reversible`    | `restore-seating-table-position` to the recorded cell          |
+| `rotate-seating-table`                 | `reversible`    | `restore-seating-table-rotation`, and where it stood           |
+| `reshape-seating-table`                | `reversible`    | `restore-seating-table-shape`, seats and their labels included |
+| `remove-seat`, `restore-seat`          | `reversible`    | `restore-seat-presence` for that chair                         |
+| `label-seat`                           | `reversible`    | `restore-seat-label` to the name that was there                |
+| `archive-seating-table`                | `reversible`    | `restore-seating-table`, while the space is still free         |
 
 `docs/undo-and-history.md` has the algorithm, the refusal messages and the UI behaviour.
 
@@ -455,7 +499,7 @@ failures.
 flowchart TB
   subgraph DB["one D1 database"]
     FW["framework-owned (~50 tables)<br/>users, sessions, accounts,<br/>organizations, org_members, org_invitations,<br/>agent_audit_log, settings, agent runs"]
-    APP["app-owned (5 tables)<br/>customers, jobs, operations,<br/>idempotency_keys, accounting_exports"]
+    APP["app-owned (4 tables)<br/>events, seating_tables,<br/>operations, idempotency_keys"]
   end
   R1["the framework's own migration runners<br/>_better_auth_migrations, _org_migrations, …"] --> FW
   R2["migrations/*.sql<br/>wrangler d1 migrations apply | scripts/migrate-local.mjs"] --> APP
@@ -605,9 +649,11 @@ step-by-step restore. `docs/runbook.md` is the incident-time version.
 Each of these is a real option that was considered and rejected for this class of application —
 one company, 1–20 users, modest data, years of it.
 
-- **Generic CRUD actions.** `updateJob({ status })` moves the business rules to the caller and
-  gives the agent a tool whose name means nothing. `complete-job` carries the transition rule,
-  the audit summary, the inverse and the description the model reads.
+- **Generic CRUD actions.** `updateSeatingTable({ gridX, gridY, seats })` moves the business
+  rules to the caller and gives the agent a tool whose name means nothing. `move-seating-table`
+  and `label-seat` each carry their own rule, audit summary, inverse and description the model
+  reads — and `move-seating-table` is the one that knows a move needs the free-space guard while
+  a label does not.
 - **Direct frontend database access.** Every authorization check would have to be reimplemented
   in the client, where it is advice rather than enforcement. The browser gets actions.
 - **Unrestricted agent database access.** `database: "off"`. Model output is untrusted input;

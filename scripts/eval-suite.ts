@@ -46,7 +46,8 @@ console.log = (...args: unknown[]) => {
  * relative dates are answerable; `createAgentRunner` passes the system prompt
  * through untouched, so an evaluated agent has no idea what "today" is — and
  * rule 3 of the instructions forbids inventing one. Without this, "Show me
- * today's jobs" cannot be answered by an agent that follows its instructions.
+ * this week's events" cannot be answered by an agent that follows its
+ * instructions.
  *
  * The block is reproduced here rather than imported: `runtime-context` is not
  * in `@agent-native/core`'s export map. Keep it in step on upgrade — the

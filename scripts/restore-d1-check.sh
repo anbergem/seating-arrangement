@@ -8,7 +8,7 @@ fi
 
 backup="$1"
 test -f "$backup"
-scratch="$(mktemp -d "${TMPDIR:-/tmp}/example-jobs-restore.XXXXXX")"
+scratch="$(mktemp -d "${TMPDIR:-/tmp}/seating-arrangement-restore.XXXXXX")"
 trap 'rm -rf -- "$scratch"' EXIT
 sql_file="$scratch/restore.sql"
 persist="$scratch/wrangler-state"
@@ -29,14 +29,14 @@ esac
 
 test -s "$sql_file"
 grep -Fq "CREATE TABLE" "$sql_file"
-grep -Fq "customers" "$sql_file"
+grep -Fq "events" "$sql_file"
 
 {
   echo "Restore verification using isolated state: $persist"
-  pnpm exec wrangler d1 execute example-jobs-local --local --persist-to "$persist" --file "$sql_file" --yes
-  for table in customers jobs operations d1_migrations; do
+  pnpm exec wrangler d1 execute seating-arrangement-local --local --persist-to "$persist" --file "$sql_file" --yes
+  for table in events seating_tables operations d1_migrations; do
     echo "Count: $table"
-    pnpm exec wrangler d1 execute example-jobs-local --local --persist-to "$persist" \
+    pnpm exec wrangler d1 execute seating-arrangement-local --local --persist-to "$persist" \
       --command "SELECT COUNT(*) AS row_count FROM $table" --yes
   done
 } 2>&1 | tee "$report"

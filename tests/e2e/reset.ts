@@ -71,7 +71,9 @@ export function resetScenario(): void {
     throw new Error("e2e state file does not contain absolute Worker paths");
   }
   const scenario = scenarioSql();
-  const directory = mkdtempSync(path.join(tmpdir(), "example-jobs-e2e-"));
+  const directory = mkdtempSync(
+    path.join(tmpdir(), "seating-arrangement-e2e-"),
+  );
   const file = path.join(directory, "scenario.sql");
   try {
     writeFileSync(
@@ -85,7 +87,7 @@ export function resetScenario(): void {
         "wrangler",
         "d1",
         "execute",
-        "example-jobs-local",
+        "seating-arrangement-local",
         "--local",
         "--persist-to",
         persistTo,

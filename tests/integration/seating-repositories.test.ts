@@ -1,0 +1,595 @@
+/**
+ * The seating repositories against a real database (blueprint B18).
+ *
+ * The unit suite proves the use cases against `tests/fixtures/in-memory.ts`,
+ * whose `spaceIsTaken` is a hand-written mirror of the SQL. This is the half
+ * that proves the mirror is honest — that the `NOT EXISTS` predicate in
+ * `src/infrastructure/d1/sql.ts` really refuses an overlapping write, and
+ * really refuses it *inside* the statement rather than before it.
+ *
+ * That last part is what the concurrency tests below are for. They do not
+ * simulate a race by patching a hook, the way the unit suite has to; they write
+ * a real overlapping row through a second repository call and then let the
+ * first one's guarded statement run. If the predicate were missing, the write
+ * would succeed and the floor plan would end up overlapping itself.
+ *
+ * It runs against the framework's own executor (`getDbExec()`), so the atomic
+ * path exercised here is the one production uses.
+ */
+
+import { getDbExec } from "@agent-native/core/db";
+import { beforeAll, describe, expect, it } from "vitest";
+
+import { AppError } from "../../src/application/errors";
+import {
+  archiveSeatingTable,
+  cellKey,
+  cellsOf,
+  createEvent,
+  createSeatingTable,
+  labelSeat,
+  moveSeatingTable,
+  removeSeat,
+  rotateSeatingTable,
+  roomOf,
+  OPERATION_CLASSIFICATION,
+  type Event,
+  type FloorPlan,
+  type Operation,
+  type ResourceType,
+  type Rotation,
+  type SeatingTable,
+  type TableShapeKind,
+} from "../../src/domain";
+import { createEventsRepository } from "../../src/infrastructure/d1/events-repository";
+import { createSeatingTablesRepository } from "../../src/infrastructure/d1/seating-tables-repository";
+import { ORG_ACME_ID, ORG_OTHER_ID, OWNER_EMAIL } from "../fixtures/scenario";
+
+const events = createEventsRepository(getDbExec);
+const tables = createSeatingTablesRepository(getDbExec);
+
+/** The cells `seating_cells` actually holds for a table, sorted. Read directly
+ * rather than through a port, because the whole point of these tests is that
+ * the derived table really is being kept in step. */
+async function storedCells(tableId: string): Promise<string[]> {
+  const { rows } = await getDbExec().execute({
+    sql: "SELECT x, y FROM seating_cells WHERE org_id = ? AND table_id = ? ORDER BY x, y",
+    args: [ORG_ACME_ID, tableId],
+  });
+  return (rows as unknown as { x: number; y: number }[])
+    .map((row) => cellKey(Number(row.x), Number(row.y)))
+    .sort();
+}
+
+/** Every table this file plants lives in a default-sized room. */
+function plan(tables: readonly SeatingTable[] = []): FloorPlan {
+  return { room: roomOf(acmeEvent), tables };
+}
+
+function expectedCells(table: SeatingTable): string[] {
+  return cellsOf(table)
+    .map((cell) => cellKey(cell.x, cell.y))
+    .sort();
+}
+
+// Fixed values, never generated: a failing assertion points at the same row
+// every run (AGENTS.md).
+const CREATED_AT = "2026-09-01T09:00:00.000Z";
+const LATER = "2026-09-02T09:00:00.000Z";
+const STARTS_AT = "2026-12-05T18:00:00.000Z";
+
+let sequence = 0;
+function operationFor(input: {
+  action: string;
+  resourceType: ResourceType;
+  resourceId: string;
+  orgId: string;
+  versionBefore: number;
+  versionAfter: number;
+}): Operation {
+  sequence += 1;
+  return {
+    id: `op_seat_${sequence}`,
+    orgId: input.orgId,
+    kind: "forward",
+    action: input.action,
+    resourceType: input.resourceType,
+    resourceId: input.resourceId,
+    classification: OPERATION_CLASSIFICATION[input.action] ?? "reversible",
+    versionBefore: input.versionBefore,
+    versionAfter: input.versionAfter,
+    payload: { source: "integration-test" },
+    inverse: null,
+    relatedOperationId: null,
+    undoneByOperationId: null,
+    performedBy: OWNER_EMAIL,
+    performedVia: "test",
+    performedAt: input.versionBefore === 0 ? CREATED_AT : LATER,
+  };
+}
+
+const acmeEvent: Event = createEvent({
+  id: "repo_evt_acme",
+  orgId: ORG_ACME_ID,
+  name: "Integration Gala",
+  startsAt: STARTS_AT,
+  createdBy: OWNER_EMAIL,
+  now: CREATED_AT,
+});
+
+/** A floor plan of its own, so the round tables and the continuous run get
+ * empty ground instead of whatever the tests above left standing. */
+const lShapeEvent: Event = createEvent({
+  id: "repo_evt_lshape",
+  orgId: ORG_ACME_ID,
+  name: "Integration L",
+  startsAt: STARTS_AT,
+  createdBy: OWNER_EMAIL,
+  now: CREATED_AT,
+});
+
+const otherEvent: Event = createEvent({
+  id: "repo_evt_other",
+  orgId: ORG_OTHER_ID,
+  name: "Other Company Gala",
+  startsAt: STARTS_AT,
+  createdBy: OWNER_EMAIL,
+  now: CREATED_AT,
+});
+
+function table(input: {
+  id: string;
+  orgId?: string;
+  eventId?: string;
+  kind?: TableShapeKind;
+  size?: number;
+  endSeats?: boolean;
+  rotation?: Rotation;
+  gridX: number;
+  gridY: number;
+}): SeatingTable {
+  return createSeatingTable(
+    {
+      id: input.id,
+      orgId: input.orgId ?? ORG_ACME_ID,
+      eventId: input.eventId ?? acmeEvent.id,
+      name: input.id,
+      kind: input.kind ?? "rectangle",
+      size: input.size ?? 2,
+      endSeats: input.endSeats ?? false,
+      rotation: input.rotation ?? 0,
+      gridX: input.gridX,
+      gridY: input.gridY,
+      createdBy: OWNER_EMAIL,
+      now: CREATED_AT,
+    },
+    { room: roomOf(acmeEvent), tables: [] },
+  );
+}
+
+/** A version-guarded write, with the audit row every commit needs. */
+async function commit(
+  row: SeatingTable,
+  expectedVersion: number,
+  action: string,
+): Promise<void> {
+  await tables.commit({
+    table: row,
+    expectedVersion,
+    operation: operationFor({
+      action,
+      resourceType: "seating_table",
+      resourceId: row.id,
+      orgId: row.orgId,
+      versionBefore: expectedVersion,
+      versionAfter: row.version,
+    }),
+  });
+}
+
+async function insert(row: SeatingTable): Promise<void> {
+  await tables.create({
+    table: row,
+    operation: operationFor({
+      action: "create-seating-table",
+      resourceType: "seating_table",
+      resourceId: row.id,
+      orgId: row.orgId,
+      versionBefore: 0,
+      versionAfter: 1,
+    }),
+  });
+}
+
+beforeAll(async () => {
+  for (const event of [acmeEvent, lShapeEvent, otherEvent]) {
+    await events.create({
+      event,
+      operation: operationFor({
+        action: "create-event",
+        resourceType: "event",
+        resourceId: event.id,
+        orgId: event.orgId,
+        versionBefore: 0,
+        versionAfter: 1,
+      }),
+    });
+  }
+});
+
+describe("organization isolation", () => {
+  it("hides another organization's event and table entirely", async () => {
+    const foreign = table({
+      id: "repo_tbl_other",
+      orgId: ORG_OTHER_ID,
+      eventId: otherEvent.id,
+      gridX: 0,
+      gridY: 0,
+    });
+    await insert(foreign);
+
+    expect(await events.getById(ORG_ACME_ID, otherEvent.id)).toBeNull();
+    expect(await tables.getById(ORG_ACME_ID, foreign.id)).toBeNull();
+    expect(
+      (await tables.list(ORG_ACME_ID, {})).some((row) => row.id === foreign.id),
+    ).toBe(false);
+  });
+
+  it("does not let one organization's table block another's space", async () => {
+    // `repo_tbl_other` stands at 0,0 of the other organization's event.
+    const mine = table({ id: "repo_tbl_same_cell", gridX: 0, gridY: 0 });
+    await expect(insert(mine)).resolves.toBeUndefined();
+  });
+});
+
+describe("the parent-event guard", () => {
+  it("refuses a table for an event that does not exist in this organization", async () => {
+    await expect(
+      insert(
+        table({
+          id: "repo_tbl_orphan",
+          eventId: otherEvent.id,
+          gridX: 10,
+          gridY: 0,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect(await tables.getById(ORG_ACME_ID, "repo_tbl_orphan")).toBeNull();
+  });
+});
+
+describe("the free-space predicate", () => {
+  it("refuses an insert that overlaps a table already standing there", async () => {
+    await insert(table({ id: "repo_tbl_a", gridX: 4, gridY: 0 }));
+    await expect(
+      insert(table({ id: "repo_tbl_overlap", gridX: 5, gridY: 0 })),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(await tables.getById(ORG_ACME_ID, "repo_tbl_overlap")).toBeNull();
+  });
+
+  it("allows a table that only shares an edge", async () => {
+    // `repo_tbl_a` occupies columns 4 and 5 of row 0.
+    await expect(
+      insert(table({ id: "repo_tbl_edge", gridX: 6, gridY: 0 })),
+    ).resolves.toBeUndefined();
+  });
+
+  /**
+   * The race the predicate exists for. Both writers read a plan in which the
+   * cell is free; the second one's statement carries the guard and so affects
+   * zero rows. Without it this test would leave two tables on the same cells.
+   */
+  it("refuses a move into a cell somebody claimed after the caller read it", async () => {
+    const mover = table({ id: "repo_tbl_mover", gridX: 0, gridY: 4 });
+    await insert(mover);
+    const target = { gridX: 8, gridY: 4 };
+
+    // The caller's snapshot: nothing is at 8,4 yet.
+    const moved = moveSeatingTable(mover, target, plan(), LATER);
+
+    // Somebody else gets there first.
+    await insert(table({ id: "repo_tbl_squatter", ...target }));
+
+    await expect(
+      tables.commit({
+        table: moved,
+        expectedVersion: mover.version,
+        operation: operationFor({
+          action: "move-seating-table",
+          resourceType: "seating_table",
+          resourceId: mover.id,
+          orgId: mover.orgId,
+          versionBefore: mover.version,
+          versionAfter: moved.version,
+        }),
+      }),
+    ).rejects.toBeInstanceOf(AppError);
+
+    // Neither statement of the batch applied: the table is where it was, and
+    // no audit row claims otherwise.
+    const stored = await tables.getById(ORG_ACME_ID, mover.id);
+    expect(stored).toMatchObject({ gridX: 0, gridY: 4, version: 1 });
+  });
+
+  it("lets a label through without asking for space", async () => {
+    const subject = table({ id: "repo_tbl_label", gridX: 12, gridY: 4 });
+    await insert(subject);
+    const labelled = labelSeat(subject, 0, "Ada Lovelace", LATER);
+    await tables.commit({
+      table: labelled,
+      expectedVersion: subject.version,
+      operation: operationFor({
+        action: "label-seat",
+        resourceType: "seating_table",
+        resourceId: subject.id,
+        orgId: subject.orgId,
+        versionBefore: subject.version,
+        versionAfter: labelled.version,
+      }),
+    });
+    const stored = await tables.getById(ORG_ACME_ID, subject.id);
+    expect(stored?.seats[0]).toMatchObject({
+      present: true,
+      label: "Ada Lovelace",
+    });
+    expect(stored?.version).toBe(2);
+  });
+
+  it("does not count a removed table as occupying its cells", async () => {
+    const removedRow = table({ id: "repo_tbl_removed", gridX: 0, gridY: 7 });
+    await insert(removedRow);
+    const removed = archiveSeatingTable(removedRow, LATER);
+    await tables.commit({
+      table: removed,
+      expectedVersion: removedRow.version,
+      operation: operationFor({
+        action: "archive-seating-table",
+        resourceType: "seating_table",
+        resourceId: removed.id,
+        orgId: removed.orgId,
+        versionBefore: removedRow.version,
+        versionAfter: removed.version,
+      }),
+    });
+
+    await expect(
+      insert(table({ id: "repo_tbl_successor", gridX: 0, gridY: 7 })),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("the version guard", () => {
+  it("writes neither the row nor its audit entry when the version moved on", async () => {
+    const subject = table({ id: "repo_tbl_version", gridX: 12, gridY: 0 });
+    await insert(subject);
+    const moved = moveSeatingTable(
+      subject,
+      { gridX: 12, gridY: 7 },
+      plan(),
+      LATER,
+    );
+
+    await expect(
+      tables.commit({
+        table: moved,
+        // A version the row never had.
+        expectedVersion: 99,
+        operation: operationFor({
+          action: "move-seating-table",
+          resourceType: "seating_table",
+          resourceId: subject.id,
+          orgId: subject.orgId,
+          versionBefore: 99,
+          versionAfter: 100,
+        }),
+      }),
+    ).rejects.toBeInstanceOf(AppError);
+
+    const stored = await tables.getById(ORG_ACME_ID, subject.id);
+    expect(stored).toMatchObject({ gridX: 12, gridY: 0, version: 1 });
+  });
+});
+
+describe("round-tripping", () => {
+  it("reads back every column, seats and all", async () => {
+    const original = labelSeat(
+      table({
+        id: "repo_tbl_roundtrip",
+        size: 3,
+        endSeats: true,
+        // The bottom row, clear of every other table this file plants.
+        gridX: 4,
+        gridY: 7,
+      }),
+      0,
+      "Grace Hopper",
+      CREATED_AT,
+    );
+    // Written as created, so the labelled copy is what goes in.
+    await tables.create({
+      table: original,
+      operation: operationFor({
+        action: "create-seating-table",
+        resourceType: "seating_table",
+        resourceId: original.id,
+        orgId: original.orgId,
+        versionBefore: 0,
+        versionAfter: original.version,
+      }),
+    });
+
+    expect(await tables.getById(ORG_ACME_ID, original.id)).toEqual(original);
+  });
+
+  it("lists an event's tables in creation order", async () => {
+    const listed = await tables.list(ORG_ACME_ID, {
+      eventId: acmeEvent.id,
+      status: "active",
+    });
+    expect(listed.length).toBeGreaterThan(1);
+    expect(listed.every((row) => row.eventId === acmeEvent.id)).toBe(true);
+    expect(listed.some((row) => row.status === "archived")).toBe(false);
+  });
+});
+
+describe("the cell ledger", () => {
+  it("writes one row per occupied cell when a table is created", async () => {
+    const subject = table({ id: "repo_tbl_cells", gridX: 2, gridY: 4 });
+    await insert(subject);
+    expect(await storedCells(subject.id)).toEqual(expectedCells(subject));
+  });
+
+  it("rewrites the cells when the table moves, leaving none behind", async () => {
+    const subject = table({ id: "repo_tbl_cells_move", gridX: 4, gridY: 4 });
+    await insert(subject);
+    const moved = moveSeatingTable(
+      subject,
+      { gridX: 6, gridY: 4 },
+      plan(),
+      LATER,
+    );
+    await commit(moved, subject.version, "move-seating-table");
+    expect(await storedCells(subject.id)).toEqual(expectedCells(moved));
+  });
+
+  it("gives up every cell when the table is removed, and takes them back", async () => {
+    const subject = table({
+      id: "repo_tbl_cells_archive",
+      gridX: 10,
+      gridY: 4,
+    });
+    await insert(subject);
+    const removed = archiveSeatingTable(subject, LATER);
+    await commit(removed, subject.version, "archive-seating-table");
+    expect(await storedCells(subject.id)).toEqual([]);
+
+    // The space really is free: another table may stand there.
+    const successor = table({ id: "repo_tbl_successor2", gridX: 10, gridY: 4 });
+    await expect(insert(successor)).resolves.toBeUndefined();
+  });
+
+  it("frees exactly one cell when a chair is taken away", async () => {
+    const subject = table({ id: "repo_tbl_cells_seat", gridX: 14, gridY: 4 });
+    await insert(subject);
+    const before = await storedCells(subject.id);
+    const trimmed = removeSeat(subject, 1, LATER);
+    await commit(trimmed, subject.version, "remove-seat");
+    const after = await storedCells(subject.id);
+    expect(after).toHaveLength(before.length - 1);
+    expect(after).toEqual(expectedCells(trimmed));
+  });
+
+  it("keeps the cells in step through a rotation", async () => {
+    const subject = table({
+      id: "repo_tbl_cells_rotate",
+      size: 3,
+      gridX: 9,
+      gridY: 7,
+    });
+    await insert(subject);
+    const turned = rotateSeatingTable(subject, plan(), LATER);
+    await commit(turned, subject.version, "rotate-seating-table");
+    const stored = await tables.getById(ORG_ACME_ID, subject.id);
+    expect(stored?.rotation).toBe(90);
+    expect(await storedCells(subject.id)).toEqual(expectedCells(turned));
+  });
+
+  it("writes no cells at all when the version guard refuses the batch", async () => {
+    const subject = table({ id: "repo_tbl_cells_stale", gridX: 14, gridY: 7 });
+    await insert(subject);
+    const before = await storedCells(subject.id);
+    const moved = moveSeatingTable(
+      subject,
+      { gridX: 0, gridY: 0 },
+      plan(),
+      LATER,
+    );
+    await expect(
+      commit(moved, 99, "move-seating-table"),
+    ).rejects.toBeInstanceOf(AppError);
+    // Not merely "the table did not move": its cells were not rewritten either,
+    // which is the partial write the shared guard exists to prevent.
+    expect(await storedCells(subject.id)).toEqual(before);
+  });
+});
+
+/**
+ * Round tables, and the arrangement the feature is for: several ordinary
+ * tables standing against one another, which is what makes an L or a U.
+ */
+describe("round tables", () => {
+  it("stores a round table and reads it back with its ring of chairs", async () => {
+    const round = table({
+      id: "repo_tbl_round",
+      eventId: lShapeEvent.id,
+      kind: "round",
+      size: 3,
+      gridX: 0,
+      gridY: 0,
+    });
+    await insert(round);
+
+    const stored = await tables.getById(ORG_ACME_ID, round.id);
+    expect(stored).toEqual(round);
+    expect(stored).toMatchObject({ kind: "round", size: 3, rotation: 0 });
+    // Twelve chairs around a 3x3 block, and the bounding box's four corners
+    // left free for a neighbour.
+    expect(stored?.seats).toHaveLength(12);
+    expect(await storedCells(round.id)).toEqual(expectedCells(round));
+  });
+
+  it("refuses a round table the schema says cannot exist", async () => {
+    // `end_seats = 0 AND rotation = 0` for a round table is a CHECK in
+    // `migrations/0001_init.sql`, not only a domain rule, so a row that got
+    // past the domain would still be refused here.
+    await expect(
+      getDbExec().execute({
+        sql: "INSERT INTO seating_tables (id, org_id, event_id, name, kind, size, end_seats, rotation, grid_x, grid_y, seats, status, version, created_by, created_at, updated_at) VALUES ('repo_tbl_bad', ?, ?, 'Bad', 'round', 2, 1, 0, 0, 0, '[]', 'active', 1, ?, ?, ?)",
+        args: [
+          ORG_ACME_ID,
+          lShapeEvent.id,
+          OWNER_EMAIL,
+          CREATED_AT,
+          CREATED_AT,
+        ],
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("a continuous run", () => {
+  it("refuses two tables end to end until the chairs at the join come off", async () => {
+    // A table of four with a chair capping each end, standing at the left of
+    // an empty plan: its right-hand cap is the cell the next table's body
+    // wants.
+    let first = table({
+      id: "repo_tbl_run_a",
+      eventId: lShapeEvent.id,
+      size: 4,
+      endSeats: true,
+      gridX: 0,
+      gridY: 6,
+    });
+    await insert(first);
+
+    const second = () =>
+      table({
+        id: "repo_tbl_run_b",
+        eventId: lShapeEvent.id,
+        size: 4,
+        endSeats: true,
+        gridX: 5,
+        gridY: 6,
+      });
+    await expect(insert(second())).rejects.toMatchObject({ code: "CONFLICT" });
+
+    // Seat 4 is the chair on the right-hand end of the first table.
+    const trimmed = removeSeat(first, 4, LATER);
+    await commit(trimmed, first.version, "remove-seat");
+    first = trimmed;
+
+    // Now the two bodies meet, which is what a continuous run is.
+    await expect(insert(second())).resolves.toBeUndefined();
+    expect(await storedCells(first.id)).toEqual(expectedCells(first));
+  });
+});

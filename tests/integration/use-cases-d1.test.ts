@@ -1,23 +1,34 @@
-/** Real-repository undo/redo guarantees from blueprint B9 and D27. */
+/**
+ * The use cases against real SQLite (blueprint B9, B18).
+ *
+ * `tests/unit/application/*` proves these against the in-memory doubles, and
+ * `seating-repositories.test.ts` proves the SQL behind the ports. This is the
+ * seam between them: the whole command path — capability, version guard,
+ * domain transition, operation row, atomic commit — run end to end against a
+ * database, through `getDependencies()`, which is the container production
+ * uses.
+ *
+ * Every test here is about something the in-memory doubles cannot prove on
+ * their own: that a version guard expressed in SQL refuses the same writes a
+ * hand-written `if` does, and that a two-statement batch really is atomic.
+ */
 
 import { describe, expect, it } from "vitest";
 
-import { archiveCustomer } from "../../src/application/use-cases/archive-customer";
-import { completeJob } from "../../src/application/use-cases/complete-job";
+import { bootstrapEventLayout } from "../../src/application/use-cases/bootstrap-event-layout";
+import { createEvent } from "../../src/application/use-cases/create-event";
+import { createSeatingTable } from "../../src/application/use-cases/create-seating-table";
+import { labelSeat } from "../../src/application/use-cases/label-seat";
+import { listRecentActivity } from "../../src/application/use-cases/list-recent-activity";
+import { moveSeatingTable } from "../../src/application/use-cases/move-seating-table";
 import { redoOperation } from "../../src/application/use-cases/redo-operation";
-import { rescheduleJob } from "../../src/application/use-cases/reschedule-job";
+import { reshapeSeatingTable } from "../../src/application/use-cases/reshape-seating-table";
 import { undoOperation } from "../../src/application/use-cases/undo-operation";
-import {
-  reconcileAccountingExport,
-  restoreJobStatus,
-  type Operation,
-} from "../../src/domain";
+import { findSeat } from "../../src/domain";
 import { getDependencies } from "../../src/infrastructure/container";
 import {
   ADMIN_EMAIL,
-  CUSTOMER_B_ID,
-  JOB_COMPLETED_ID,
-  JOB_SCHEDULED_ID,
+  EVENT_GALA_ID,
   MEMBER1_EMAIL,
   MEMBER2_EMAIL,
   ORG_ACME_ID,
@@ -32,193 +43,234 @@ const memberOne = {
 const memberTwo = { ...memberOne, userEmail: MEMBER2_EMAIL };
 const admin = { ...memberOne, userEmail: ADMIN_EMAIL, role: "admin" as const };
 
+/** A table of this file's own, so the order tests run in cannot matter. */
+async function freshTable(name: string, gridX: number, gridY: number) {
+  const created = await createSeatingTable(getDependencies(), memberOne, {
+    eventId: EVENT_GALA_ID,
+    name,
+    size: 2,
+    gridX,
+    gridY,
+  });
+  return created;
+}
+
 describe("use cases against Node SQLite repositories", () => {
-  it("refuses a stale undo after another actor has changed the same job", async () => {
+  it("runs a move, its undo and its redo end to end", async () => {
     const deps = getDependencies();
-    const rescheduled = await rescheduleJob(deps, memberOne, {
-      jobId: JOB_SCHEDULED_ID,
-      scheduledAt: "2026-10-03T08:00:00.000Z",
-    });
-    expect(rescheduled.resource.version).toBe(2);
+    const created = await freshTable("Round trip", 0, 4);
 
-    const completed = await completeJob(deps, memberTwo, {
-      jobId: JOB_SCHEDULED_ID,
-      expectedVersion: rescheduled.resource.version,
+    const moved = await moveSeatingTable(deps, memberOne, {
+      tableId: created.resource.id,
+      gridX: 4,
+      gridY: 4,
+      expectedVersion: created.resource.version,
     });
-    expect(completed.resource.version).toBe(3);
+    expect(moved.resource).toMatchObject({ gridX: 4, gridY: 4, version: 2 });
 
-    await expect(
-      undoOperation(deps, memberOne, { operationId: rescheduled.operationId }),
-    ).rejects.toMatchObject({
-      code: "CONFLICT",
-      message: "Newer changes exist; undo refused",
+    const undone = await undoOperation(deps, memberOne, {
+      operationId: moved.operationId,
     });
+    expect(undone.resource).toMatchObject({ gridX: 0, gridY: 4, version: 3 });
+    expect(undone.resourceType).toBe("seating_table");
 
-    const undoneCompletion = await undoOperation(deps, memberTwo, {
-      operationId: completed.operationId,
+    const redone = await redoOperation(deps, memberOne, {
+      operationId: undone.operationId,
     });
-    expect(undoneCompletion.resource.version).toBe(4);
-    expect(undoneCompletion.resource.status).toBe("scheduled");
+    expect(redone.resource).toMatchObject({ gridX: 4, gridY: 4, version: 4 });
 
-    await expect(
-      undoOperation(deps, memberOne, { operationId: rescheduled.operationId }),
-    ).rejects.toMatchObject({ code: "CONFLICT" });
+    // The ledger records all three, and the forward operation is marked undone
+    // by the one that reversed it.
+    const stored = await deps.operations.getById(
+      ORG_ACME_ID,
+      moved.operationId,
+    );
+    expect(stored?.undoneByOperationId).toBe(undone.operationId);
   });
 
-  it("does not let a member redo an admin-only customer archive", async () => {
+  it("refuses a stale undo after another actor has changed the same table", async () => {
     const deps = getDependencies();
-    const archived = await archiveCustomer(deps, admin, {
-      customerId: "cus_b",
+    const created = await freshTable("Stale undo", 8, 4);
+
+    const labelled = await labelSeat(deps, memberOne, {
+      tableId: created.resource.id,
+      seat: 0,
+      label: "Ada Lovelace",
+      expectedVersion: created.resource.version,
     });
-    const undone = await undoOperation(deps, admin, {
-      operationId: archived.operationId,
+
+    // A coworker moves the same table on. The undo's version rule is now
+    // unsatisfiable, and it has to refuse rather than discard the move.
+    await moveSeatingTable(deps, memberTwo, {
+      tableId: created.resource.id,
+      gridX: 12,
+      gridY: 4,
+      expectedVersion: labelled.resource.version,
     });
-    expect(undone.resource.status).toBe("active");
+
+    await expect(
+      undoOperation(deps, memberOne, { operationId: labelled.operationId }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+
+    const current = await deps.seatingTables.getById(
+      ORG_ACME_ID,
+      created.resource.id,
+    );
+    expect(current).toMatchObject({ gridX: 12, gridY: 4 });
+    expect(findSeat(current!, 0)?.label).toBe("Ada Lovelace");
+  });
+
+  /**
+   * The invariant the SQL predicate exists for, through the real use case: the
+   * caller's snapshot said the cell was free, and the write still has to lose.
+   */
+  it("refuses a move whose target was taken between the read and the write", async () => {
+    const deps = getDependencies();
+    const mover = await freshTable("Mover", 0, 7);
+    const target = { gridX: 8, gridY: 7 };
+    await freshTable("Squatter", target.gridX, target.gridY);
+
+    await expect(
+      moveSeatingTable(deps, memberOne, {
+        tableId: mover.resource.id,
+        ...target,
+        expectedVersion: mover.resource.version,
+      }),
+    ).rejects.toMatchObject({ code: "INVARIANT" });
+
+    const stored = await deps.seatingTables.getById(
+      ORG_ACME_ID,
+      mover.resource.id,
+    );
+    expect(stored).toMatchObject({ gridX: 0, gridY: 7, version: 1 });
+  });
+
+  it("restores a shrunk table's discarded seat labels on undo", async () => {
+    const deps = getDependencies();
+    const created = await freshTable("Reshape round trip", 12, 7);
+    const labelled = await labelSeat(deps, memberOne, {
+      tableId: created.resource.id,
+      seat: 3,
+      label: "Grace Hopper",
+      expectedVersion: created.resource.version,
+    });
+
+    const shrunk = await reshapeSeatingTable(deps, memberOne, {
+      tableId: created.resource.id,
+      kind: "rectangle",
+      size: 1,
+      endSeats: false,
+      expectedVersion: labelled.resource.version,
+    });
+    // Seats are derived from the shape, so shrinking the body renumbers them.
+    // Four chairs become two, and seat 3 — Grace's — is not one of them.
+    expect(shrunk.resource.seats).toHaveLength(2);
+    expect(shrunk.resource.seats.some((seat) => seat.label !== "")).toBe(false);
+
+    const undone = await undoOperation(deps, memberOne, {
+      operationId: shrunk.operationId,
+    });
+    expect(findSeat(undone.resource as never, 3)?.label).toBe("Grace Hopper");
+  });
+
+  /**
+   * The arrangement the feature is for, end to end against a real database:
+   * one action, many tables, and the chairs at every join and corner already
+   * off. It gets a floor plan of its own so the order these tests run in
+   * cannot crowd it out.
+   */
+  it("lays out a U in one operation, and takes the whole thing back on undo", async () => {
+    const deps = getDependencies();
+    const event = await createEvent(deps, memberOne, {
+      name: "Wedding breakfast",
+      startsAt: "2027-01-09T18:00:00.000Z",
+    });
+    expect(event.resource).toMatchObject({ roomWidth: 16, roomHeight: 10 });
+
+    const laid = await bootstrapEventLayout(deps, memberOne, {
+      eventId: event.resource.id,
+      layout: "U",
+      sections: [3, 4, 3],
+      tableLength: 4,
+      endSeats: true,
+    });
+
+    const placed = await deps.seatingTables.list(ORG_ACME_ID, {
+      eventId: event.resource.id,
+      status: "active",
+    });
+    expect(placed).toHaveLength(10);
+    // Every chair the plan could not have is already off, so the runs are
+    // continuous rather than merely adjacent.
+    expect(
+      placed.some((table) => table.seats.some((seat) => !seat.present)),
+    ).toBe(true);
+    // The room grew to hold it: this U needs 18 by 15, and an event starts at
+    // 16 by 10. Nobody had to work that out.
+    expect(laid.resource).toMatchObject({ roomWidth: 18, roomHeight: 15 });
+
+    // One operation for the whole layout, not ten.
+    const undone = await undoOperation(deps, memberOne, {
+      operationId: laid.operationId,
+    });
+    expect(
+      await deps.seatingTables.list(ORG_ACME_ID, {
+        eventId: event.resource.id,
+        status: "active",
+      }),
+    ).toHaveLength(0);
+    // …and the room it grew comes back with it.
+    expect(undone.resource).toMatchObject({ roomWidth: 16, roomHeight: 10 });
+
+    // It creates records, so like every create it cannot be redone.
+    await expect(
+      redoOperation(deps, memberOne, { operationId: undone.operationId }),
+    ).rejects.toMatchObject({ code: "INVARIANT" });
+  });
+
+  it("refuses to lay out a plan that already has tables", async () => {
+    const deps = getDependencies();
+    await expect(
+      bootstrapEventLayout(deps, memberOne, {
+        eventId: EVENT_GALA_ID,
+        layout: "L",
+        sections: [2, 1],
+        tableLength: 2,
+      }),
+    ).rejects.toMatchObject({ code: "INVARIANT" });
+  });
+
+  it("reports a create's undo as not redoable, and refuses the redo", async () => {
+    const deps = getDependencies();
+    const created = await freshTable("Compensated", 14, 4);
+
+    const undone = await undoOperation(deps, memberOne, {
+      operationId: created.operationId,
+    });
+    expect(undone.resource).toMatchObject({ status: "archived" });
+
+    const activity = await listRecentActivity(deps, memberOne, { limit: 50 });
+    const entry = activity.find((item) => item.id === undone.operationId);
+    expect(entry?.redoable).toBe(false);
 
     await expect(
       redoOperation(deps, memberOne, { operationId: undone.operationId }),
-    ).rejects.toMatchObject({ code: "AUTHORIZATION" });
-
-    await expect(
-      deps.customers.getById(ORG_ACME_ID, "cus_b"),
-    ).resolves.toMatchObject({
-      status: "active",
-      version: undone.resource.version,
-    });
+    ).rejects.toMatchObject({ code: "INVARIANT" });
   });
 
-  it("does not reopen a completed job once a durable export is pending", async () => {
+  it("keeps the admin-only archive out of a member's reach", async () => {
     const deps = getDependencies();
-    const job = await deps.jobs.getById(ORG_ACME_ID, JOB_COMPLETED_ID);
-    expect(job).not.toBeNull();
-    if (!job || !job.completedAt)
-      throw new Error("fixture job must be completed");
-
-    await deps.accountingExports.createPending({
-      expectedVersion: job.version,
-      export: {
-        orgId: ORG_ACME_ID,
-        jobId: job.id,
-        idempotencyKey: `test-pending:${job.id}`,
-        request: {
-          idempotencyKey: `test-pending:${job.id}`,
-          orgId: ORG_ACME_ID,
-          customer: { id: CUSTOMER_B_ID, name: "Example Customer B" },
-          job: { id: job.id, title: job.title, completedAt: job.completedAt },
-        },
-        status: "pending",
-        externalReference: null,
-        operationId: null,
-        requestedBy: ADMIN_EMAIL,
-        requestedAt: "2026-09-06T12:00:00.000Z",
-        completedAt: null,
-      },
-    });
-
     await expect(
       undoOperation(deps, memberOne, {
-        operationId: "op_complete_job_completed",
+        operationId: "op_archive_evt_archived",
       }),
-    ).rejects.toMatchObject({
-      code: "INVARIANT",
-      message: "A job with an accounting export cannot be reopened",
-    });
-    await expect(deps.jobs.getById(ORG_ACME_ID, job.id)).resolves.toMatchObject(
-      {
-        status: "completed",
-        version: job.version,
-      },
-    );
+    ).rejects.toMatchObject({ code: "AUTHORIZATION" });
 
-    const completedOperation = await deps.operations.getById(
-      ORG_ACME_ID,
-      "op_complete_job_completed",
-    );
-    expect(completedOperation?.inverse?.type).toBe("restore-job-status");
-    if (completedOperation?.inverse?.type !== "restore-job-status") {
-      throw new Error("fixture completion must carry a status inverse");
-    }
-    const restored = restoreJobStatus(
-      job,
-      completedOperation.inverse.previous,
-      "2026-09-06T12:01:00.000Z",
-    );
-    const guardedUndo: Operation = {
-      id: "op_pending_export_guard",
-      orgId: ORG_ACME_ID,
-      kind: "undo",
-      action: "undo-operation",
-      resourceType: "job",
-      resourceId: job.id,
-      classification: "reversible",
-      versionBefore: job.version,
-      versionAfter: restored.version,
-      payload: {},
-      inverse: null,
-      relatedOperationId: completedOperation.id,
-      undoneByOperationId: null,
-      performedBy: MEMBER1_EMAIL,
-      performedVia: "test",
-      performedAt: "2026-09-06T12:01:00.000Z",
-    };
-    await expect(
-      deps.jobs.commit({
-        job: restored,
-        expectedVersion: job.version,
-        operation: guardedUndo,
-        markUndone: completedOperation.id,
-        requireNoAccountingExport: true,
-      }),
-    ).rejects.toMatchObject({ code: "CONFLICT" });
-    await expect(deps.jobs.getById(ORG_ACME_ID, job.id)).resolves.toEqual(job);
-    await expect(
-      deps.operations.getById(ORG_ACME_ID, guardedUndo.id),
-    ).resolves.toBeNull();
-    await expect(
-      deps.operations.getById(ORG_ACME_ID, completedOperation.id),
-    ).resolves.toMatchObject({ undoneByOperationId: null });
-
-    const accepted = await deps.accountingExports.recordAccepted({
-      orgId: ORG_ACME_ID,
-      jobId: job.id,
-      externalReference: "ACC-correct",
+    // The same operation, by an admin, is reversible.
+    const restored = await undoOperation(deps, admin, {
+      operationId: "op_archive_evt_archived",
     });
-    const reconciled = reconcileAccountingExport(
-      job,
-      "ACC-wrong",
-      "2026-09-06T12:02:00.000Z",
-    );
-    const mismatchedOperation: Operation = {
-      ...guardedUndo,
-      id: "op_accounting_reference_mismatch",
-      kind: "forward",
-      action: "send-job-to-accounting",
-      classification: "irreversible",
-      versionBefore: job.version,
-      versionAfter: reconciled.version,
-      payload: { externalReference: "ACC-wrong" },
-      relatedOperationId: null,
-      performedBy: ADMIN_EMAIL,
-      performedAt: "2026-09-06T12:02:00.000Z",
-    };
-    await expect(
-      deps.accountingExports.complete({
-        export: { ...accepted, externalReference: "ACC-wrong" },
-        job: reconciled,
-        expectedVersion: job.version,
-        operation: mismatchedOperation,
-      }),
-    ).rejects.toMatchObject({ code: "CONFLICT" });
-    await expect(deps.jobs.getById(ORG_ACME_ID, job.id)).resolves.toEqual(job);
-    await expect(
-      deps.operations.getById(ORG_ACME_ID, mismatchedOperation.id),
-    ).resolves.toBeNull();
-    await expect(
-      deps.accountingExports.getByJobId(ORG_ACME_ID, job.id),
-    ).resolves.toMatchObject({
-      status: "pending",
-      externalReference: "ACC-correct",
-      operationId: null,
-    });
+    expect(restored.resource).toMatchObject({ status: "active" });
+    expect(restored.resourceType).toBe("event");
   });
 });

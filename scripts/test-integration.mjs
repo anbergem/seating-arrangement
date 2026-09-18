@@ -147,125 +147,133 @@ function runCliParity() {
   const admin = { email: "admin@example.invalid", orgId: "org_acme" };
   const outsider = { email: "outsider@example.invalid", orgId: "org_other" };
 
-  const completed = cli("complete-job", { jobId: "job_in_progress" }, member);
-  expect(completed.status === 0, `complete-job failed: ${completed.stderr}`);
-  expect(
-    completed.parsed !== undefined,
-    "complete-job printed no result object",
-  );
-  expect(
-    completed.parsed.resource?.status === "completed",
-    "complete-job did not return a completed resource",
-  );
-  expect(
-    completed.parsed.resource?.version === 3,
-    "complete-job did not return version 3",
-  );
-  expect(
-    typeof completed.parsed.operationId === "string",
-    "complete-job did not return an operationId",
-  );
-
-  const history = cli("list-recent-activity", {}, member);
-  expect(
-    history.status === 0,
-    `list-recent-activity failed: ${history.stderr}`,
-  );
-  expect(
-    Array.isArray(history.parsed),
-    "activity did not print an array result",
-  );
-  expect(
-    history.parsed.find(
-      (item) =>
-        item?.id === completed.parsed.operationId &&
-        item?.action === "complete-job" &&
-        item?.performedVia === "cli",
-    ) !== undefined,
-    "activity omitted the CLI complete-job operation",
-  );
-
-  const undone = cli(
-    "undo-operation",
-    { operationId: completed.parsed.operationId },
+  // A write, through the CLI surface, exactly as the UI and the agent would
+  // make it: same action, same use case, same audit row.
+  const labelled = cli(
+    "label-seat",
+    {
+      tableId: "tbl_head",
+      seat: 3,
+      label: "Katherine Johnson",
+    },
     member,
   );
-  expect(undone.status === 0, `undo-operation failed: ${undone.stderr}`);
+  expect(labelled.status === 0, `label-seat failed: ${labelled.stderr}`);
   expect(
-    undone.parsed?.resource?.status === "in_progress",
-    "undo-operation did not restore in_progress",
+    typeof labelled.parsed === "object" && labelled.parsed !== null,
+    "label-seat printed no result object",
+  );
+  // `seats` is an array of objects, which the framework's `console.log(result)`
+  // renders as `[Object]` at its default inspect depth, so the seat labels
+  // themselves are not observable from this surface. The version bump and the
+  // audit row below are: both prove the write landed, and
+  // `tests/integration/seating-repositories.test.ts` is where the stored seat
+  // array is asserted against the database.
+  expect(
+    labelled.parsed?.resource?.version === 4,
+    `label-seat did not bump the version to 4: ${labelled.parsed?.resource?.version}`,
+  );
+  expect(
+    typeof labelled.parsed?.operationId === "string",
+    "label-seat did not return an operationId",
   );
 
-  expectFailure(
-    cli("get-job", { jobId: "job_scheduled" }, outsider),
-    "Job not found",
-    "outsider get-job",
+  const activity = cli("list-recent-activity", { limit: 10 }, member);
+  expect(
+    activity.status === 0,
+    `list-recent-activity failed: ${activity.stderr}`,
   );
+  expect(
+    Array.isArray(activity.parsed) &&
+      activity.parsed.some(
+        (item) =>
+          item?.action === "label-seat" &&
+          item?.resourceId === "tbl_head" &&
+          item?.resourceType === "seating_table",
+      ),
+    "activity omitted the CLI label-seat operation",
+  );
+
+  // The floor plan's own rule, refused by the database rather than the caller.
   expectFailure(
     cli(
-      "get-job",
-      { jobId: "job_scheduled" },
-      { email: member.email, orgId: "org_other" },
+      "move-seating-table",
+      { tableId: "tbl_side", gridX: 1, gridY: 0 },
+      member,
     ),
-    "Not a member of the active organization",
-    "member claiming org_other",
+    "Tables may not overlap",
+    "overlapping move-seating-table",
+  );
+
+  // Organization isolation: a foreign id is NOT_FOUND, never AUTHORIZATION.
+  expectFailure(
+    cli("get-event", { eventId: "evt_gala" }, outsider),
+    "Event not found",
+    "outsider get-event",
   );
   expectFailure(
-    cli("archive-customer", { customerId: "cus_b" }, member),
-    "Role member may not customers:archive",
-    "member archive-customer",
+    cli("get-event", { eventId: "evt_other" }, member),
+    "Event not found",
+    "member get-event for another organization",
   );
-  const archived = cli("archive-customer", { customerId: "cus_b" }, admin);
+
+  // Authorization: archiving an event is admin-only.
+  expectFailure(
+    cli("archive-event", { eventId: "evt_gala" }, member),
+    "Role member may not events:archive",
+    "member archive-event",
+  );
+  const archived = cli("archive-event", { eventId: "evt_gala" }, admin);
   expect(
     archived.status === 0,
-    `admin archive-customer failed: ${archived.stderr}`,
+    `admin archive-event failed: ${archived.stderr}`,
   );
   expect(
     archived.parsed?.resource?.status === "archived",
-    "admin archive-customer did not return archived",
+    "admin archive-event did not return archived",
   );
 
-  expectFailure(
-    cli("send-job-to-accounting", { jobId: "job_completed" }, member),
-    "Role member may not jobs:export",
-    "member send-job-to-accounting",
-  );
-  const exported = cli(
-    "send-job-to-accounting",
-    { jobId: "job_completed" },
+  // Undo puts it back, and is itself an operation.
+  const undone = cli(
+    "undo-operation",
+    { operationId: archived.parsed.operationId },
     admin,
   );
+  expect(undone.status === 0, `undo-operation failed: ${undone.stderr}`);
   expect(
-    exported.status === 0,
-    `admin send-job-to-accounting failed: ${exported.stderr}`,
+    undone.parsed?.resource?.status === "active" &&
+      undone.parsed?.resourceType === "event",
+    "undo-operation did not restore the event",
   );
-  expect(
-    typeof exported.parsed?.externalReference === "string",
-    "admin send-job-to-accounting did not return an external reference",
+
+  // Idempotency: the same key returns the first event rather than a second one.
+  const first = cli(
+    "create-event",
+    {
+      name: "Retry Dinner",
+      startsAt: "2026-12-01T18:00:00.000Z",
+      idempotencyKey: "cli-parity-1",
+    },
+    member,
   );
-  expect(
-    exported.parsed?.resource?.accountingReference ===
-      exported.parsed.externalReference &&
-      typeof exported.parsed.resource?.accountingSentAt === "string",
-    "admin send-job-to-accounting did not persist its accounting reference",
-  );
+  expect(first.status === 0, `create-event failed: ${first.stderr}`);
   const replayed = cli(
-    "send-job-to-accounting",
-    { jobId: "job_completed" },
-    admin,
+    "create-event",
+    {
+      name: "Retry Dinner",
+      startsAt: "2026-12-01T18:00:00.000Z",
+      idempotencyKey: "cli-parity-1",
+    },
+    member,
   );
   expect(
     replayed.status === 0,
-    `replayed send-job-to-accounting failed: ${replayed.stderr}`,
+    `replayed create-event failed: ${replayed.stderr}`,
   );
   expect(
-    replayed.parsed?.externalReference === exported.parsed.externalReference &&
-      replayed.parsed?.operationId === exported.parsed.operationId &&
-      replayed.parsed?.resource?.version ===
-        exported.parsed.resource?.version &&
-      replayed.parsed?.resource?.accountingReference ===
-        exported.parsed.externalReference,
-    "send-job-to-accounting replay did not return the original result",
+    replayed.parsed?.resource?.id === first.parsed?.resource?.id &&
+      replayed.parsed?.operationId === first.parsed?.operationId,
+    "create-event replay did not return the original result",
   );
 }
 

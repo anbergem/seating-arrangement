@@ -32,23 +32,22 @@ audit trail is the record — permanent, complete, and not something the applica
 The ledger is operational: it is what makes undo possible, and it only needs the rows whose
 changes might still be reversed.
 
-The framework's audit row for `complete-job` looks like this (redacted input, one summary
-line):
+The framework's audit row for `label-seat` looks like this (redacted input, one summary line):
 
 ```
-action: complete-job   caller: frontend   actor_kind: human
+action: label-seat   caller: frontend   actor_kind: human
 actor_email: member1@example.invalid   org_id: org_acme
-target_type: job   target_id: job_in_progress   status: success
-summary: Completed job job_in_progress
+target_type: seating_table   target_id: tbl_head   status: success
+summary: Seated Katherine Johnson at seat 4
 ```
 
 Our operation row for the same change carries what undo needs:
 
 ```
-kind: forward   action: complete-job   resource_type: job   resource_id: job_in_progress
-classification: reversible   version_before: 2   version_after: 3
-inverse: {"type":"restore-job-status","previous":{"status":"in_progress",
-          "completedAt":null,"archivedAt":null}}
+kind: forward   action: label-seat   resource_type: seating_table   resource_id: tbl_head
+classification: reversible   version_before: 3   version_after: 4
+payload: {"seat":3,"label":"Katherine Johnson"}
+inverse: {"type":"restore-seat-label","seat":3,"previousLabel":""}
 performed_by: member1@example.invalid   performed_via: frontend
 ```
 
@@ -59,9 +58,9 @@ Every command is one of three things, declared in `OPERATION_CLASSIFICATION`
 
 | Classification | Meaning | Commands |
 | --- | --- | --- |
-| `reversible` | An inverse restores the previous state exactly | `archive-customer`, `reschedule-job`, `start-job`, `complete-job`, `archive-job`, `undo-operation`, `redo-operation` |
-| `compensatable` | No inverse, but a documented compensating command exists | `create-customer`, `create-job` |
-| `irreversible` | Nothing can undo it | `send-job-to-accounting` |
+| `reversible` | An inverse restores the previous state exactly | `archive-event`, `move-seating-table`, `rotate-seating-table`, `reshape-seating-table`, `label-seat`, `remove-seat`, `restore-seat`, `archive-seating-table`, `undo-operation`, `redo-operation` |
+| `compensatable` | No inverse, but a documented compensating command exists | `create-event`, `create-seating-table` |
+| `irreversible` | Nothing can undo it | none today; an external effect would be |
 
 **Creates are compensatable, not reversible.** Undoing a create archives the record; it does not
 delete it. Nothing in this application deletes a row — an archived record keeps its history, its
@@ -70,25 +69,40 @@ create can never be *redone*: its "undo" was a compensation, and re-creating wou
 different record with a different id.
 
 **External effects are never reversible.** A command that writes to a vendor system is
-`compensatable` if a compensating call exists there, and `irreversible` otherwise. We do not
-own the vendor's data, so we cannot promise to restore it. `send-job-to-accounting` is
-irreversible, its action carries `needsApproval: true`, and its dialog in the UI says so before
-the user confirms.
+`compensatable` if a compensating call exists there, and `irreversible` otherwise. We do not own
+the vendor's data, so we cannot promise to restore it. This application has no such command
+today; when it gains one, its action carries `needsApproval: true` and its dialog in the UI says
+so before the user confirms. `docs/integrations.md` has the pattern.
 
 Full inverse table:
 
 | Command | Inverse recorded | What the inverse restores |
 | --- | --- | --- |
-| `create-customer` | `{ type: "archive-customer" }` | Archives the new customer |
-| `archive-customer` | `{ type: "restore-customer" }` | Sets it back to `active` |
-| `create-job` | `{ type: "archive-job" }` | Archives the new job |
-| `reschedule-job` | `{ type: "restore-job-schedule", previousScheduledAt }` | The exact previous instant |
-| `start-job` / `complete-job` / `archive-job` | `{ type: "restore-job-status", previous: { status, completedAt, archivedAt } }` | All three fields as they were |
-| `send-job-to-accounting` | `null` | — |
+| `create-event` | `{ type: "archive-event" }` | Archives the new event |
+| `archive-event` | `{ type: "restore-event" }` | Sets it back to `active` |
+| `create-seating-table` | `{ type: "archive-seating-table" }` | Takes the new table off the plan |
+| `move-seating-table` | `{ type: "restore-seating-table-position", previous: { gridX, gridY } }` | The exact cell it stood in |
+| `rotate-seating-table` | `{ type: "restore-seating-table-rotation", previous: { rotation, gridX, gridY } }` | The way it faced *and* where it stood, since turning moves it |
+| `remove-seat` / `restore-seat` | `{ type: "restore-seat-presence", seat, present }` | Whether the chair was there |
+| `reshape-seating-table` | `{ type: "restore-seating-table-shape", previous: { kind, size, endSeats, seats } }` | The whole seat array, labels included |
+| `resize-room` | `{ type: "restore-room-size", previous: { width, height } }` | The floor's previous size, if nothing has been put in the space since |
+| `bootstrap-event-layout` | `{ type: "undo-bootstrap", tableIds, previousRoom }` | Archives every table the layout placed **and** puts the room back — one compensation for a write that spanned both |
+| `label-seat` | `{ type: "restore-seat-label", seat, previousLabel }` | The name that was on that seat |
+| `archive-seating-table` | `{ type: "restore-seating-table" }` | Puts the table back where it stood |
 
-`restore-job-status` restores a *triple*, not a status. Archiving a completed job clears
-nothing, but completing a job sets `completedAt`, and undoing that has to clear it again — a
-status alone would leave a completion timestamp on a job that is no longer completed.
+`restore-seating-table-shape` records the whole `seats` array, not just the `kind` and `size`
+that describe the form. Seats are derived from the shape and numbered around its outline, so
+reshaping a table renumbers every chair and discards the ones the new form has no room for — an
+undo that restored only the form would bring back a row of empty chairs instead of the people
+who were sitting in them.
+
+**A seating inverse can legitimately fail, and that is not a bug.** Three of them —
+`restore-seating-table-position`, `restore-seating-table-shape` and `restore-seating-table` —
+put a table back into *space*, and the space may have been taken while it was away. Those
+restores re-run the placement rules in `src/domain/seating-table.ts` and their writes carry the
+same free-space predicate a forward move does, so an undo that would produce an overlapping plan
+is refused with `INVARIANT: Tables may not overlap`. `restore-seat-label` has no such problem: a
+name is not a place, and nobody else can be holding it.
 
 ## The `operations` row
 
@@ -96,8 +110,8 @@ status alone would leave a completion timestamp on a job that is no longer compl
 operations (
   id, org_id,
   kind,                    -- 'forward' | 'undo' | 'redo'
-  action,                  -- the action name, e.g. 'complete-job'
-  resource_type,           -- 'customer' | 'job'
+  action,                  -- the action name, e.g. 'label-seat'
+  resource_type,           -- 'event' | 'seating_table'
   resource_id,
   classification,          -- 'reversible' | 'compensatable' | 'irreversible'
   version_before,          -- 0 for a create
@@ -135,12 +149,14 @@ apply.
    - `resource.version === op.version_after`.
 4. Check the caller's permission for the effect the inverse has
    (`src/application/history-policy.ts`, below).
-5. For a job inverse that would reopen a completed job, refuse if a durable accounting export
-   exists — see below.
-6. Apply `op.inverse` through the domain: `restore-job-status` → `restoreJobStatus`;
-   `restore-job-schedule` → `restoreJobSchedule` (which skips the "same instant" rule, because
-   restoring a recorded fact is not a new decision); `archive-job` → `archiveJob`;
-   `restore-customer` → `restoreCustomer`; `archive-customer` → `archiveCustomer`.
+5. For a seating inverse, load the event's other active tables too: three of the five put the
+   table back into space, and the placement rules need to see what is standing there now.
+6. Apply `op.inverse` through the domain: `restore-seating-table-position` →
+   `restoreSeatingTablePosition`; `restore-seating-table-shape` → `restoreSeatingTableShape`;
+   `restore-seat-label` → `restoreSeatLabel` (which skips the "already has that label" rule,
+   because restoring a recorded fact is not a new decision); `restore-seating-table` →
+   `restoreSeatingTable`; `archive-seating-table` → `archiveSeatingTable`; and, for an event,
+   `restore-event` → `restoreEvent`; `archive-event` → `archiveEvent`.
 7. Commit **one atomic batch** containing three statements, all guarded: insert the undo
    operation, update the resource, and set `undone_by_operation_id` on the operation being
    undone. Any guard failing makes the whole batch a no-op.
@@ -151,20 +167,17 @@ what was just read, and again inside the SQL — and the "mark undone" statement
 requires the undoing operation row to exist, so an operation can never be marked undone by a
 row that was not written.
 
-Step 5 is the external-integration interaction: an invoice intent survives retries, so history
-must not reopen the completed work it refers to. `reopensCompletedJob` recognises an inverse
-that would restore `scheduled` or `in_progress`, and the repository's `commit` rechecks the
-condition **inside** the atomic write (`requireNoAccountingExport`) rather than only before it,
-because an export request can appear between the read and the write. The refusal is
-`INVARIANT: A job with an accounting export cannot be reopened`. Archiving such a job, and
-restoring it to `completed`, both remain possible — the accounting fields are preserved.
+Steps 5 and 7 together are why an undo that restores a *place* can still lose: the domain check
+in step 6 ran against tables read in step 5, and something could take those cells between the
+two. The commit rewrites the table's rows in `seating_cells` inside the same batch, so the race
+ends in a refused primary key rather than an overlapping plan.
 
 ## The conflict rule
 
 **Undo is allowed only while the resource is exactly at the version the operation left it at.**
 
-Completing `job_in_progress` moves it 2 → 3 and records `version_after: 3`. Undo is allowed
-while the job is at version 3. If anything changed it since — the same user in another tab, a
+Labelling a seat on `tbl_head` moves it 3 → 4 and records `version_after: 4`. Undo is allowed
+while the table is at version 4. If anything changed it since — the same user in another tab, a
 coworker, the agent, an HTTP client — undo is refused with
 `CONFLICT: Newer changes exist; undo refused`.
 
@@ -173,13 +186,14 @@ other change did. For a business application that is worse than refusing: the us
 "this changed, look again" loses thirty seconds; the user whose colleague's edit vanished loses
 trust in the record.
 
-The scenario the tests pin (`tests/unit/application/undo.test.ts`, repeated against real SQL in
-`tests/integration/` and through the browser in `tests/e2e/undo-conflict.spec.ts`):
+The scenario the tests pin (`tests/unit/application/seating-undo.test.ts`, repeated against
+real SQL in `tests/integration/use-cases-d1.test.ts` and through the browser in
+`tests/e2e/undo-conflict.spec.ts`):
 
 | Step | Actor | Result |
 | --- | --- | --- |
-| Reschedule the job, v12 → v13 | A | `op1` recorded, `version_after: 13` |
-| Complete the job, v13 → v14 | B | `op2` recorded, `version_after: 14` |
+| Label a seat, v12 → v13 | A | `op1` recorded, `version_after: 13` |
+| Label another seat, v13 → v14 | B | `op2` recorded, `version_after: 14` |
 | `undo-operation(op1)` | A | **`CONFLICT`** — 14 ≠ 13 |
 | `undo-operation(op2)` | B | Ok, v15 |
 | `undo-operation(op1)` | A | **Still `CONFLICT`** — 15 ≠ 13 |
@@ -199,8 +213,11 @@ original forward command:
 4. Load the forward operation through `related_operation_id`. A create →
    `INVARIANT: A create cannot be redone`.
 5. Re-run that command's domain transition with the stored `payload`:
-   `completeJob(resource, now)`, `rescheduleJob(resource, payload.scheduledAt, now)`, and so
-   on. The forward command's *own capability* is required as well.
+   `moveSeatingTable(resource, { gridX, gridY }, siblings, now)`,
+   `labelSeat(resource, seat, payload.label, now)`, and so on. The forward command's *own
+   capability* is required as well. These are the ordinary domain functions, not the undo-only
+   restore twins: a redo moves the record back off wherever the undo put it, so the "already
+   there" rules are not in the way.
 6. Record a `redo` row carrying the forward operation's inverse, and mark the undo row
    `undone_by_operation_id`.
 
@@ -211,8 +228,7 @@ One sequence is deliberately refused rather than guessed: undo → redo → undo
 whose `related_operation_id` names a *redo* row, whose `action` is `redo-operation` and not a
 domain command. There is nothing to replay, so it is `INVARIANT: This operation cannot be
 redone`. Walking the chain twice to find the original would work, but a guess in a history
-mechanism is worse than a refusal; `tests/unit/application/undo.test.ts` pins the behaviour
-with the test name *refuses to redo the undo of a redo, rather than guessing*.
+mechanism is worse than a refusal.
 
 ## Who may reverse what
 
@@ -221,15 +237,14 @@ capability for the effect the reversal actually has (`src/application/history-po
 
 | Inverse | Requires |
 | --- | --- |
-| `archive-customer` (undoing a create) | `customers:archive`, **or** `customers:create` when the caller performed the create themselves |
-| `restore-customer` (undoing an archive) | `customers:archive` |
-| `restore-job-schedule` | `jobs:reschedule` |
-| `restore-job-status`, `archive-job` | `jobs:transition` |
+| `archive-event` (undoing a create) | `events:archive`, **or** `events:create` when the caller performed the create themselves |
+| `restore-event` (undoing an archive) | `events:archive` |
+| every seating inverse | `seating:write` |
 
-So a member may compensate their own `create-customer` — the mistake-correction case that
-actually matters — but cannot undo an admin's archive, and cannot compensate somebody else's
-create. Job changes may be reversed by any coworker with the matching job capability, because
-that work is shared.
+So a member may compensate their own `create-event` — the mistake-correction case that actually
+matters — but cannot undo an admin's archive, and cannot compensate somebody else's create.
+Seating changes may be reversed by any coworker who could have made them, because a floor plan
+is shared work and there is no seating capability a role can hold one half of.
 
 Permission is evaluated against the caller's **current** role. Somebody demoted this morning
 cannot undo what they did yesterday. `list-recent-activity` runs the same policy to compute its
@@ -249,7 +264,7 @@ cannot undo what they did yesterday. `list-recent-activity` runs the same policy
 | `This undo has already been redone` | `INVARIANT` | 422 | Undo it again first |
 | `A create cannot be redone` | `INVARIANT` | 422 | Create the record again instead |
 | `This operation cannot be redone` | `INVARIANT` | 422 | The chain has no domain command to replay |
-| `A job with an accounting export cannot be reopened` | `INVARIANT` | 422 | The invoice intent is durable; archive it instead |
+| `Tables may not overlap` | `INVARIANT` | 422 | The space the table wants back has been taken; move whatever is there first |
 | `You may not reverse this operation` | `AUTHORIZATION` | 403 | The caller lacks the effect's capability |
 
 `CONFLICT` means "re-read and try again". `INVARIANT` means "this will never work". The UI can
@@ -264,9 +279,9 @@ id. That is the whole affordance: undo is one click away for a few seconds, and 
 list is one page away.
 
 `/activity` renders `list-recent-activity`: the recent operations, who performed each one, from
-which surface, and Undo or Redo where the policy allows it. An `irreversible` operation renders
-no button at all — the accounting export appears in the history with no affordance, which is
-the honest presentation.
+which surface, and Undo or Redo where the policy allows it. An operation the policy will not
+let this caller reverse renders no button at all, which is the honest presentation — and an
+`irreversible` one never would, whoever is looking.
 
 A conflict surfaces as the translated `errors.CONFLICT` string, *This record changed. Refresh
 and try again.*, with the server's message as the fallback. The user's next action is to reload

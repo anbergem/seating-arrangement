@@ -29,7 +29,7 @@ Layer 1 answers "we broke the data an hour ago". Layer 2 answers "we lost the ac
 ## What is covered
 
 Covered: everything in the production D1 database. That is the application's own tables from
-`migrations/` (`customers`, `jobs`, `operations`, `idempotency_keys`, `accounting_exports`),
+`migrations/` (`events`, `seating_tables`, `operations`, `idempotency_keys`),
 the framework's own tables (users, sessions, organizations, memberships, audit events) that
 live in the same database, and the `d1_migrations` bookkeeping table, so a restored copy knows
 which migrations it already has. The two schema owners are explained in
@@ -56,7 +56,7 @@ the Cloudflare credentials has a working default.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `D1_DATABASE` | `example-jobs-production` | Database to export |
+| `D1_DATABASE` | `seating-arrangement-production` | Database to export |
 | `WRANGLER_ENV` | `production` | Wrangler environment holding that binding |
 | `BACKUP_DIR` | `backups` | Where the dump is written before upload |
 | `BACKUP_AGE_RECIPIENT` | – | `age` public key; when set the gzip is encrypted and the plaintext deleted |
@@ -78,7 +78,7 @@ Recommendations for the destination:
 
 - Use a **different provider or at least a different account** from the one running production.
   A backup in the account you might lose is not a backup.
-- Set `BACKUP_AGE_RECIPIENT`. The dump contains every customer row and every user record in
+- Set `BACKUP_AGE_RECIPIENT`. The dump contains every application row and every user record in
   plain SQL. Keep the matching identity file out of this repository and out of the same
   account.
 - Express retention as **lifecycle rules on the destination bucket**, not as logic in this
@@ -91,7 +91,7 @@ Recommendations for the destination:
 ## Verification
 
 Every backup is checked at the moment it is written: the export must be non-empty and must
-contain `CREATE TABLE` and `customers`, or `scripts/backup-d1.sh` exits non-zero and the
+contain `CREATE TABLE` and `events`, or `scripts/backup-d1.sh` exits non-zero and the
 workflow fails. That proves the file is a database dump. It does not prove the dump restores.
 
 `scripts/restore-d1-check.sh` is the test restore. It never touches production: it loads the
@@ -100,16 +100,16 @@ directory, which is deleted on exit, so `.wrangler/state` is untouched.
 
 ```bash
 # a plain, gzipped, or age-encrypted dump; set BACKUP_AGE_IDENTITY for .age input
-bash scripts/restore-d1-check.sh backups/example-jobs-production-20260907-030000-f16b25d.sql.gz
+bash scripts/restore-d1-check.sh backups/seating-arrangement-production-20260907-030000-f16b25d.sql.gz
 ```
 
 It decompresses (and decrypts), repeats the content checks, imports the SQL, and prints a row
-count for `customers`, `jobs`, `operations` and `d1_migrations`, teeing everything into a report
+count for `events`, `seating_tables`, `operations` and `d1_migrations`, teeing everything into a report
 file (`RESTORE_REPORT` overrides its name). Read the output as follows:
 
 - The import must complete without an error. A failure here means the dump is unusable and the
   backup configuration is broken, not that the data is wrong.
-- `customers`, `jobs` and `operations` must be plausible for the day the backup was taken. Zero
+- `events`, `seating_tables` and `operations` must be plausible for the day the backup was taken. Zero
   where you expect rows means the export ran against the wrong database or environment.
 - `d1_migrations` tells you which schema the dump belongs to. If it is behind the migrations in
   `migrations/`, a restore has to apply the newer migrations after importing.
@@ -121,7 +121,7 @@ To rehearse without production data, export the local database and restore-check
 
 ```bash
 pnpm db:reset
-pnpm exec wrangler d1 export example-jobs-local --local --output /tmp/local.sql
+pnpm exec wrangler d1 export seating-arrangement-local --local --output /tmp/local.sql
 bash scripts/restore-d1-check.sh /tmp/local.sql
 ```
 
@@ -135,12 +135,12 @@ Never import a dump over a live database. Create a new one, verify it, then move
    whose test restore fails; take the next one.
 3. **Create the new database** and note its id:
    ```bash
-   pnpm exec wrangler d1 create example-jobs-production-restored --jurisdiction eu
+   pnpm exec wrangler d1 create seating-arrangement-production-restored --jurisdiction eu
    ```
 4. **Import the dump** (decompress first; the plain `.sql` is what `--file` takes):
    ```bash
    gzip -dc backups/<file>.sql.gz > /tmp/restore.sql
-   pnpm exec wrangler d1 execute example-jobs-production-restored --remote --file /tmp/restore.sql
+   pnpm exec wrangler d1 execute seating-arrangement-production-restored --remote --file /tmp/restore.sql
    ```
 5. **Bring the schema forward** if `d1_migrations` in the dump is behind `migrations/`. Point
    the production binding at the new id first (step 6), then run
@@ -158,7 +158,7 @@ Never import a dump over a live database. Create a new one, verify it, then move
    ```bash
    node scripts/worker-smoke.mjs --base-url "$PRODUCTION_URL" --mode production
    ```
-   plus a manual sign-in and one read of a known customer and job. Confirm
+   plus a manual sign-in and one read of a known event and its floor plan. Confirm
    `GET /api/ready` reports `migrations.applied === migrations.expected`.
 9. **Commit** the changed `wrangler.jsonc` so the repository and the deployed reality agree.
 10. **Keep the old database for at least a week.** Do not delete it while the incident is still

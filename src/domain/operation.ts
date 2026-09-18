@@ -7,20 +7,20 @@
  * undone (`canUndo`).
  */
 
-import type { JobStatus } from "./job";
+import type { Room, Rotation, Seat, TableShapeKind } from "./seating-table";
 
 export type OperationKind = "forward" | "undo" | "redo";
 export type OperationClassification =
   | "reversible"
   | "compensatable"
   | "irreversible";
-export type ResourceType = "customer" | "job";
+export type ResourceType = "event" | "seating_table";
 
 export interface Operation {
   id: string;
   orgId: string;
   kind: OperationKind;
-  action: string; // action name, e.g. "complete-job"
+  action: string; // action name, e.g. "label-seat"
   resourceType: ResourceType;
   resourceId: string;
   classification: OperationClassification;
@@ -36,30 +36,56 @@ export interface Operation {
 }
 
 export type InverseCommand =
+  | { type: "restore-event" }
+  | { type: "archive-event" } // compensation for create-event
   | {
-      type: "restore-job-status";
+      type: "restore-seating-table-position";
+      previous: { gridX: number; gridY: number };
+    }
+  | {
+      type: "restore-seating-table-rotation";
+      previous: { rotation: Rotation; gridX: number; gridY: number };
+    }
+  | {
+      type: "restore-seating-table-shape";
       previous: {
-        status: JobStatus;
-        completedAt: string | null;
-        archivedAt: string | null;
+        kind: TableShapeKind;
+        size: number;
+        endSeats: boolean;
+        seats: readonly Seat[];
       };
     }
-  | { type: "restore-job-schedule"; previousScheduledAt: string }
-  | { type: "archive-job" } // compensation for create-job
-  | { type: "restore-customer" }
-  | { type: "archive-customer" }; // compensation for create-customer
+  | { type: "restore-room-size"; previous: Room }
+  // Compensation for `bootstrap-event-layout`, which creates many tables and
+  // may enlarge the room. Both have to come back for the event to look as it
+  // did, so one inverse carries both rather than leaving a grown room behind.
+  | {
+      type: "undo-bootstrap";
+      tableIds: readonly string[];
+      previousRoom: Room;
+    }
+  | { type: "restore-seat-label"; seat: number; previousLabel: string }
+  | { type: "restore-seat-presence"; seat: number; present: boolean }
+  | { type: "restore-seating-table" }
+  | { type: "archive-seating-table" }; // compensation for create-seating-table
 
 export const OPERATION_CLASSIFICATION: Readonly<
   Record<string, OperationClassification>
 > = {
-  "create-customer": "compensatable",
-  "archive-customer": "reversible",
-  "create-job": "compensatable",
-  "reschedule-job": "reversible",
-  "start-job": "reversible",
-  "complete-job": "reversible",
-  "archive-job": "reversible",
-  "send-job-to-accounting": "irreversible",
+  "create-event": "compensatable",
+  "archive-event": "reversible",
+  "resize-room": "reversible",
+  // It creates records, so its undo archives them and cannot be replayed —
+  // the same rule `create-seating-table` follows.
+  "bootstrap-event-layout": "compensatable",
+  "create-seating-table": "compensatable",
+  "move-seating-table": "reversible",
+  "rotate-seating-table": "reversible",
+  "reshape-seating-table": "reversible",
+  "remove-seat": "reversible",
+  "restore-seat": "reversible",
+  "label-seat": "reversible",
+  "archive-seating-table": "reversible",
   "undo-operation": "reversible",
   "redo-operation": "reversible",
 };

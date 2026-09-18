@@ -7,7 +7,12 @@
  * key is recognised, and what counts as a create.
  */
 
-import type { Customer, Job, Operation, ResourceType } from "../../domain";
+import type {
+  Event,
+  Operation,
+  ResourceType,
+  SeatingTable,
+} from "../../domain";
 import { toAppError } from "../errors";
 
 /** What every command returns: the resource as it now is, and the id of the
@@ -27,7 +32,7 @@ export interface CommandResult<T> {
  * needs a type and an id (B16), and a second lookup is the only other way to
  * learn the type.
  */
-export interface UndoRedoResult extends CommandResult<Customer | Job> {
+export interface UndoRedoResult extends CommandResult<Event | SeatingTable> {
   resourceType: ResourceType;
 }
 
@@ -77,15 +82,17 @@ export function isIdempotencyKeyViolation(err: unknown): boolean {
  * Whether this operation row is the one that created its resource (blueprint
  * B9).
  *
- * `versionBefore === 0` is the definition: the resource did not exist before
- * the operation, which is true of `create-customer` and `create-job` and of
- * nothing else. It is also the predicate `findCreateOperation` uses in SQL, so
- * the two agree by construction.
+ * The classification is the definition, not `versionBefore === 0`. Every create
+ * is compensatable and every create starts from version zero, so the two agreed
+ * for as long as creates were the only compensatable commands — but
+ * `bootstrap-event-layout` is compensatable and starts from a version the event
+ * already had. Its undo archives the tables it made, and re-running it would
+ * lay out a second set rather than bring the first back, which is exactly the
+ * property this predicate is for.
  *
- * B9 needs this in two places: `redoOperation` refuses to redo a create's undo
- * (a create's inverse is a compensation, not something to re-apply), and
- * `listRecentActivity` reports such an undo as not `redoable`.
+ * B9 needs it in two places: `redoOperation` refuses to redo such an undo, and
+ * `listRecentActivity` reports it as not `redoable`.
  */
-export function isCreateOperation(op: Operation): boolean {
-  return op.versionBefore === 0;
+export function isCompensated(op: Operation): boolean {
+  return op.classification === "compensatable";
 }

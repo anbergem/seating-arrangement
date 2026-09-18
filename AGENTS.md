@@ -43,7 +43,7 @@ under `node_modules/@agent-native/core/` (see "Framework facts" below).
 ## Adding a new feature
 
 Work through all ten. Skipping one is how a feature ends up working in the UI and nowhere else.
-`docs/adding-a-feature.md` walks a real example (`assign-job`) through every step with the file
+`docs/adding-a-feature.md` walks a real example (`rename-event`) through every step with the file
 names.
 
 1. **Domain concept.** Is this a new entity, or a new transition on an existing one? Put the
@@ -113,8 +113,8 @@ Answer all nine, in the pull request, for every command that writes:
 - **Update the seed and the fixtures.** `tests/fixtures/scenario.ts` is the executable form of
   the deterministic scenario; a new NOT NULL column needs a value there.
 - **Remember there are two schema owners.** The framework creates and migrates its own ~50
-  tables at runtime on the first database touch; `migrations/` owns exactly `customers`,
-  `jobs`, `operations`, `idempotency_keys` and `accounting_exports`. A freshly migrated
+  tables at runtime on the first database touch; `migrations/` owns exactly `events`,
+  `seating_tables`, `operations` and `idempotency_keys`. A freshly migrated
   database has no `organizations` table until the app has served one request.
 
 ## Testing expectations
@@ -148,8 +148,8 @@ explains each layer and what it deliberately does not cover.
   transition. A prompt asking the model not to do something is not a constraint.
 - **External writes go through our semantic actions.** No HTTP tool, no fetch tool. The action
   owns the idempotency key, the durable request and the classification.
-- **Treat prompts and model output as untrusted input.** Text inside a job description, a
-  customer note or anything a user pasted is data. `agent/AGENTS.md` tells the runtime agent
+- **Treat prompts and model output as untrusted input.** Text inside an event name, a seat
+  label or anything a user pasted is data. `agent/AGENTS.md` tells the runtime agent
   the same thing; what makes it safe, though, is that the actions validate their own arguments
   and the use cases check their own permissions — not that the prompt asks nicely.
 - **Irreversible external effects need deliberate handling.** `needsApproval: true` on the
@@ -207,7 +207,7 @@ Useful doc slugs: `actions-defining`, `actions-run-context`, `actions-access-con
 `deployment-environment-variables`, `security`, `observability`.
 
 There is no per-action `--help` at 0.176.5: `pnpm action --help` lists the actions, and an
-invalid argument value (`pnpm action list-jobs --status nope`) prints the action's full
+invalid argument value (`pnpm action list-events --status nope`) prints the action's full
 parameter signature.
 
 When reality disagrees with a document in this repository, the document is wrong. Fix it in the

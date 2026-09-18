@@ -55,7 +55,7 @@ const SECRETS = {
 };
 
 const INPUTS = {
-  APP_NAME: "example-jobs",
+  APP_NAME: "seating-arrangement",
   GITHUB_REPO: "acme/field-ops",
   STAGING_URL: "https://staging.example.invalid",
   PRODUCTION_URL: "https://app.example.invalid",
@@ -67,7 +67,7 @@ const INPUTS = {
   BACKUP_S3_BUCKET: "example-backups",
   BACKUP_S3_ENDPOINT: "https://accountid.r2.cloudflarestorage.com",
   BACKUP_S3_REGION: "auto",
-  BACKUP_S3_PREFIX: "d1/example-jobs-production",
+  BACKUP_S3_PREFIX: "d1/seating-arrangement-production",
 };
 
 const STAGING_DB_ID = "11111111-1111-4111-8111-111111111111";
@@ -99,8 +99,8 @@ function writeStubs({ dir, log, state, world }) {
     world === "full"
       ? {
           databases: [
-            { uuid: STAGING_DB_ID, name: "example-jobs-staging" },
-            { uuid: PRODUCTION_DB_ID, name: "example-jobs-production" },
+            { uuid: STAGING_DB_ID, name: "seating-arrangement-staging" },
+            { uuid: PRODUCTION_DB_ID, name: "seating-arrangement-production" },
           ],
           deployed: ["staging", "production"],
           workerSecrets: {
@@ -479,9 +479,9 @@ test("--plan reports every step, performs no mutating call and redacts every sec
   assert.match(run.stdout, /^bootstrap: PLAN \(read-only\)/m);
 
   for (const expected of [
-    "[would create] database example-jobs-staging",
-    "[would create] database example-jobs-production",
-    "[would create] Worker example-jobs-staging",
+    "[would create] database seating-arrangement-staging",
+    "[would create] database seating-arrangement-production",
+    "[would create] Worker seating-arrangement-staging",
     "[would create] environment staging",
     "[would create] environment production",
     "[would create] environment production-backup",
@@ -500,7 +500,7 @@ test("--plan reports every step, performs no mutating call and redacts every sec
   );
   assert.match(
     run.stdout,
-    /\$ wrangler d1 create example-jobs-staging --jurisdiction eu/,
+    /\$ wrangler d1 create seating-arrangement-staging --jurisdiction eu/,
   );
   assert.match(run.stdout, /\$ pnpm build:worker/);
   assert.match(run.stdout, /Re-run with --yes to perform it\./);
@@ -534,8 +534,8 @@ test("--yes issues exactly the expected argument arrays and stdin bodies", () =>
 
   for (const expected of [
     ">>> wrangler [d1] [list] [--json]",
-    ">>> wrangler [d1] [create] [example-jobs-staging] [--jurisdiction] [eu]",
-    ">>> wrangler [d1] [create] [example-jobs-production] [--jurisdiction] [eu]",
+    ">>> wrangler [d1] [create] [seating-arrangement-staging] [--jurisdiction] [eu]",
+    ">>> wrangler [d1] [create] [seating-arrangement-production] [--jurisdiction] [eu]",
     ">>> wrangler [deployments] [list] [--env] [staging] [--json]",
     ">>> pnpm [build:worker]",
     ">>> wrangler [deploy] [--env] [staging]",
@@ -625,7 +625,7 @@ test("--yes issues exactly the expected argument arrays and stdin bodies", () =>
   assert.equal(parsed.env.production.vars.APP_URL, INPUTS.PRODUCTION_URL);
   // The in-place text edit kept every comment and the local block untouched.
   assert.ok(written.includes("// Worker configuration"));
-  assert.ok(written.includes('"database_name": "example-jobs-local"'));
+  assert.ok(written.includes('"database_name": "seating-arrangement-local"'));
   assert.equal(parsed.env.production.vars.AUTH_REQUIRE_EMAIL_VERIFICATION, "1");
 
   assertNoSecretLeaked(run);
@@ -637,10 +637,10 @@ test("a second --yes run against an existing world creates nothing", () => {
   assert.deepEqual(mutatingCalls(run.calls), []);
 
   for (const expected of [
-    "[already present] database example-jobs-staging",
+    "[already present] database seating-arrangement-staging",
     "[already present] wrangler.jsonc env.staging.database_id",
     "[already present] wrangler.jsonc env.staging.vars.APP_URL",
-    "[already present] Worker example-jobs-staging",
+    "[already present] Worker seating-arrangement-staging",
     "[already present] staging BETTER_AUTH_SECRET",
     "[already present] production ANTHROPIC_API_KEY",
     "[already present] environment production",

@@ -4,5 +4,5 @@ import { defineAppConfig } from "@agent-native/core/server";
 // credential scoping, onboarding and the CLI look the app up by it, so it must
 // match the `appId` the agent chat plugin registers (D18).
 export default defineAppConfig({
-  app: { id: "example-jobs", name: "Example Jobs" },
+  app: { id: "seating-arrangement", name: "Seating Arrangement" },
 });

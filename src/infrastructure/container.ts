@@ -22,14 +22,12 @@
 import { getDbExec } from "@agent-native/core/db";
 
 import type { Dependencies } from "../application/ports";
-import { createAccountingExportsRepository } from "./d1/accounting-exports-repository";
 import type { DbExecLike } from "./d1/atomic";
-import { createCustomersRepository } from "./d1/customers-repository";
+import { createEventsRepository } from "./d1/events-repository";
 import { createIdempotencyStore } from "./d1/idempotency-store";
-import { createJobsRepository } from "./d1/jobs-repository";
 import { createMembershipReader } from "./d1/membership-reader";
 import { createOperationsRepository } from "./d1/operations-repository";
-import { createMockAccountingSystem } from "./mock/mock-accounting";
+import { createSeatingTablesRepository } from "./d1/seating-tables-repository";
 import { randomIdGenerator } from "./random-ids";
 import { systemClock } from "./system-clock";
 
@@ -42,16 +40,6 @@ function currentDbExec(): DbExecLike {
   return getDbExec();
 }
 
-/**
- * Placeholder until T27 wires `src/infrastructure/mock/mock-accounting.ts`.
- *
- * `Dependencies` has no optional fields — a use case must never have to ask
- * whether a port exists — so the field is filled with an adapter that refuses
- * loudly and in the port's own error type. Nothing in the application calls it
- * before T27 adds `send-job-to-accounting`.
- */
-const accounting = createMockAccountingSystem();
-
 let dependencies: Dependencies | undefined;
 
 export function getDependencies(): Dependencies {
@@ -59,12 +47,10 @@ export function getDependencies(): Dependencies {
     clock: systemClock,
     ids: randomIdGenerator,
     membership: createMembershipReader(currentDbExec),
-    customers: createCustomersRepository(currentDbExec),
-    jobs: createJobsRepository(currentDbExec),
+    events: createEventsRepository(currentDbExec),
+    seatingTables: createSeatingTablesRepository(currentDbExec),
     operations: createOperationsRepository(currentDbExec),
     idempotency: createIdempotencyStore(currentDbExec),
-    accounting,
-    accountingExports: createAccountingExportsRepository(currentDbExec),
   };
   return dependencies;
 }

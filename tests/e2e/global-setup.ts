@@ -35,7 +35,7 @@ async function waitForSeededServer(baseURL: string): Promise<void> {
     if (existsSync(WORKER_STATE_FILE)) {
       try {
         const response = await fetch(
-          `${baseURL}/_agent-native/actions/list-jobs`,
+          `${baseURL}/_agent-native/actions/list-events`,
         );
         if (response.status === 401) return;
         lastStatus = `HTTP ${response.status}`;

@@ -128,7 +128,7 @@ gh auth status
 
 ### 5. Rename the application
 
-The sample ships as `example-jobs` / "Example Jobs" (D18). Replace both:
+The sample ships as `seating-arrangement` / "Seating Arrangement" (D18). Replace both:
 
 ```bash
 node scripts/rename-app.mjs --name acme-ops --display "Acme Ops"
@@ -136,7 +136,7 @@ node scripts/rename-app.mjs --name acme-ops --display "Acme Ops"
 
 It prints every file it changed. `--dry-run` lists them without writing. It deliberately
 leaves `docs/plan/**` alone: that directory is the implementation plan, a historical record
-whose text states that the sample was called `example-jobs`.
+whose text states that the sample was called `seating-arrangement`.
 
 Then finish the package metadata by hand — the script sets `name`, but `description` is prose:
 
@@ -388,7 +388,7 @@ node scripts/bootstrap.mjs --plan --only github-secrets
 node scripts/bootstrap.mjs --yes  --only github-secrets
 ```
 
-Set `BACKUP_AGE_RECIPIENT` too: the dump is every customer row and every user record in plain
+Set `BACKUP_AGE_RECIPIENT` too: the dump is every application row and every user record in plain
 SQL. `docs/backups.md` covers the strategy, the retention rules and the tested restore.
 
 ### 17. Deploy production
@@ -429,8 +429,8 @@ read-only production smoke. `docs/deployment.md` explains each of those checks a
 Delete:
 
 - **`.bootstrap.env`.** It holds four secrets in one file and has done its job.
-- **The sample domain**, when you are ready to build your own: `src/domain/customer.ts`,
-  `src/domain/job.ts`, their use cases, actions, migrations, UI routes and tests. Keep the
+- **The seating domain**, when you are ready to build your own: `src/domain/event.ts`,
+  `src/domain/seating-table.ts`, their use cases, actions, migrations, UI routes and tests. Keep the
   shapes — `docs/adding-a-feature.md` is written around them.
 - **The seeded QA users on staging**, if you would rather not have password accounts there at
   all: unset `SEED_ENABLED` and `SEED_PASSWORD` in `wrangler.jsonc` and the staging

@@ -14,12 +14,12 @@ test("restore check imports into scratch state and reports actual table counts",
     writeFileSync(
       backup,
       [
-        "CREATE TABLE customers (id TEXT PRIMARY KEY);",
-        "CREATE TABLE jobs (id TEXT PRIMARY KEY);",
+        "CREATE TABLE events (id TEXT PRIMARY KEY);",
+        "CREATE TABLE seating_tables (id TEXT PRIMARY KEY);",
         "CREATE TABLE operations (id TEXT PRIMARY KEY);",
         "CREATE TABLE d1_migrations (id INTEGER PRIMARY KEY, name TEXT);",
-        "INSERT INTO customers VALUES ('customer-1');",
-        "INSERT INTO jobs VALUES ('job-1');",
+        "INSERT INTO events VALUES ('event-1');",
+        "INSERT INTO seating_tables VALUES ('table-1');",
         "INSERT INTO operations VALUES ('operation-1');",
         "INSERT INTO d1_migrations VALUES (1, '0001_init.sql');",
       ].join("\n"),
@@ -33,11 +33,16 @@ test("restore check imports into scratch state and reports actual table counts",
         env: { ...process.env, RESTORE_REPORT: report },
       },
     );
-    for (const table of ["customers", "jobs", "operations", "d1_migrations"])
+    for (const table of [
+      "events",
+      "seating_tables",
+      "operations",
+      "d1_migrations",
+    ])
       assert.match(output, new RegExp(`Count: ${table}`));
     const restoredOnes = output.match(/row_count[^\n]*1/g) ?? [];
     assert.equal(restoredOnes.length, 4);
-    assert.match(readFileSync(report, "utf8"), /Count: customers/);
+    assert.match(readFileSync(report, "utf8"), /Count: events/);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }

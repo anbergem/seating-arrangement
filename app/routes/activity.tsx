@@ -11,10 +11,8 @@ export default function ActivityRoute() {
   const t = useT();
   const feedback = useOperationFeedback([
     "list-recent-activity",
-    "list-jobs",
-    "get-job",
-    "list-customers",
-    "get-customer",
+    "list-events",
+    "get-event",
   ]);
   const activity = useActionQuery<ActivityItem[]>("list-recent-activity", {
     limit: 100,

@@ -29,11 +29,16 @@ touches the database**. Not at deploy time. Not from a file in this repository.
 
 | Table | What it holds |
 | --- | --- |
-| `customers` | The sample customer aggregate |
-| `jobs` | The sample job aggregate |
+| `events` | The occasion a seating plan belongs to |
+| `seating_tables` | One table on an event's floor plan, with its seats as a JSON column |
+| `seating_cells` | One row per grid cell a table covers. Its primary key `(org_id, event_id, x, y)` **is** the rule that two tables may not overlap |
 | `operations` | The undo ledger: one row per change, with its inverse |
 | `idempotency_keys` | `(org_id, action, key)` → the resource a create produced |
-| `accounting_exports` | The durable pending request for the external integration |
+
+`seating_cells` is derived state, and the only derived state in the schema. It is written in
+the same atomic batch as the table row it describes, never separately and never by a
+background job, because the moment the two could disagree the constraint would stop meaning
+what it says.
 
 `AGENT_NATIVE_SKIP_ENSURE_TABLES` is never set: CI exercises the framework's bootstrap on every
 run by booting the Worker against a fresh local D1.
@@ -75,7 +80,6 @@ There is no `drizzle-kit generate` and no `drizzle-kit push` anywhere; the docto
 
 ```
 migrations/0001_init.sql
-migrations/0002_job_accounting.sql
         │
         ├── wrangler d1 migrations apply   →  D1 (local, staging, production)
         └── scripts/migrate-local.mjs      →  file:./data/app.db (the Node dev server)
@@ -93,12 +97,21 @@ apply app DDL where the Wrangler runner is the owner.
 | --- | --- | --- |
 | Node dev server (`pnpm dev`) | `pnpm db:migrate` | `pnpm db:seed` |
 | Local D1 (`pnpm dev:worker`, Playwright) | `pnpm db:migrate:worker` | `pnpm db:seed:worker` |
-| Both, from scratch | `pnpm db:reset` | — |
+| Both, from scratch | `pnpm db:reset` | **still required** — see below |
 | Staging | `pnpm db:migrate:staging` | the deploy workflow, QA org only |
 | Production | `pnpm db:migrate:production` | **never** |
 
 `pnpm db:reset` deletes `data/app.db*` and `.wrangler/state`, then migrates both. It touches
 nothing outside the repository and `--local` never reaches Cloudflare.
+
+**A reset leaves you signed out of an empty application, and it does not say so.** The user
+accounts live in the database it just deleted, so the next `pnpm dev` serves a working app with
+no organizations, no events and no way in: signing in as `owner@example.invalid` answers
+"incorrect password" for a password that is correct, because the account no longer exists.
+Nothing in the output warns you — the server starts cleanly and every route returns 200. Always
+finish the sequence with `pnpm dev` and then `pnpm db:seed`, and treat `pnpm db:reset` on its own
+as an unfinished command. Rewriting a migration is the usual reason to reach for it, so this is
+easy to do in the middle of a schema change and not notice until the app is open.
 
 Staging and production migrations need `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in
 the environment. In practice the workflows run them; running
@@ -113,7 +126,7 @@ pnpm exec wrangler d1 execute <app>-local --local \
 
 # staging, read-only
 pnpm exec wrangler d1 execute <app>-staging --remote --env staging \
-  --command "SELECT status, COUNT(*) FROM jobs GROUP BY status"
+  --command "SELECT status, COUNT(*) FROM seating_tables GROUP BY status"
 
 pnpm exec wrangler d1 migrations list <app>-production --remote --env production
 ```
@@ -121,8 +134,8 @@ pnpm exec wrangler d1 migrations list <app>-production --remote --env production
 ## Writing a migration
 
 ```bash
-pnpm exec wrangler d1 migrations create <app>-local "job assignee history"
-# creates migrations/0003_job_assignee_history.sql
+pnpm exec wrangler d1 migrations create <app>-local "event venue"
+# creates migrations/0002_event_venue.sql
 ```
 
 Rules:
@@ -189,7 +202,7 @@ migrations must be backwards compatible, and why the bookmark is taken *before* 
 rather than after: if a migration corrupts data, the Worker rollback is not the fix — the
 bookmark is.
 
-The production workflow records the bookmark into the job summary before it migrates, and on
+The production workflow records the bookmark into the workflow job summary before it migrates, and on
 failure appends both recovery commands. `docs/runbook.md` § *Recover after a bad migration* is
 the procedure; the short version is that a Time Travel restore is in place and a dump restore is
 into a new database, never over a live one.

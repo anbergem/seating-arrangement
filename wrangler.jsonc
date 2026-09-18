@@ -8,7 +8,7 @@
   // `vars` and `d1_databases` are NOT inherited by environments (F9), so every environment
   // repeats them in full. Secrets are never in this file; use `wrangler secret put`.
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "example-jobs",
+  "name": "seating-arrangement",
   "main": "dist/_worker.js/index.js",
   "compatibility_date": "2026-09-05",
   "compatibility_flags": ["nodejs_compat"],
@@ -26,7 +26,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "example-jobs-local",
+      "database_name": "seating-arrangement-local",
       // Any placeholder works locally: `--local` keys the database by `database_name` (F10).
       "database_id": "00000000-0000-0000-0000-000000000000",
       "migrations_dir": "migrations",
@@ -34,7 +34,7 @@
   ],
   "env": {
     "staging": {
-      "name": "example-jobs-staging",
+      "name": "seating-arrangement-staging",
       "vars": {
         "APP_ENV": "staging",
         "NODE_ENV": "production",
@@ -48,14 +48,14 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "example-jobs-staging",
+          "database_name": "seating-arrangement-staging",
           "database_id": "REPLACE_ME",
           "migrations_dir": "migrations",
         },
       ],
     },
     "production": {
-      "name": "example-jobs-production",
+      "name": "seating-arrangement-production",
       "vars": {
         "APP_ENV": "production",
         "NODE_ENV": "production",
@@ -72,7 +72,7 @@
       "d1_databases": [
         {
           "binding": "DB",
-          "database_name": "example-jobs-production",
+          "database_name": "seating-arrangement-production",
           "database_id": "REPLACE_ME",
           "migrations_dir": "migrations",
         },

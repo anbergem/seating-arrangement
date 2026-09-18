@@ -1,7 +1,7 @@
 {
-  "name": "Example Jobs",
-  "short_name": "Example Jobs",
-  "description": "Workspace app for Example Jobs.",
+  "name": "Seating Arrangement",
+  "short_name": "Seating Arrangement",
+  "description": "Workspace app for Seating Arrangement.",
   "start_url": "./home",
   "background_color": "#111111",
   "theme_color": "#18181B",

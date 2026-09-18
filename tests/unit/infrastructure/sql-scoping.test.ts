@@ -34,7 +34,7 @@ describe("SQL statements", () => {
   it("exports the statements the repositories use", () => {
     // A rename that silently drops a statement would leave the loops below
     // asserting nothing at all.
-    expect(statements.length).toBeGreaterThanOrEqual(18);
+    expect(statements.length).toBeGreaterThanOrEqual(20);
   });
 
   it.each(statements)("%s is scoped by organization", (_name, statement) => {
@@ -49,7 +49,9 @@ describe("SQL statements", () => {
     const literals = statement.match(/'[^']*'/g) ?? [];
     expect(literals).toEqual(
       literals.filter((literal) =>
-        ["'active'", "'customer'", "'job'", "'forward'"].includes(literal),
+        ["'active'", "'event'", "'seating_table'", "'forward'"].includes(
+          literal,
+        ),
       ),
     );
   });
@@ -62,8 +64,8 @@ describe("SQL fragments", () => {
     ),
   );
 
-  it("exports the optional pieces of the two list statements", () => {
-    expect(fragments.length).toBeGreaterThanOrEqual(8);
+  it("exports the optional pieces of the list statements", () => {
+    expect(fragments.length).toBeGreaterThanOrEqual(5);
   });
 
   it.each(fragments)(

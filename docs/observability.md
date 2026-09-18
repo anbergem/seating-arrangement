@@ -5,7 +5,7 @@ have different privacy properties.
 
 | Record | Owner | Contains | Answers |
 | --- | --- | --- | --- |
-| **The audit trail** (`agent_audit_log`) | The framework | who, when, which surface, which target, redacted input, status | "Who completed that job, and from where?" |
+| **The audit trail** (`agent_audit_log`) | The framework | who, when, which surface, which target, redacted input, status | "Who moved that table, and from where?" |
 | **The operation ledger** (`operations`) | This application | versions, classification, the inverse, the payload | "Can this still be undone, and how?" |
 | **Structured logs** (Workers Logs) | Cloudflare | action name, outcome, error code, caller, `orgId`, duration | "Is the system healthy, and what is failing?" |
 
@@ -28,12 +28,12 @@ trail's job, and reading it requires being signed in as an owner or admin of tha
 failure, from `runAppAction`:
 
 ```json
-{"level":"info","event":"action","action":"complete-job","outcome":"success",
+{"level":"info","event":"action","action":"move-seating-table","outcome":"success",
  "caller":"frontend","orgId":"org_acme","durationMs":14}
 ```
 
 ```json
-{"level":"error","event":"action","action":"archive-customer","outcome":"error",
+{"level":"error","event":"action","action":"archive-event","outcome":"error",
  "errorCode":"AUTHORIZATION","caller":"http","orgId":"org_acme","durationMs":3}
 ```
 
@@ -41,7 +41,7 @@ failure, from `runAppAction`:
 | --- | --- |
 | `level` | `info` on success, `error` on failure |
 | `event` | always `action` |
-| `action` | the action name, e.g. `complete-job` |
+| `action` | the action name, e.g. `move-seating-table` |
 | `outcome` | `success` or `error` |
 | `errorCode` | present only on `error`: one of the eight `AppErrorCode` values |
 | `caller` | `frontend`, `tool`, `mcp`, `http`, `cli`, `automation`, or `unknown` |
@@ -56,7 +56,7 @@ arguments, no result, no row contents, no SQL.
 Two other line shapes exist:
 
 ```json
-{"level":"error","event":"unexpected-error","action":"complete-job","orgId":"org_acme",
+{"level":"error","event":"unexpected-error","action":"move-seating-table","orgId":"org_acme",
  "message":"…","stack":"…"}
 ```
 
@@ -90,7 +90,7 @@ pnpm exec wrangler tail --env production --status error
 pnpm exec wrangler tail --env production --format json --search '"event":"action"'
 
 # one action
-pnpm exec wrangler tail --env production --search '"action":"send-job-to-accounting"'
+pnpm exec wrangler tail --env production --search '"action":"archive-event"'
 ```
 
 The dashboard equivalent — **Workers & Pages** → the Worker → **Logs** — is where retained logs
@@ -125,9 +125,9 @@ Read it through the framework's own actions, which enforce the same organization
 everything else:
 
 ```bash
-# everything about one job
+# everything about one table
 curl -s -b cookies.txt \
-  'https://<host>/_agent-native/actions/list-audit-events?targetType=job&targetId=job_x&limit=50'
+  'https://<host>/_agent-native/actions/list-audit-events?targetType=seating_table&targetId=tbl_x&limit=50'
 
 # only what the agent did
 curl -s -b cookies.txt \

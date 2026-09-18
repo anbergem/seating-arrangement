@@ -74,7 +74,7 @@ test("production smoke performs no authenticated or application writes", async (
       return new Response("<html></html>", {
         headers: { "content-type": "text/html" },
       });
-    if (url.pathname.endsWith("/list-jobs"))
+    if (url.pathname.endsWith("/list-events"))
       return Response.json({ error: "unauthorized" }, { status: 401 });
     if (url.pathname === "/mcp")
       return Response.json(
@@ -136,7 +136,7 @@ test("SSE reader accepts meaningful content after metadata", async () => {
   const result = await readSseEvidence(
     sseResponse([
       'data: {"type":"start"}\n\n',
-      'data: {"type":"text-delta","text":"A job"}\n\n',
+      'data: {"type":"text-delta","text":"An event"}\n\n',
     ]),
   );
   assert.equal(result.evidence.type, "text-delta");

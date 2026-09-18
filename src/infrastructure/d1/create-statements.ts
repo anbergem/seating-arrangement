@@ -1,5 +1,5 @@
 /**
- * The two statements a `create` shares between customers and jobs (B11).
+ * The two statements a `create` shares between events and seating tables (B11).
  *
  * Both repositories write the same three-statement batch — insert the
  * resource, then its audit row, then the optional idempotency key — and the
@@ -19,10 +19,11 @@ import {
 /**
  * The audit row for a create, guarded on the resource the statement before it
  * was meant to insert being there — so an insert the database refused (an
- * archived customer, a replayed create) leaves no history behind.
+ * archived event, an occupied cell, a replayed create) leaves no history
+ * behind.
  *
- * The guard has one branch per resource type and the type is passed twice, so
- * exactly one branch can match.
+ * The guard has one branch per resource type and the type is passed once per
+ * branch, so exactly one branch can match.
  */
 export function operationForCreateStatement(operation: Operation): Statement {
   return {

@@ -11,9 +11,9 @@ function baseOperation(overrides: Partial<Operation> = {}): Operation {
     id: "op_1",
     orgId: "org_1",
     kind: "forward",
-    action: "complete-job",
-    resourceType: "job",
-    resourceId: "job_1",
+    action: "label-seat",
+    resourceType: "seating_table",
+    resourceId: "tbl_1",
     classification: "reversible",
     versionBefore: 1,
     versionAfter: 2,
@@ -31,14 +31,18 @@ function baseOperation(overrides: Partial<Operation> = {}): Operation {
 describe("OPERATION_CLASSIFICATION", () => {
   it("matches the blueprint table exactly", () => {
     expect(OPERATION_CLASSIFICATION).toEqual({
-      "create-customer": "compensatable",
-      "archive-customer": "reversible",
-      "create-job": "compensatable",
-      "reschedule-job": "reversible",
-      "start-job": "reversible",
-      "complete-job": "reversible",
-      "archive-job": "reversible",
-      "send-job-to-accounting": "irreversible",
+      "create-event": "compensatable",
+      "archive-event": "reversible",
+      "resize-room": "reversible",
+      "bootstrap-event-layout": "compensatable",
+      "create-seating-table": "compensatable",
+      "move-seating-table": "reversible",
+      "rotate-seating-table": "reversible",
+      "reshape-seating-table": "reversible",
+      "remove-seat": "reversible",
+      "restore-seat": "reversible",
+      "label-seat": "reversible",
+      "archive-seating-table": "reversible",
       "undo-operation": "reversible",
       "redo-operation": "reversible",
     });
@@ -74,7 +78,7 @@ describe("canUndo", () => {
     expect(
       canUndo(
         baseOperation({
-          action: "send-job-to-accounting",
+          action: "label-seat",
           classification: "irreversible",
         }),
         2,

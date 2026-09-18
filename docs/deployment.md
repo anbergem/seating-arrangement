@@ -298,13 +298,14 @@ node scripts/worker-smoke.mjs --base-url "$PRODUCTION_URL" --mode production
 ```
 
 The production mode does not sign in, does not write and does not touch agent chat: a
-deployment check must not create rows in a customer's database. It verifies `ping`, `health`
+deployment check must not create rows in a client's database. It verifies `ping`, `health`
 with `db: true` and `dialect: "d1"`, `/api/ready` with `applied === expected`, `GET /sign-in`,
 `GET /` (200 — the static shell; **never** expect a 302), an unauthenticated action returning
 401, and `POST /mcp` returning 401 with a `WWW-Authenticate` challenge.
 
-Staging and local additionally sign in, list jobs, perform a reversible write (a `create-job`
-with an idempotency key, then `archive-job`) and check that agent chat returns an event stream.
+Staging and local additionally sign in, list events, perform a reversible write (a
+`create-seating-table` with an idempotency key, a `label-seat`, a stale-version refusal, an
+undo, then `archive-seating-table`) and check that agent chat returns an event stream.
 The table of which check runs where is in `docs/testing.md`.
 
 ## Cloudflare Access on staging

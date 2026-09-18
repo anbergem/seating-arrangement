@@ -21,133 +21,14 @@
  *   a no-op too and the batch as a whole writes nothing.
  *
  * Column lists are always explicit: `SELECT *` would break `mappers.ts`
- * silently the day a migration adds a column. `jobs.accounting_reference` and
- * `jobs.accounting_sent_at` are deliberately absent — migration
- * `0002_job_accounting.sql` (T27) adds them, and until then the mappers report
- * them as `null` (B11).
+ * silently the day a migration adds a column.
  */
-
-// ---------------------------------------------------------------------------
-// Customers
-// ---------------------------------------------------------------------------
-
-const CUSTOMER_COLUMNS =
-  "id, org_id, name, email, phone, notes, status, version, created_by, created_at, updated_at";
-
-export const SELECT_CUSTOMER_BY_ID = `SELECT ${CUSTOMER_COLUMNS} FROM customers WHERE org_id = ? AND id = ? LIMIT 1`;
-
-/** Prefix; `SELECT_CUSTOMERS_PARTS` supplies the optional tail. */
-export const SELECT_CUSTOMERS = `SELECT ${CUSTOMER_COLUMNS} FROM customers WHERE org_id = ?`;
-
-/**
- * The only pieces that may be appended to `SELECT_CUSTOMERS`, chosen by filter
- * name — never built from a caller's value. Each fragment carries exactly one
- * `?`, so the filter's value stays an argument. `search` matches the way the
- * in-memory repository's `includes()` does; `%`, `_` and the escape character
- * itself are escaped by the caller (`escapeLike` in `customers-repository.ts`).
- *
- * Grouped in a record rather than exported as loose constants because the
- * scoping test's rule ("every exported string carries `org_id = ?`") is about
- * whole statements; a fragment gets its tenancy from the statement it is
- * appended to. The test checks the fragments against their own, stricter rule.
- */
-export const SELECT_CUSTOMERS_PARTS = {
-  status: " AND status = ?",
-  search: " AND lower(name) LIKE ? ESCAPE '\\'",
-  order: " ORDER BY name ASC, id ASC",
-} as const;
-
-/**
- * Guarded so the statement carries `org_id = ?` like every other one here, and
- * so a replayed create is a no-op instead of a primary-key failure that would
- * abort the whole batch. Ids are `crypto.randomUUID()` values (B3), so zero
- * rows affected means a retry, not a collision.
- */
-export const INSERT_CUSTOMER = `INSERT INTO customers (${CUSTOMER_COLUMNS})
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-WHERE NOT EXISTS (SELECT 1 FROM customers WHERE org_id = ? AND id = ?)`;
-
-/** `name`, `email`, `phone`, `notes` and `status` are the only mutable
- * columns; `created_by`/`created_at` never change. */
-export const UPDATE_CUSTOMER_VERSIONED = `UPDATE customers
-SET name = ?, email = ?, phone = ?, notes = ?, status = ?, version = ?, updated_at = ?
-WHERE org_id = ? AND id = ? AND version = ?`;
-
-// ---------------------------------------------------------------------------
-// Jobs
-// ---------------------------------------------------------------------------
-
-const JOB_COLUMNS =
-  "id, org_id, customer_id, title, description, status, scheduled_at, assigned_to, completed_at, archived_at, accounting_reference, accounting_sent_at, version, created_by, created_at, updated_at";
-
-export const SELECT_JOB_BY_ID = `SELECT ${JOB_COLUMNS} FROM jobs WHERE org_id = ? AND id = ? LIMIT 1`;
-
-/** Prefix; `SELECT_JOBS_PARTS` supplies the optional tail. */
-export const SELECT_JOBS = `SELECT ${JOB_COLUMNS} FROM jobs WHERE org_id = ?`;
-
-/**
- * The only pieces that may be appended to `SELECT_JOBS`, chosen by filter name
- * — never built from a caller's value. The window is half-open: `from` is
- * inclusive, `to` is exclusive, so consecutive days do not both match a job
- * scheduled at midnight.
- */
-export const SELECT_JOBS_PARTS = {
-  status: " AND status = ?",
-  customerId: " AND customer_id = ?",
-  from: " AND scheduled_at >= ?",
-  to: " AND scheduled_at < ?",
-  order: " ORDER BY scheduled_at ASC, id ASC",
-} as const;
-
-/** Zero rows affected means the customer is missing, archived, or belongs to
- * another organization — the caller reports NOT_FOUND for all three, which is
- * also what keeps a cross-organization create from confirming that an id
- * exists somewhere else (B11). */
-export const INSERT_JOB_IF_ACTIVE_CUSTOMER = `INSERT INTO jobs (${JOB_COLUMNS})
-SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-WHERE EXISTS (SELECT 1 FROM customers WHERE org_id = ? AND id = ? AND status = 'active')`;
-
-/** `title`, `description` and `customer_id` are immutable after creation, so
- * they are not in the SET list; the accounting columns arrive with migration
- * 0002 (T27). */
-export const UPDATE_JOB_VERSIONED = `UPDATE jobs
-SET status = ?, scheduled_at = ?, assigned_to = ?, completed_at = ?, archived_at = ?, accounting_reference = ?, accounting_sent_at = ?, version = ?, updated_at = ?
-WHERE org_id = ? AND id = ? AND version = ?`;
 
 const OPERATION_COLUMNS =
   "id, org_id, kind, action, resource_type, resource_id, classification, version_before, version_after, payload, inverse, related_operation_id, undone_by_operation_id, performed_by, performed_via, performed_at";
 
 const OPERATION_INSERT_VALUES =
   "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?";
-
-// ---------------------------------------------------------------------------
-// Durable accounting export intents (B22/D27)
-// ---------------------------------------------------------------------------
-
-const ACCOUNTING_EXPORT_COLUMNS =
-  "org_id, job_id, idempotency_key, request_json, status, external_reference, operation_id, requested_by, requested_at, completed_at";
-
-export const SELECT_ACCOUNTING_EXPORT = `SELECT ${ACCOUNTING_EXPORT_COLUMNS} FROM accounting_exports
-WHERE org_id = ? AND job_id = ? LIMIT 1`;
-
-export const INSERT_PENDING_ACCOUNTING_EXPORT = `INSERT OR IGNORE INTO accounting_exports (${ACCOUNTING_EXPORT_COLUMNS})
-SELECT ?, ?, ?, ?, ?, NULL, NULL, ?, ?, NULL
-WHERE EXISTS (SELECT 1 FROM jobs WHERE org_id = ? AND id = ? AND version = ? AND status = ? AND accounting_reference IS NULL)`;
-
-export const RECORD_ACCOUNTING_ACCEPTANCE = `UPDATE accounting_exports
-SET external_reference = COALESCE(external_reference, ?)
-WHERE org_id = ? AND job_id = ? AND status = ?
-  AND (external_reference IS NULL OR external_reference = ?)`;
-
-export const INSERT_ACCOUNTING_OPERATION_IF_PENDING = `INSERT INTO operations (${OPERATION_COLUMNS})
-SELECT ${OPERATION_INSERT_VALUES}
-WHERE EXISTS (SELECT 1 FROM jobs WHERE org_id = ? AND id = ? AND version = ?)
-  AND EXISTS (SELECT 1 FROM accounting_exports WHERE org_id = ? AND job_id = ? AND status = ? AND external_reference = ?)`;
-
-export const COMPLETE_ACCOUNTING_EXPORT = `UPDATE accounting_exports
-SET status = ?, operation_id = ?, completed_at = ?
-WHERE org_id = ? AND job_id = ? AND status = ? AND external_reference = ?
-  AND EXISTS (SELECT 1 FROM operations WHERE org_id = ? AND id = ?)`;
 
 // ---------------------------------------------------------------------------
 // Operations (the audit and undo log, B9)
@@ -157,56 +38,20 @@ WHERE org_id = ? AND job_id = ? AND status = ? AND external_reference = ?
  * undone later, by `MARK_OPERATION_UNDONE`, never at birth. */
 
 /**
- * The audit row of a job `commit`, guarded on the job still being at the
- * version the caller read — the same predicate as the versioned update it
- * shares a batch with, so the two are written together or not at all.
- *
- * The guard is the *expected* version, and the statement runs **before** the
- * update. Guarding on the version the update writes instead (B11's wording)
- * has a hole: two callers who both read version 1 and both complete the job
- * both want to write version 2, so the loser's guard matches the winner's row
- * and an audit row appears for a change that never happened. Reading the
- * pre-image inside the same transaction cannot be fooled that way.
- */
-export const INSERT_OPERATION_IF_VERSION = `INSERT INTO operations (${OPERATION_COLUMNS})
-SELECT ${OPERATION_INSERT_VALUES}
-WHERE EXISTS (SELECT 1 FROM jobs WHERE org_id = ? AND id = ? AND version = ?)`;
-
-export const INSERT_OPERATION_IF_VERSION_WITHOUT_ACCOUNTING_EXPORT = `INSERT INTO operations (${OPERATION_COLUMNS})
-SELECT ${OPERATION_INSERT_VALUES}
-WHERE EXISTS (SELECT 1 FROM jobs WHERE org_id = ? AND id = ? AND version = ?)
-  AND NOT EXISTS (SELECT 1 FROM accounting_exports WHERE org_id = ? AND job_id = ?)`;
-
-export const UPDATE_JOB_VERSIONED_WITHOUT_ACCOUNTING_EXPORT = `UPDATE jobs
-SET status = ?, scheduled_at = ?, assigned_to = ?, completed_at = ?, archived_at = ?, accounting_reference = ?, accounting_sent_at = ?, version = ?, updated_at = ?
-WHERE org_id = ? AND id = ? AND version = ?
-  AND NOT EXISTS (SELECT 1 FROM accounting_exports WHERE org_id = ? AND job_id = ?)
-  AND EXISTS (SELECT 1 FROM operations WHERE org_id = ? AND id = ?)`;
-
-export const UPDATE_JOB_VERSIONED_IF_OPERATION = `UPDATE jobs
-SET status = ?, scheduled_at = ?, assigned_to = ?, completed_at = ?, archived_at = ?, accounting_reference = ?, accounting_sent_at = ?, version = ?, updated_at = ?
-WHERE org_id = ? AND id = ? AND version = ?
-  AND EXISTS (SELECT 1 FROM operations WHERE org_id = ? AND id = ?)`;
-
-/** The same guard against `customers`. */
-export const INSERT_OPERATION_IF_CUSTOMER_VERSION = `INSERT INTO operations (${OPERATION_COLUMNS})
-SELECT ${OPERATION_INSERT_VALUES}
-WHERE EXISTS (SELECT 1 FROM customers WHERE org_id = ? AND id = ? AND version = ?)`;
-
-/**
  * Second statement of a `create`, where there is no previous version to guard
  * on: the audit row is written only if the row the insert before it was meant
  * to produce is really there.
  *
- * One statement covers both resource types by comparing the operation's own
+ * One statement covers every resource type by comparing the operation's own
  * `resource_type` against a literal in each branch, so exactly one branch can
  * ever match. Arguments after the insert values are
- * `(orgId, resourceId, resourceType)` twice — customers first, then jobs.
+ * `(orgId, resourceId, resourceType)` once per branch, in the order the
+ * branches appear: events, then seating tables.
  */
 export const INSERT_OPERATION_IF_RESOURCE_EXISTS = `INSERT INTO operations (${OPERATION_COLUMNS})
 SELECT ${OPERATION_INSERT_VALUES}
-WHERE EXISTS (SELECT 1 FROM customers WHERE org_id = ? AND id = ? AND ? = 'customer')
-   OR EXISTS (SELECT 1 FROM jobs WHERE org_id = ? AND id = ? AND ? = 'job')`;
+WHERE EXISTS (SELECT 1 FROM events WHERE org_id = ? AND id = ? AND ? = 'event')
+   OR EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND ? = 'seating_table')`;
 
 /**
  * Records which operation reversed an earlier one (B9).
@@ -256,7 +101,7 @@ LIMIT 1`;
 /**
  * Last statement of a guarded `create`, and guarded itself on the operation
  * row the statement before it writes. Without that guard a create that was
- * refused (an archived customer, say) would still burn the key, and the
+ * refused (an archived event, say) would still burn the key, and the
  * caller's retry would be answered with a resource id that was never created.
  *
  * A genuine duplicate key still violates the primary key and aborts the whole
@@ -281,3 +126,104 @@ LIMIT 1`;
 export const SELECT_MEMBER_ROLE = `SELECT role FROM org_members
 WHERE org_id = ? AND LOWER(email) = LOWER(?)
 LIMIT 1`;
+
+// ---------------------------------------------------------------------------
+// Events
+// ---------------------------------------------------------------------------
+
+const EVENT_COLUMNS =
+  "id, org_id, name, starts_at, room_width, room_height, status, version, created_by, created_at, updated_at";
+
+export const SELECT_EVENT_BY_ID = `SELECT ${EVENT_COLUMNS} FROM events WHERE org_id = ? AND id = ? LIMIT 1`;
+
+/** Prefix; `SELECT_EVENTS_PARTS` supplies the optional tail. */
+export const SELECT_EVENTS = `SELECT ${EVENT_COLUMNS} FROM events WHERE org_id = ?`;
+
+export const SELECT_EVENTS_PARTS = {
+  status: " AND status = ?",
+  order: " ORDER BY starts_at ASC, id ASC",
+} as const;
+
+/** `NOT EXISTS` makes a replayed create a no-op rather than a duplicate-key
+ * error, the same way `INSERT_CUSTOMER` does. */
+export const INSERT_EVENT = `INSERT INTO events (${EVENT_COLUMNS})
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+WHERE NOT EXISTS (SELECT 1 FROM events WHERE org_id = ? AND id = ?)`;
+
+/** `starts_at` is mutable but `name` is not editable in this release; both are
+ * in the SET list so a later rename needs no migration of this statement. */
+export const UPDATE_EVENT_VERSIONED = `UPDATE events
+SET name = ?, starts_at = ?, room_width = ?, room_height = ?, status = ?, version = ?, updated_at = ?
+WHERE org_id = ? AND id = ? AND version = ?`;
+
+export const INSERT_OPERATION_IF_EVENT_VERSION = `INSERT INTO operations (${OPERATION_COLUMNS})
+SELECT ${OPERATION_INSERT_VALUES}
+WHERE EXISTS (SELECT 1 FROM events WHERE org_id = ? AND id = ? AND version = ?)`;
+
+// ---------------------------------------------------------------------------
+// Seating tables
+// ---------------------------------------------------------------------------
+
+const SEATING_TABLE_COLUMNS =
+  "id, org_id, event_id, name, kind, size, end_seats, rotation, grid_x, grid_y, seats, status, version, created_by, created_at, updated_at";
+
+export const SELECT_SEATING_TABLE_BY_ID = `SELECT ${SEATING_TABLE_COLUMNS} FROM seating_tables WHERE org_id = ? AND id = ? LIMIT 1`;
+
+/** Prefix; `SELECT_SEATING_TABLES_PARTS` supplies the optional tail. */
+export const SELECT_SEATING_TABLES = `SELECT ${SEATING_TABLE_COLUMNS} FROM seating_tables WHERE org_id = ?`;
+
+/** Ordered by creation, never by position: the scoping test allows a two-column
+ * `ORDER BY`, and a stable order is all any caller needs — the floor plan is
+ * laid out from `grid_x`/`grid_y`, not from row order. */
+export const SELECT_SEATING_TABLES_PARTS = {
+  eventId: " AND event_id = ?",
+  status: " AND status = ?",
+  order: " ORDER BY created_at ASC, id ASC",
+} as const;
+
+/**
+ * A create's table row, guarded on its event existing in this organization and
+ * still being active. The cells go in separately, and it is their primary key —
+ * not anything here — that decides whether the space was free.
+ */
+export const INSERT_SEATING_TABLE_IF_ACTIVE_EVENT = `INSERT INTO seating_tables (${SEATING_TABLE_COLUMNS})
+SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+WHERE EXISTS (SELECT 1 FROM events WHERE org_id = ? AND id = ? AND status = 'active')`;
+
+/** `event_id` is immutable after creation, so it is not in the SET list. */
+export const UPDATE_SEATING_TABLE_VERSIONED = `UPDATE seating_tables
+SET name = ?, kind = ?, size = ?, end_seats = ?, rotation = ?, grid_x = ?, grid_y = ?, seats = ?, status = ?, version = ?, updated_at = ?
+WHERE org_id = ? AND id = ? AND version = ?`;
+
+export const INSERT_OPERATION_IF_SEATING_TABLE_VERSION = `INSERT INTO operations (${OPERATION_COLUMNS})
+SELECT ${OPERATION_INSERT_VALUES}
+WHERE EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND version = ?)`;
+
+// ---------------------------------------------------------------------------
+// Floor-plan occupancy
+//
+// Every write that changes what a table covers clears its cells and writes them
+// again, in the same atomic batch as the table row. Two rules hold that
+// together:
+//
+//   * Both cell statements carry the **same version guard** as the audit row and
+//     the update beside them, so a stale writer rewrites no cells either — the
+//     batch is a collective no-op rather than a partial one. A create guards on
+//     the table row existing instead, since there is no previous version.
+//   * A cell already held by another table violates
+//     `PRIMARY KEY (org_id, event_id, x, y)`, which aborts the whole batch. That
+//     is the one invariant deliberately left to the database: it is about two
+//     different rows, so no version guard could ever see it.
+// ---------------------------------------------------------------------------
+
+export const DELETE_SEATING_CELLS_IF_VERSION = `DELETE FROM seating_cells
+WHERE org_id = ? AND table_id = ?
+  AND EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND version = ?)`;
+
+export const INSERT_SEATING_CELL_IF_VERSION = `INSERT INTO seating_cells (org_id, event_id, x, y, table_id)
+SELECT ?, ?, ?, ?, ?
+WHERE EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND version = ?)`;
+
+export const INSERT_SEATING_CELL_IF_TABLE_EXISTS = `INSERT INTO seating_cells (org_id, event_id, x, y, table_id)
+SELECT ?, ?, ?, ?, ?
+WHERE EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ?)`;

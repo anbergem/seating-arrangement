@@ -29,7 +29,7 @@ describe("fromDomainError", () => {
   it("maps a VALIDATION DomainError to a VALIDATION AppError, keeping message and details", () => {
     const domainError = new DomainError(
       "VALIDATION",
-      "Customer name must be between 1 and 200 characters",
+      "Event name must be between 1 and 120 characters",
       {
         field: "name",
       },
@@ -38,7 +38,7 @@ describe("fromDomainError", () => {
     expect(appError).toBeInstanceOf(AppError);
     expect(appError.code).toBe("VALIDATION");
     expect(appError.message).toBe(
-      "Customer name must be between 1 and 200 characters",
+      "Event name must be between 1 and 120 characters",
     );
     expect(appError.details).toEqual({ field: "name" });
   });
@@ -46,11 +46,11 @@ describe("fromDomainError", () => {
   it("maps an INVARIANT DomainError to an INVARIANT AppError", () => {
     const domainError = new DomainError(
       "INVARIANT",
-      "Cannot archive a customer that is archived",
+      "Cannot archive an event that is archived",
     );
     const appError = fromDomainError(domainError);
     expect(appError.code).toBe("INVARIANT");
-    expect(appError.message).toBe("Cannot archive a customer that is archived");
+    expect(appError.message).toBe("Cannot archive an event that is archived");
   });
 });
 
@@ -66,11 +66,11 @@ describe("toAppError", () => {
   it("maps a DomainError the same way fromDomainError does", () => {
     const domainError = new DomainError(
       "INVARIANT",
-      "Job is already scheduled at that time",
+      "The table is already in that spot",
     );
     const appError = toAppError(domainError);
     expect(appError.code).toBe("INVARIANT");
-    expect(appError.message).toBe("Job is already scheduled at that time");
+    expect(appError.message).toBe("The table is already in that spot");
   });
 
   it.each([

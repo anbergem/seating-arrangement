@@ -13,9 +13,8 @@ import { APP_TITLE } from "@/lib/app-config";
 
 const pageTitleKeys: Record<string, string> = {
   "/activity": "navigation.activity",
-  "/customers": "navigation.customers",
+  "/events": "navigation.events",
   "/home": "navigation.chat",
-  "/jobs": "navigation.jobs",
   "/observability": "navigation.observability",
   "/agent": "settings.agentTitle",
   "/settings": "navigation.settings",
@@ -23,8 +22,7 @@ const pageTitleKeys: Record<string, string> = {
 
 function resolveTitle(pathname: string, t: (key: string) => string): string {
   if (pageTitleKeys[pathname]) return t(pageTitleKeys[pathname]);
-  if (pathname.startsWith("/jobs/")) return t("navigation.jobs");
-  if (pathname.startsWith("/customers/")) return t("navigation.customers");
+  if (pathname.startsWith("/events/")) return t("navigation.events");
   return APP_TITLE;
 }
 

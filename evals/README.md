@@ -40,7 +40,7 @@ deploys rather than a tool-equipped agent with no instructions.
 
 The driver also appends the `<runtime-context>` block the deployed agent gets from
 `production-agent.ts` — the current date, and the instruction to treat it as authoritative for
-relative dates. Without it, "Show me today's jobs" is unanswerable by an agent that follows rule 3
+relative dates. Without it, "What have we got on this week?" is unanswerable by an agent that follows rule 3
 of its instructions. It is pinned to `FIXTURE_CLOCK` from `tests/fixtures/scenario.ts` so a
 date-relative eval resolves the same way on every run; set `EVAL_NOW` to an ISO 8601 instant to
 move it.
@@ -50,10 +50,14 @@ A scorer asserting an _absence_ passes vacuously when the agent never ran, so tr
 merits, its `reason` names the tools the agent actually called, what the target action returned and
 what the agent said — enough to diagnose without paying for another run.
 
-`accounting-approval` must pause for explicit human approval and leave no export request;
-`member-denial` must end in an authorization denial, not merely pick the right tool. `member-denial`
-seeds `input.history` with a confirmation exchange: rule 4 of the instructions tells the agent to
-ask before archiving, so a bare "Archive customer cus_b." is answered with a question and the
-authorization check never reached.
+`member-denial` must end in an authorization denial, not merely pick the right tool. It seeds
+`input.history` with a confirmation exchange, because the instructions tell the agent to ask before
+archiving: a bare "Archive the Spring Gala event." is answered with a question, and the
+authorization check is never reached.
+
+`label-seat` and `move-seating-table` are the two that test whether the agent can actually read a
+floor plan. Neither prompt gives coordinates — "the second seat along the bottom of the head table",
+"somewhere it is not touching anything else" — so the agent has to call `get-event` first and work
+out the arguments, which is the behaviour worth paying a model to check.
 
 These evaluations are release evidence (D27), not a pull-request gate.

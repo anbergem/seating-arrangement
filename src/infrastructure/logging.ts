@@ -14,7 +14,7 @@
 import type { AppErrorCode } from "../application/errors";
 
 export interface ActionLogEntry {
-  /** Action name, e.g. `complete-job`. */
+  /** Action name, e.g. `label-seat`. */
   action: string;
   outcome: "success" | "error";
   /** Present only on `outcome: "error"`. */

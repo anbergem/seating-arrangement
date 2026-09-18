@@ -5,6 +5,7 @@
  */
 
 export * from "./errors";
-export * from "./customer";
-export * from "./job";
+export * from "./event";
+export * from "./seating-table";
+export * from "./venue-layout";
 export * from "./operation";

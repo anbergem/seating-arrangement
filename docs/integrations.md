@@ -7,6 +7,17 @@ a port.
 This document is longer than the others because the failure modes are genuinely harder. A local
 write either happened or it did not. A vendor call may have happened without you finding out.
 
+> **This application has no integration today, and the files named below do not exist.**
+>
+> The template shipped one — `send-job-to-accounting`, an invoice export — and it was removed
+> along with the rest of the jobs/customers example when this became a seating application. The
+> pattern is what survives, and it is the reason the document stays: the two-step write, the
+> durable pending request, the idempotency key derived from our own id, the `EXTERNAL` error
+> that promises reconciliation, and `needsApproval: true` for anything the agent can set in
+> motion and nobody can take back. Read the code samples as a specification to build against,
+> not as a file you can open. `git log -- docs/integrations.md` reaches the commit where they
+> were real.
+
 - [The boundary that never moves](#the-boundary-that-never-moves)
 - [Where the data lives](#where-the-data-lives)
 - [The two-step write](#the-two-step-write)
@@ -14,7 +25,7 @@ write either happened or it did not. A vendor call may have happened without you
 - [Approval for the agent](#approval-for-the-agent)
 - [MCP or the vendor's API?](#mcp-or-the-vendors-api)
 - [Error mapping and timeouts](#error-mapping-and-timeouts)
-- [The worked example: `send-job-to-accounting`](#the-worked-example-send-job-to-accounting)
+- [The worked example: an accounting export](#the-worked-example-an-accounting-export)
 - [Replacing the mock with a real adapter](#replacing-the-mock-with-a-real-adapter)
 - [Where the credentials live](#where-the-credentials-live)
 - [Testing an integration](#testing-an-integration)
@@ -179,7 +190,7 @@ and consumes none.
 
 ## Error mapping and timeouts
 
-The adapter throws `ExternalSystemError` (`src/application/ports/external-accounting.ts`) with
+The adapter throws an `ExternalSystemError` of its port's own (there is no such file today) with
 a message that is **already safe to show a user**. The use case maps it to
 `AppError("EXTERNAL", "…: <message>. Retry will reconcile the pending request.")` → HTTP 502.
 
@@ -201,18 +212,18 @@ Rules for an adapter:
 The user-facing string for `EXTERNAL` is in both i18n catalogs: *The external system did not
 confirm the request. Try again; a retry reconciles it.*
 
-## The worked example: `send-job-to-accounting`
+## The worked example: an accounting export
 
 This action exists to demonstrate the pattern with tests, not because the sample application
 needs an accounting system. Files:
 
 ```
-src/application/ports/external-accounting.ts      the port + ExternalSystemError
-src/infrastructure/mock/mock-accounting.ts         the deterministic vendor double
-src/application/ports.ts                           AccountingExport + its repository port
-src/infrastructure/d1/accounting-exports-repository.ts   the SQL adapter
-src/application/use-cases/send-job-to-accounting.ts      the use case
-actions/send-job-to-accounting.ts                  the declaration
+src/application/ports/<vendor>.ts                  the port + ExternalSystemError
+src/infrastructure/mock/mock-<vendor>.ts           the deterministic vendor double
+src/application/ports.ts                           the pending-request repository port
+src/infrastructure/d1/<vendor>-exports-repository.ts     the SQL adapter
+src/application/use-cases/send-<thing>-to-<vendor>.ts    the use case
+actions/send-<thing>-to-<vendor>.ts                the declaration
 migrations/0002_job_accounting.sql                 the accounting columns + accounting_exports
 ```
 
@@ -393,7 +404,7 @@ Rules:
 
 ## Testing an integration
 
-The mock (`src/infrastructure/mock/mock-accounting.ts`) is deliberately more than a stub. It
+The mock is deliberately more than a stub. It
 implements vendor idempotency across repeats, counts calls and acceptances, and can be told to
 fail either **before** acceptance or **after** acceptance — the second being a lost response,
 which is the case that makes reconciliation necessary and is otherwise impossible to reproduce.
@@ -403,7 +414,7 @@ accounting.failNextCall("gateway timeout", "after-acceptance");
 ```
 
 The scenarios worth covering, all of which
-`tests/unit/application/send-job-to-accounting.test.ts` and `accounting-history.test.ts` do:
+The unit tests that cover such a use case should:
 
 | Scenario | Expected |
 | --- | --- |

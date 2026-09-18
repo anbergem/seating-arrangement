@@ -214,21 +214,18 @@ who may do what, and `requireCapability(actor, cap)` is the first statement of e
 
 | Capability | member | admin | owner | Used by |
 | --- | :-: | :-: | :-: | --- |
-| `customers:read` | ✓ | ✓ | ✓ | `list-customers`, `get-customer` |
-| `customers:create` | ✓ | ✓ | ✓ | `create-customer` |
-| `customers:archive` | — | ✓ | ✓ | `archive-customer` |
-| `jobs:read` | ✓ | ✓ | ✓ | `list-jobs`, `get-job` |
-| `jobs:create` | ✓ | ✓ | ✓ | `create-job` |
-| `jobs:transition` | ✓ | ✓ | ✓ | `start-job`, `complete-job`, `archive-job` |
-| `jobs:reschedule` | ✓ | ✓ | ✓ | `reschedule-job` |
-| `jobs:export` | — | ✓ | ✓ | `send-job-to-accounting` |
+| `events:read` | ✓ | ✓ | ✓ | `list-events`, `get-event` |
+| `events:create` | ✓ | ✓ | ✓ | `create-event` |
+| `events:archive` | — | ✓ | ✓ | `archive-event` |
+| `seating:read` | ✓ | ✓ | ✓ | `get-event` |
+| `seating:write` | ✓ | ✓ | ✓ | `create-seating-table`, `move-seating-table`, `rotate-seating-table`, `reshape-seating-table`, `remove-seat`, `restore-seat`, `label-seat`, `archive-seating-table` |
 | `history:read` | ✓ | ✓ | ✓ | `list-recent-activity` |
 | `history:undo` | ✓ | ✓ | ✓ | `undo-operation`, `redo-operation` |
 
 `owner` currently grants the same set as `admin`; it is a separate entry because splitting them
 later should be a change to this table and nothing else.
 
-A denial is `AppError("AUTHORIZATION", "Role member may not customers:archive")` → HTTP 403.
+A denial is `AppError("AUTHORIZATION", "Role member may not events:archive")` → HTTP 403.
 The message names the role and the capability, which is useful in a log and harmless to show:
 it tells the caller nothing they could not learn by trying.
 
@@ -249,15 +246,14 @@ Undo must not become a way around a capability. Reversing an operation requires 
 
 | Inverse | Requires |
 | --- | --- |
-| `archive-customer` (undoing a create) | `customers:archive`, **or** `customers:create` if the caller created it themselves |
-| `restore-customer` (undoing an archive) | `customers:archive` |
-| `restore-job-schedule` | `jobs:reschedule` |
-| `restore-job-status`, `archive-job` | `jobs:transition` |
+| `archive-event` (undoing a create) | `events:archive`, **or** `events:create` if the caller created it themselves |
+| `restore-event` (undoing an archive) | `events:archive` |
+| every seating inverse | `seating:write` |
 
-So a member may compensate their own `create-customer` — archiving a customer they just made,
+So a member may compensate their own `create-event` — archiving an event they just made,
 which is the mistake-correction case that matters — but may not undo an admin's archive, and
-may not compensate somebody else's create. Job changes may be reversed by any coworker with the
-matching job capability, because coordination work is shared.
+may not compensate somebody else's create. Seating changes may be reversed by any coworker who
+could have made them, because a floor plan is shared work.
 
 `redo-operation` additionally requires the original command's own capability.
 
@@ -306,9 +302,9 @@ refuses to boot if either is set.
 
 ## What the UI does, and why it is not security
 
-`app/routes/customers.tsx` hides the archive button from a member using the framework's
+`app/routes/events_.$id.tsx` hides the archive button from a member using the framework's
 `useOrgRole()`. That is a courtesy — an affordance the user cannot act on is noise — and it is
-not a control. `tests/e2e/authorization.spec.ts` calls `archive-customer` over HTTP as a member
+not a control. `tests/e2e/authorization.spec.ts` calls `archive-event` over HTTP as a member
 and asserts HTTP 403, which is the actual guarantee.
 
 The same applies to the activity feed's Undo and Redo buttons: they are rendered from the

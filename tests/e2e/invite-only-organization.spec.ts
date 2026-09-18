@@ -50,11 +50,16 @@ test("an uninvited signed-in user cannot self-admit through organization routes"
     expect(body.orgId).toBeNull();
     expect(body.orgs).toEqual([]);
 
-    const list = await page.request.get("/_agent-native/actions/list-jobs");
+    const list = await page.request.get("/_agent-native/actions/list-events");
     expect(list.status()).toBe(403);
     const create = await page.request.post(
-      "/_agent-native/actions/create-customer",
-      { data: { name: "Unauthorized customer" } },
+      "/_agent-native/actions/create-event",
+      {
+        data: {
+          name: "Unauthorized event",
+          startsAt: "2026-12-24T18:00:00.000Z",
+        },
+      },
     );
     expect(create.status()).toBe(403);
 
@@ -78,7 +83,7 @@ test("an uninvited signed-in user cannot self-admit through organization routes"
     await accept.click();
     await expect(accept).toHaveCount(0);
     const acceptedAccess = await page.request.get(
-      "/_agent-native/actions/list-jobs",
+      "/_agent-native/actions/list-events",
     );
     expect(acceptedAccess.status()).toBe(200);
     const removed = await ownerPage.request.delete(
@@ -126,7 +131,7 @@ test("a signed-out caller remains unauthenticated and invitation membership stil
   });
   expect(switched.status(), await switched.text()).toBe(200);
   const ownJobs = await outsiderPage.request.get(
-    "/_agent-native/actions/list-jobs",
+    "/_agent-native/actions/list-events",
   );
   expect(ownJobs.status()).toBe(200);
   const removed = await ownerPage.request.delete(

@@ -221,10 +221,10 @@ export async function runSmoke(
       );
     });
   }
-  await check("unauthenticated list-jobs is 401", async () => {
+  await check("unauthenticated list-events is 401", async () => {
     const anonymous = new CookieClient(options.baseUrl, { fetchImpl });
     const response = await anonymous.request(
-      "/_agent-native/actions/list-jobs",
+      "/_agent-native/actions/list-events",
       { signal: deadline },
     );
     assert(response.status === 401, `HTTP ${response.status}`);
@@ -249,9 +249,9 @@ export async function runSmoke(
         `org/me: ${detail(me.body)}`,
       );
     });
-    await check("authenticated list-jobs", async () => {
+    await check("authenticated list-events", async () => {
       const { response, body } = await client.json(
-        "/_agent-native/actions/list-jobs",
+        "/_agent-native/actions/list-events",
         { signal: deadline },
       );
       assert(
@@ -262,45 +262,47 @@ export async function runSmoke(
 
     let created;
     await check("reversible write, conflict, undo and isolation", async () => {
-      const customers = await client.json(
-        "/_agent-native/actions/list-customers",
-        { signal: deadline },
-      );
-      const customer = customers.body?.find?.(
+      const events = await client.json("/_agent-native/actions/list-events", {
+        signal: deadline,
+      });
+      const event = events.body?.find?.(
         (candidate) => candidate.status === "active",
       );
       assert(
-        customers.response.status === 200 && customer?.id,
-        `customers: ${detail(customers.body)}`,
+        events.response.status === 200 && event?.id,
+        `events: ${detail(events.body)}`,
       );
-      created = await action("create-job", {
-        customerId: customer.id,
-        title: `Worker smoke ${options.runId}`,
-        scheduledAt: "2030-01-15T09:00:00.000Z",
+      created = await action("create-seating-table", {
+        eventId: event.id,
+        name: `Worker smoke ${options.runId}`,
+        size: 2,
         idempotencyKey: `smoke-${options.runId}`,
       });
       assert(
         created?.resource?.version === 1 && created?.operationId,
         `create: ${detail(created)}`,
       );
-      const completed = await action("complete-job", {
-        jobId: created.resource.id,
+      const labelled = await action("label-seat", {
+        tableId: created.resource.id,
+        seat: 0,
+        label: "Smoke test",
         expectedVersion: 1,
       });
       assert(
-        completed?.resource?.status === "completed",
-        `complete: ${detail(completed)}`,
+        labelled?.resource?.seats?.[0]?.label === "Smoke test",
+        `label: ${detail(labelled)}`,
       );
+      // The version guard: the caller's `expectedVersion` is now stale.
       await action(
-        "archive-job",
-        { jobId: created.resource.id, expectedVersion: 1 },
+        "archive-seating-table",
+        { tableId: created.resource.id, expectedVersion: 1 },
         409,
       );
       const undone = await action("undo-operation", {
-        operationId: completed.operationId,
+        operationId: labelled.operationId,
       });
       assert(
-        undone?.resource?.status === "scheduled",
+        undone?.resource?.seats?.[0]?.label === "",
         `undo: ${detail(undone)}`,
       );
 
@@ -319,7 +321,7 @@ export async function runSmoke(
           `outsider login HTTP ${login.response.status}`,
         );
         const isolated = await outsider.json(
-          `/_agent-native/actions/get-job?jobId=${encodeURIComponent(created.resource.id)}`,
+          `/_agent-native/actions/get-event?eventId=${encodeURIComponent(event.id)}`,
           { signal: deadline },
         );
         assert(
@@ -327,8 +329,8 @@ export async function runSmoke(
           `cross-org read HTTP ${isolated.response.status}: ${detail(isolated.body)}`,
         );
       }
-      const archived = await action("archive-job", {
-        jobId: created.resource.id,
+      const archived = await action("archive-seating-table", {
+        tableId: created.resource.id,
         expectedVersion: undone.resource.version,
       });
       assert(
@@ -337,101 +339,11 @@ export async function runSmoke(
       );
     });
 
-    if (options.mode === "local") {
-      await check(
-        "accounting export authorization, replay and cleanup",
-        async () => {
-          const customers = await client.json(
-            "/_agent-native/actions/list-customers",
-            { signal: deadline },
-          );
-          const customer = customers.body?.find?.(
-            (candidate) => candidate.status === "active",
-          );
-          assert(
-            customers.response.status === 200 && customer?.id,
-            `customers: ${detail(customers.body)}`,
-          );
-          const createdForAccounting = await action("create-job", {
-            customerId: customer.id,
-            title: `Worker accounting smoke ${options.runId}`,
-            scheduledAt: "2030-01-16T09:00:00.000Z",
-            idempotencyKey: `accounting-smoke-${options.runId}`,
-          });
-          const completedForAccounting = await action("complete-job", {
-            jobId: createdForAccounting.resource.id,
-            expectedVersion: createdForAccounting.resource.version,
-          });
-
-          const member = new CookieClient(options.baseUrl, { fetchImpl });
-          const memberLogin = await member.json("/_agent-native/auth/login", {
-            method: "POST",
-            body: {
-              email: "member1@example.invalid",
-              password: options.qaPassword,
-            },
-            signal: deadline,
-          });
-          assert(
-            memberLogin.response.status === 200,
-            `member login HTTP ${memberLogin.response.status}`,
-          );
-          const memberExport = await action(
-            "send-job-to-accounting",
-            { jobId: createdForAccounting.resource.id },
-            403,
-            member,
-          );
-          assert(
-            memberExport?.errorCode === "AUTHORIZATION",
-            `member export: ${detail(memberExport)}`,
-          );
-
-          const exported = await action("send-job-to-accounting", {
-            jobId: createdForAccounting.resource.id,
-            expectedVersion: completedForAccounting.resource.version,
-          });
-          const expectedReference = `ACC-${createdForAccounting.resource.id}`;
-          assert(
-            exported?.externalReference === expectedReference &&
-              exported?.resource?.accountingReference === expectedReference,
-            `export: ${detail(exported)}`,
-          );
-          const replayed = await action("send-job-to-accounting", {
-            jobId: createdForAccounting.resource.id,
-          });
-          assert(
-            replayed?.externalReference === exported.externalReference &&
-              replayed?.operationId === exported.operationId &&
-              replayed?.resource?.version === exported.resource.version,
-            `export replay: ${detail(replayed)}`,
-          );
-          const irreversibleUndo = await action(
-            "undo-operation",
-            { operationId: exported.operationId },
-            422,
-          );
-          assert(
-            irreversibleUndo?.errorCode === "INVARIANT",
-            `irreversible undo: ${detail(irreversibleUndo)}`,
-          );
-          const archived = await action("archive-job", {
-            jobId: createdForAccounting.resource.id,
-            expectedVersion: exported.resource.version,
-          });
-          assert(
-            archived?.resource?.status === "archived",
-            `accounting cleanup: ${detail(archived)}`,
-          );
-        },
-      );
-    }
-
     await check("agent chat SSE", async () => {
       const response = await client.request("/_agent-native/agent-chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ message: "List today's jobs." }),
+        body: JSON.stringify({ message: "List our events." }),
         signal: deadline,
       });
       assert(

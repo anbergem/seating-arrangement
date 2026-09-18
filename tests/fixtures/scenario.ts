@@ -10,34 +10,33 @@
  * can therefore not drift. `scripts/seed.mjs` creates the user accounts over
  * HTTP (never SQL); this file never touches `user`-shaped tables.
  *
- * The customer/job/operation objects are produced by calling the real
- * domain functions (`createCustomer`, `createJob`, `startJob`, …) with fixed
- * `now` values instead of being hand-typed, so a version, an `updatedAt`, or
+ * The event/table/operation objects are produced by calling the real
+ * domain functions (`createEvent`, `createSeatingTable`, `labelSeat`, …) with
+ * fixed `now` values instead of being hand-typed, so a version, an `updatedAt`, or
  * an inverse command can never drift from what the domain layer would
  * actually produce for the same sequence of calls.
  *
- * `createCompanyWithMembers`, `createScheduledJob`, `createCompletedJob` and
- * `createForeignOrganizationJob` are the named scenario builders blueprint
- * B12 calls for; `createCustomers`, `createForeignOrganization`,
- * `createInProgressJob` and `createArchivedJob` are the pieces those four
- * compose from, built the same way for the same reason. `buildScenario`
- * composes all of them into the full scenario.
+ * `createCompanyWithMembers`, `createForeignOrganization`,
+ * `createSeatingArrangement` and `createForeignOrganizationSeating` are the
+ * named scenario builders blueprint B12 calls for. `buildScenario` composes
+ * all of them into the full scenario.
  */
 
 import type { Role } from "../../src/application/authorization";
 import {
-  archiveJob,
-  completeJob,
-  createCustomer,
-  createJob,
-  startJob,
+  archiveEvent,
+  cellsOf,
+  createEvent,
+  createSeatingTable,
+  roomOf,
+  labelSeat,
   OPERATION_CLASSIFICATION,
-  type Customer,
+  type Event,
   type InverseCommand,
-  type Job,
   type Operation,
   type OperationClassification,
   type ResourceType,
+  type SeatingTable,
 } from "../../src/domain";
 import type { InMemoryDependencies } from "./in-memory";
 
@@ -124,23 +123,7 @@ export const SEED_MEMBERSHIPS: readonly SeedMembership[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Customers
-// ---------------------------------------------------------------------------
-
-export const CUSTOMER_A_ID = "cus_a";
-export const CUSTOMER_A_NAME = "Example Customer A";
-export const CUSTOMER_B_ID = "cus_b";
-export const CUSTOMER_B_NAME = "Example Customer B";
-export const CUSTOMER_ARCHIVED_ID = "cus_archived";
-export const CUSTOMER_ARCHIVED_NAME = "Archived Customer";
-export const CUSTOMER_OTHER_ID = "cus_other";
-export const CUSTOMER_OTHER_NAME = "Other Company Customer";
-
-// ---------------------------------------------------------------------------
-// Jobs. Only `job_scheduled`'s instant is given by B12 directly; the other
-// jobs' `scheduledAt` values are fixed, deterministic choices consistent
-// with their status (a completed or archived job is scheduled in the past
-// relative to `FIXTURE_CLOCK`).
+// Events and seating
 // ---------------------------------------------------------------------------
 
 /**
@@ -151,25 +134,32 @@ export const CUSTOMER_OTHER_NAME = "Other Company Customer";
  */
 export const FIXTURE_CLOCK = "2026-09-06T12:00:00.000Z";
 
-export const JOB_SCHEDULED_ID = "job_scheduled";
-export const JOB_SCHEDULED_TITLE = "Scheduled job";
-export const JOB_SCHEDULED_AT = "2026-10-01T08:00:00.000Z";
+export const EVENT_GALA_ID = "evt_gala";
+export const EVENT_GALA_NAME = "Spring Gala";
+export const EVENT_GALA_STARTS_AT = "2026-10-03T17:00:00.000Z";
 
-export const JOB_IN_PROGRESS_ID = "job_in_progress";
-export const JOB_IN_PROGRESS_TITLE = "In-progress job";
-export const JOB_IN_PROGRESS_SCHEDULED_AT = "2026-09-10T09:00:00.000Z";
+export const EVENT_ARCHIVED_ID = "evt_archived";
+export const EVENT_ARCHIVED_NAME = "Cancelled Offsite";
+export const EVENT_ARCHIVED_STARTS_AT = "2026-11-20T09:00:00.000Z";
 
-export const JOB_COMPLETED_ID = "job_completed";
-export const JOB_COMPLETED_TITLE = "Completed job";
-export const JOB_COMPLETED_SCHEDULED_AT = "2026-09-05T09:00:00.000Z";
+export const EVENT_OTHER_ID = "evt_other";
+export const EVENT_OTHER_NAME = "Other Company party";
+export const EVENT_OTHER_STARTS_AT = "2026-10-09T17:00:00.000Z";
 
-export const JOB_ARCHIVED_ID = "job_archived";
-export const JOB_ARCHIVED_TITLE = "Archived job";
-export const JOB_ARCHIVED_SCHEDULED_AT = "2026-09-08T09:00:00.000Z";
+/** A straight table two cells long with a chair at each end, in the top-left
+ * corner: six seats, numbered clockwise from 0. */
+export const TABLE_HEAD_ID = "tbl_head";
+export const TABLE_HEAD_NAME = "Head table";
+/** A straight table four cells long with no end chairs, standing immediately to
+ * its right — adjacent but not overlapping, which is what makes it useful for
+ * the drag tests. */
+export const TABLE_SIDE_ID = "tbl_side";
+export const TABLE_SIDE_NAME = "Table 2";
+export const TABLE_OTHER_ID = "tbl_other";
+export const TABLE_OTHER_NAME = "Other Company table";
 
-export const JOB_OTHER_ID = "job_other";
-export const JOB_OTHER_TITLE = "Other Company job";
-export const JOB_OTHER_SCHEDULED_AT = "2026-10-02T08:00:00.000Z";
+export const SEAT_LABEL_ADA = "Ada Lovelace";
+export const SEAT_LABEL_GRACE = "Grace Hopper";
 
 // ---------------------------------------------------------------------------
 // Timestamps. B12 fixes the create instant for every resource; the
@@ -182,16 +172,12 @@ const SEED_CREATED_AT = "2026-09-01T09:00:00.000Z";
  * `organizations.created_at` and `org_members.joined_at` columns use: epoch
  * milliseconds (F6). Every seeded organization and membership carries it. */
 const SEED_CREATED_AT_MS = Date.parse(SEED_CREATED_AT);
-const SEED_STARTED_AT = "2026-09-02T09:00:00.000Z";
-const SEED_COMPLETED_AT = "2026-09-02T09:00:00.000Z";
-const SEED_ARCHIVED_AT = "2026-09-03T09:00:00.000Z";
 
 type SeedAction =
-  | "create-customer"
-  | "create-job"
-  | "start-job"
-  | "complete-job"
-  | "archive-job";
+  | "create-event"
+  | "archive-event"
+  | "create-seating-table"
+  | "label-seat";
 
 function classificationFor(action: SeedAction): OperationClassification {
   const found = OPERATION_CLASSIFICATION[action];
@@ -238,121 +224,27 @@ function forwardOperation(input: {
   };
 }
 
-function createJobPayload(job: Job): Record<string, unknown> {
+function createSeatingTablePayload(
+  table: SeatingTable,
+): Record<string, unknown> {
   return {
-    customerId: job.customerId,
-    title: job.title,
-    description: job.description,
-    scheduledAt: job.scheduledAt,
-    assignedTo: job.assignedTo,
+    eventId: table.eventId,
+    name: table.name,
+    kind: table.kind,
+    size: table.size,
+    endSeats: table.endSeats,
+    rotation: table.rotation,
+    gridX: table.gridX,
+    gridY: table.gridY,
   };
 }
 
-function createCustomerPayload(customer: Customer): Record<string, unknown> {
-  return {
-    name: customer.name,
-    email: customer.email,
-    phone: customer.phone,
-    notes: customer.notes,
-  };
-}
-
-/** A job's status/completedAt/archivedAt before a transition, the shape
- * `restore-job-status` needs to undo it (blueprint B9). */
-function statusBefore(job: Job): InverseCommand {
-  return {
-    type: "restore-job-status",
-    previous: {
-      status: job.status,
-      completedAt: job.completedAt,
-      archivedAt: job.archivedAt,
-    },
-  };
-}
-
-export interface CustomerSet {
-  customers: readonly Customer[];
-  operations: readonly Operation[];
-}
-
-/** `org_acme`'s three customers and their create operations — one of them,
- * `cus_archived`, inserted already archived (blueprint B12 fixes every
- * customer at version 1, so this is not `createCustomer` followed by
- * `archiveCustomer`, which would leave version 2). */
-export function createCustomers(): CustomerSet {
-  const customerA = createCustomer({
-    id: CUSTOMER_A_ID,
-    orgId: ORG_ACME_ID,
-    name: CUSTOMER_A_NAME,
-    createdBy: OWNER_EMAIL,
-    now: SEED_CREATED_AT,
-  });
-  const customerB = createCustomer({
-    id: CUSTOMER_B_ID,
-    orgId: ORG_ACME_ID,
-    name: CUSTOMER_B_NAME,
-    createdBy: OWNER_EMAIL,
-    now: SEED_CREATED_AT,
-  });
-  const customerArchived: Customer = {
-    ...createCustomer({
-      id: CUSTOMER_ARCHIVED_ID,
-      orgId: ORG_ACME_ID,
-      name: CUSTOMER_ARCHIVED_NAME,
-      createdBy: OWNER_EMAIL,
-      now: SEED_CREATED_AT,
-    }),
-    status: "archived",
-  };
-
-  const operations: Operation[] = [
-    forwardOperation({
-      id: "op_create_cus_a",
-      orgId: ORG_ACME_ID,
-      action: "create-customer",
-      resourceType: "customer",
-      resourceId: customerA.id,
-      versionBefore: 0,
-      versionAfter: 1,
-      payload: createCustomerPayload(customerA),
-      inverse: { type: "archive-customer" },
-      performedAt: SEED_CREATED_AT,
-    }),
-    forwardOperation({
-      id: "op_create_cus_b",
-      orgId: ORG_ACME_ID,
-      action: "create-customer",
-      resourceType: "customer",
-      resourceId: customerB.id,
-      versionBefore: 0,
-      versionAfter: 1,
-      payload: createCustomerPayload(customerB),
-      inverse: { type: "archive-customer" },
-      performedAt: SEED_CREATED_AT,
-    }),
-    forwardOperation({
-      id: "op_create_cus_archived",
-      orgId: ORG_ACME_ID,
-      action: "create-customer",
-      resourceType: "customer",
-      resourceId: customerArchived.id,
-      versionBefore: 0,
-      versionAfter: 1,
-      payload: createCustomerPayload(customerArchived),
-      inverse: { type: "archive-customer" },
-      performedAt: SEED_CREATED_AT,
-    }),
-  ];
-
-  return { customers: [customerA, customerB, customerArchived], operations };
-}
-
-export interface CompanyWithMembers extends CustomerSet {
+export interface CompanyWithMembers {
   organization: SeedOrganization;
   memberships: readonly SeedMembership[];
 }
 
-/** `org_acme`, its four members and its three customers (blueprint B12). */
+/** `org_acme` and its four members (blueprint B12). */
 export function createCompanyWithMembers(): CompanyWithMembers {
   return {
     organization: {
@@ -362,200 +254,249 @@ export function createCompanyWithMembers(): CompanyWithMembers {
       createdAt: SEED_CREATED_AT_MS,
     },
     memberships: SEED_MEMBERSHIPS.filter((m) => m.orgId === ORG_ACME_ID),
-    ...createCustomers(),
   };
 }
 
-export interface JobScenario {
-  job: Job;
+export interface SeatingScenario {
+  events: readonly Event[];
+  tables: readonly SeatingTable[];
   operations: readonly Operation[];
 }
 
-/** `job_scheduled` on `cus_a`, still in its created state (blueprint B12). */
-export function createScheduledJob(): JobScenario {
-  const job = createJob({
-    id: JOB_SCHEDULED_ID,
+/**
+ * `org_acme`'s two events and the floor plan of the live one (blueprint B12).
+ *
+ * Built by calling the real domain functions in the order a user would, so the
+ * versions, the `updatedAt` values and the recorded inverses are exactly what
+ * the application would have produced. `tbl_head` sits at the origin and
+ * `tbl_side` immediately to its right: adjacent, not overlapping, which is the
+ * arrangement the drag and undo tests need.
+ */
+export function createSeatingArrangement(): SeatingScenario {
+  const gala = createEvent({
+    id: EVENT_GALA_ID,
     orgId: ORG_ACME_ID,
-    customerId: CUSTOMER_A_ID,
-    title: JOB_SCHEDULED_TITLE,
-    scheduledAt: JOB_SCHEDULED_AT,
-    assignedTo: MEMBER1_EMAIL,
+    name: EVENT_GALA_NAME,
+    startsAt: EVENT_GALA_STARTS_AT,
     createdBy: OWNER_EMAIL,
     now: SEED_CREATED_AT,
   });
+  const cancelled = archiveEvent(
+    createEvent({
+      id: EVENT_ARCHIVED_ID,
+      orgId: ORG_ACME_ID,
+      name: EVENT_ARCHIVED_NAME,
+      startsAt: EVENT_ARCHIVED_STARTS_AT,
+      createdBy: OWNER_EMAIL,
+      now: SEED_CREATED_AT,
+    }),
+    SEED_CREATED_AT,
+  );
+
+  const head = createSeatingTable(
+    {
+      id: TABLE_HEAD_ID,
+      orgId: ORG_ACME_ID,
+      eventId: gala.id,
+      name: TABLE_HEAD_NAME,
+      size: 2,
+      endSeats: true,
+      gridX: 0,
+      gridY: 0,
+      createdBy: OWNER_EMAIL,
+      now: SEED_CREATED_AT,
+    },
+    { room: roomOf(gala), tables: [] },
+  );
+  // Seats are numbered clockwise from the start of the table's run, so 0 and 1
+  // are the first two along its far side.
+  const headLabelled = labelSeat(
+    labelSeat(head, 0, SEAT_LABEL_ADA, SEED_CREATED_AT),
+    1,
+    SEAT_LABEL_GRACE,
+    SEED_CREATED_AT,
+  );
+  const side = createSeatingTable(
+    {
+      id: TABLE_SIDE_ID,
+      orgId: ORG_ACME_ID,
+      eventId: gala.id,
+      name: TABLE_SIDE_NAME,
+      size: 4,
+      endSeats: false,
+      gridX: 4,
+      gridY: 0,
+      createdBy: OWNER_EMAIL,
+      now: SEED_CREATED_AT,
+    },
+    { room: roomOf(gala), tables: [headLabelled] },
+  );
+
   const operations = [
     forwardOperation({
-      id: "op_create_job_scheduled",
+      id: "op_create_evt_gala",
       orgId: ORG_ACME_ID,
-      action: "create-job",
-      resourceType: "job",
-      resourceId: job.id,
+      action: "create-event",
+      resourceType: "event",
+      resourceId: gala.id,
       versionBefore: 0,
       versionAfter: 1,
-      payload: createJobPayload(job),
-      inverse: { type: "archive-job" },
-      performedAt: SEED_CREATED_AT,
-    }),
-  ];
-  return { job, operations };
-}
-
-/** `job_in_progress` on `cus_a`: created, then started (blueprint B12:
- * version 1 → 2 via `start-job`). Not one of B12's four named builders, but
- * built the same way and for the same reason: the version, `updatedAt` and
- * inverse must come from the real domain functions, not be hand-typed. */
-export function createInProgressJob(): JobScenario {
-  const created = createJob({
-    id: JOB_IN_PROGRESS_ID,
-    orgId: ORG_ACME_ID,
-    customerId: CUSTOMER_A_ID,
-    title: JOB_IN_PROGRESS_TITLE,
-    scheduledAt: JOB_IN_PROGRESS_SCHEDULED_AT,
-    createdBy: OWNER_EMAIL,
-    now: SEED_CREATED_AT,
-  });
-  const job = startJob(created, SEED_STARTED_AT);
-
-  const operations = [
-    forwardOperation({
-      id: "op_create_job_in_progress",
-      orgId: ORG_ACME_ID,
-      action: "create-job",
-      resourceType: "job",
-      resourceId: created.id,
-      versionBefore: 0,
-      versionAfter: 1,
-      payload: createJobPayload(created),
-      inverse: { type: "archive-job" },
+      payload: { name: gala.name, startsAt: gala.startsAt },
+      inverse: { type: "archive-event" },
       performedAt: SEED_CREATED_AT,
     }),
     forwardOperation({
-      id: "op_start_job_in_progress",
+      id: "op_create_evt_archived",
       orgId: ORG_ACME_ID,
-      action: "start-job",
-      resourceType: "job",
-      resourceId: created.id,
+      action: "create-event",
+      resourceType: "event",
+      resourceId: cancelled.id,
+      versionBefore: 0,
+      versionAfter: 1,
+      payload: { name: cancelled.name, startsAt: cancelled.startsAt },
+      inverse: { type: "archive-event" },
+      performedAt: SEED_CREATED_AT,
+    }),
+    forwardOperation({
+      id: "op_archive_evt_archived",
+      orgId: ORG_ACME_ID,
+      action: "archive-event",
+      resourceType: "event",
+      resourceId: cancelled.id,
       versionBefore: 1,
       versionAfter: 2,
       payload: {},
-      inverse: statusBefore(created),
-      performedAt: SEED_STARTED_AT,
-    }),
-  ];
-
-  return { job, operations };
-}
-
-/** `job_completed` on `cus_b`: created, then completed directly from
- * `scheduled` (blueprint B12: version 1 → 2 via `complete-job`). */
-export function createCompletedJob(): JobScenario {
-  const created = createJob({
-    id: JOB_COMPLETED_ID,
-    orgId: ORG_ACME_ID,
-    customerId: CUSTOMER_B_ID,
-    title: JOB_COMPLETED_TITLE,
-    scheduledAt: JOB_COMPLETED_SCHEDULED_AT,
-    createdBy: OWNER_EMAIL,
-    now: SEED_CREATED_AT,
-  });
-  const job = completeJob(created, SEED_COMPLETED_AT);
-
-  const operations = [
-    forwardOperation({
-      id: "op_create_job_completed",
-      orgId: ORG_ACME_ID,
-      action: "create-job",
-      resourceType: "job",
-      resourceId: created.id,
-      versionBefore: 0,
-      versionAfter: 1,
-      payload: createJobPayload(created),
-      inverse: { type: "archive-job" },
+      inverse: { type: "restore-event" },
       performedAt: SEED_CREATED_AT,
     }),
     forwardOperation({
-      id: "op_complete_job_completed",
+      id: "op_create_tbl_head",
       orgId: ORG_ACME_ID,
-      action: "complete-job",
-      resourceType: "job",
-      resourceId: created.id,
-      versionBefore: 1,
-      versionAfter: 2,
-      payload: {},
-      inverse: statusBefore(created),
-      performedAt: SEED_COMPLETED_AT,
-    }),
-  ];
-
-  return { job, operations };
-}
-
-/** `job_archived` on `cus_b`: created, then archived directly from
- * `scheduled` (blueprint B12: version 1 → 2, "create + archive op"). Not
- * one of B12's four named builders, built the same way as
- * `createInProgressJob` above. */
-export function createArchivedJob(): JobScenario {
-  const created = createJob({
-    id: JOB_ARCHIVED_ID,
-    orgId: ORG_ACME_ID,
-    customerId: CUSTOMER_B_ID,
-    title: JOB_ARCHIVED_TITLE,
-    scheduledAt: JOB_ARCHIVED_SCHEDULED_AT,
-    createdBy: OWNER_EMAIL,
-    now: SEED_CREATED_AT,
-  });
-  const job = archiveJob(created, SEED_ARCHIVED_AT);
-
-  const operations = [
-    forwardOperation({
-      id: "op_create_job_archived",
-      orgId: ORG_ACME_ID,
-      action: "create-job",
-      resourceType: "job",
-      resourceId: created.id,
+      action: "create-seating-table",
+      resourceType: "seating_table",
+      resourceId: head.id,
       versionBefore: 0,
       versionAfter: 1,
-      payload: createJobPayload(created),
-      inverse: { type: "archive-job" },
+      payload: createSeatingTablePayload(head),
+      inverse: { type: "archive-seating-table" },
       performedAt: SEED_CREATED_AT,
     }),
     forwardOperation({
-      id: "op_archive_job_archived",
+      id: "op_label_tbl_head_top_0",
       orgId: ORG_ACME_ID,
-      action: "archive-job",
-      resourceType: "job",
-      resourceId: created.id,
+      action: "label-seat",
+      resourceType: "seating_table",
+      resourceId: head.id,
       versionBefore: 1,
       versionAfter: 2,
-      payload: {},
-      inverse: statusBefore(created),
-      performedAt: SEED_ARCHIVED_AT,
+      payload: { seat: 0, label: SEAT_LABEL_ADA },
+      inverse: {
+        type: "restore-seat-label",
+        seat: 0,
+        previousLabel: "",
+      },
+      performedAt: SEED_CREATED_AT,
+    }),
+    forwardOperation({
+      id: "op_label_tbl_head_top_1",
+      orgId: ORG_ACME_ID,
+      action: "label-seat",
+      resourceType: "seating_table",
+      resourceId: head.id,
+      versionBefore: 2,
+      versionAfter: 3,
+      payload: { seat: 1, label: SEAT_LABEL_GRACE },
+      inverse: {
+        type: "restore-seat-label",
+        seat: 1,
+        previousLabel: "",
+      },
+      performedAt: SEED_CREATED_AT,
+    }),
+    forwardOperation({
+      id: "op_create_tbl_side",
+      orgId: ORG_ACME_ID,
+      action: "create-seating-table",
+      resourceType: "seating_table",
+      resourceId: side.id,
+      versionBefore: 0,
+      versionAfter: 1,
+      payload: createSeatingTablePayload(side),
+      inverse: { type: "archive-seating-table" },
+      performedAt: SEED_CREATED_AT,
     }),
   ];
 
-  return { job, operations };
+  return {
+    events: [gala, cancelled],
+    tables: [headLabelled, side],
+    operations,
+  };
 }
 
-export interface ForeignOrganization {
-  organization: SeedOrganization;
-  memberships: readonly SeedMembership[];
-  customer: Customer;
-  operations: readonly Operation[];
-}
-
-/** `org_other`, its outsider owner and `cus_other` — the other half of every
- * cross-organization isolation test (blueprint B12). Its own owner, not
- * `org_acme`'s, is the customer's `createdBy`, while the operation row's
- * `performedBy` stays `owner@example.invalid` for every seeded row. */
-export function createForeignOrganization(): ForeignOrganization {
-  const customer = createCustomer({
-    id: CUSTOMER_OTHER_ID,
+/** `org_other`'s event and its one table, which no `org_acme` member may
+ * see (blueprint B12). */
+export function createForeignOrganizationSeating(): SeatingScenario {
+  const event = createEvent({
+    id: EVENT_OTHER_ID,
     orgId: ORG_OTHER_ID,
-    name: CUSTOMER_OTHER_NAME,
+    name: EVENT_OTHER_NAME,
+    startsAt: EVENT_OTHER_STARTS_AT,
     createdBy: OUTSIDER_EMAIL,
     now: SEED_CREATED_AT,
   });
+  const table = createSeatingTable(
+    {
+      id: TABLE_OTHER_ID,
+      orgId: ORG_OTHER_ID,
+      eventId: event.id,
+      name: TABLE_OTHER_NAME,
+      size: 2,
+      endSeats: false,
+      gridX: 0,
+      gridY: 0,
+      createdBy: OUTSIDER_EMAIL,
+      now: SEED_CREATED_AT,
+    },
+    { room: roomOf(event), tables: [] },
+  );
+  const operations = [
+    forwardOperation({
+      id: "op_create_evt_other",
+      orgId: ORG_OTHER_ID,
+      action: "create-event",
+      resourceType: "event",
+      resourceId: event.id,
+      versionBefore: 0,
+      versionAfter: 1,
+      payload: { name: event.name, startsAt: event.startsAt },
+      inverse: { type: "archive-event" },
+      performedAt: SEED_CREATED_AT,
+    }),
+    forwardOperation({
+      id: "op_create_tbl_other",
+      orgId: ORG_OTHER_ID,
+      action: "create-seating-table",
+      resourceType: "seating_table",
+      resourceId: table.id,
+      versionBefore: 0,
+      versionAfter: 1,
+      payload: createSeatingTablePayload(table),
+      inverse: { type: "archive-seating-table" },
+      performedAt: SEED_CREATED_AT,
+    }),
+  ];
+  return { events: [event], tables: [table], operations };
+}
 
+/** `org_other` and its owner: the organization every isolation test proves is
+ * invisible from `org_acme` (blueprint B12). */
+export interface ForeignOrganization {
+  organization: SeedOrganization;
+  memberships: readonly SeedMembership[];
+}
+
+export function createForeignOrganization(): ForeignOrganization {
   return {
     organization: {
       id: ORG_OTHER_ID,
@@ -564,60 +505,6 @@ export function createForeignOrganization(): ForeignOrganization {
       createdAt: SEED_CREATED_AT_MS,
     },
     memberships: SEED_MEMBERSHIPS.filter((m) => m.orgId === ORG_OTHER_ID),
-    customer,
-    operations: [
-      forwardOperation({
-        id: "op_create_cus_other",
-        orgId: ORG_OTHER_ID,
-        action: "create-customer",
-        resourceType: "customer",
-        resourceId: customer.id,
-        versionBefore: 0,
-        versionAfter: 1,
-        payload: createCustomerPayload(customer),
-        inverse: { type: "archive-customer" },
-        performedAt: SEED_CREATED_AT,
-      }),
-    ],
-  };
-}
-
-export interface ForeignOrganizationScenario extends ForeignOrganization {
-  job: Job;
-}
-
-/** `createForeignOrganization()` plus `job_other`, the single job an
- * `org_other` user may see (blueprint B12). */
-export function createForeignOrganizationJob(): ForeignOrganizationScenario {
-  const organization = createForeignOrganization();
-  const job = createJob({
-    id: JOB_OTHER_ID,
-    orgId: ORG_OTHER_ID,
-    customerId: organization.customer.id,
-    title: JOB_OTHER_TITLE,
-    scheduledAt: JOB_OTHER_SCHEDULED_AT,
-    createdBy: OUTSIDER_EMAIL,
-    now: SEED_CREATED_AT,
-  });
-
-  return {
-    ...organization,
-    job,
-    operations: [
-      ...organization.operations,
-      forwardOperation({
-        id: "op_create_job_other",
-        orgId: ORG_OTHER_ID,
-        action: "create-job",
-        resourceType: "job",
-        resourceId: job.id,
-        versionBefore: 0,
-        versionAfter: 1,
-        payload: createJobPayload(job),
-        inverse: { type: "archive-job" },
-        performedAt: SEED_CREATED_AT,
-      }),
-    ],
   };
 }
 
@@ -628,8 +515,8 @@ export function createForeignOrganizationJob(): ForeignOrganizationScenario {
 export interface Scenario {
   organizations: readonly SeedOrganization[];
   memberships: readonly SeedMembership[];
-  customers: readonly Customer[];
-  jobs: readonly Job[];
+  events: readonly Event[];
+  seatingTables: readonly SeatingTable[];
   operations: readonly Operation[];
 }
 
@@ -641,39 +528,24 @@ export interface Scenario {
  */
 export function buildScenario(): Scenario {
   const company = createCompanyWithMembers();
-  const scheduled = createScheduledJob();
-  const inProgress = createInProgressJob();
-  const completed = createCompletedJob();
-  const archived = createArchivedJob();
-  const foreign = createForeignOrganizationJob();
+  const foreign = createForeignOrganization();
+  const seating = createSeatingArrangement();
+  const foreignSeating = createForeignOrganizationSeating();
 
   return {
     organizations: [company.organization, foreign.organization],
     memberships: [...company.memberships, ...foreign.memberships],
-    customers: [...company.customers, foreign.customer],
-    jobs: [
-      scheduled.job,
-      inProgress.job,
-      completed.job,
-      archived.job,
-      foreign.job,
-    ],
-    operations: [
-      ...company.operations,
-      ...scheduled.operations,
-      ...inProgress.operations,
-      ...completed.operations,
-      ...archived.operations,
-      ...foreign.operations,
-    ],
+    events: [...seating.events, ...foreignSeating.events],
+    seatingTables: [...seating.tables, ...foreignSeating.tables],
+    operations: [...seating.operations, ...foreignSeating.operations],
   };
 }
 
 /**
  * Loads the full B12 scenario into an `InMemoryDependencies`'s state:
- * memberships, customers, jobs and their creating (and, where the table
- * calls for it, transitioning) operations. Use-case tests call this once per
- * test and then act as one of the seeded users.
+ * memberships, events, seating tables and the operations that created and
+ * changed them. Use-case tests call this once per test and then act as one of
+ * the seeded users.
  *
  * The organizations themselves have no in-memory counterpart: nothing in the
  * application layer reads an organization row, only the membership that
@@ -689,12 +561,12 @@ export function seedInMemory(deps: InMemoryDependencies): void {
     deps.state.memberships.set(membership.orgId, org);
   }
 
-  for (const customer of scenario.customers) {
-    deps.state.customers.set(customer.id, customer);
+  for (const event of scenario.events) {
+    deps.state.events.set(event.id, event);
   }
 
-  for (const job of scenario.jobs) {
-    deps.state.jobs.set(job.id, job);
+  for (const table of scenario.seatingTables) {
+    deps.state.seatingTables.set(table.id, table);
   }
 
   for (const operation of scenario.operations) {
@@ -740,13 +612,15 @@ function insertOrIgnore(
 }
 
 // The application tables. Column names and their order mirror
-// `src/infrastructure/d1/sql.ts`; `migrations/0001_init.sql` is the schema
-// they describe. `jobs.accounting_reference`/`accounting_sent_at` are absent
-// because migration 0002 (T27) has not added them yet.
-const CUSTOMER_INSERT_COLUMNS =
-  "id, org_id, name, email, phone, notes, status, version, created_by, created_at, updated_at";
-const JOB_INSERT_COLUMNS =
-  "id, org_id, customer_id, title, description, status, scheduled_at, assigned_to, completed_at, archived_at, accounting_reference, accounting_sent_at, version, created_by, created_at, updated_at";
+// `src/infrastructure/d1/sql.ts`; `migrations/` is the schema they describe.
+const EVENT_INSERT_COLUMNS =
+  "id, org_id, name, starts_at, room_width, room_height, status, version, created_by, created_at, updated_at";
+
+const SEATING_TABLE_INSERT_COLUMNS =
+  "id, org_id, event_id, name, kind, size, end_seats, rotation, grid_x, grid_y, seats, status, version, created_by, created_at, updated_at";
+
+const SEATING_CELL_INSERT_COLUMNS = "org_id, event_id, x, y, table_id";
+
 const OPERATION_INSERT_COLUMNS =
   "id, org_id, kind, action, resource_type, resource_id, classification, version_before, version_after, payload, inverse, related_operation_id, undone_by_operation_id, performed_by, performed_via, performed_at";
 
@@ -770,8 +644,8 @@ const ORG_MEMBER_INSERT_COLUMNS = "id, org_id, email, role, joined_at";
 
 /**
  * The whole scenario as `INSERT OR IGNORE` statements, in dependency order:
- * organizations, memberships, customers, then jobs (whose foreign key names
- * `customers (org_id, id)`), then the operations that reference both.
+ * organizations, memberships, events, then seating tables (whose foreign key
+ * names `events (org_id, id)`), then the operations that reference both.
  *
  * User accounts are deliberately absent — `scripts/seed.mjs` creates those
  * over HTTP so the framework hashes the password and writes whatever session
@@ -804,45 +678,63 @@ export function buildScenarioSql(): string[] {
     );
   }
 
-  for (const customer of scenario.customers) {
+  for (const event of scenario.events) {
     statements.push(
-      insertOrIgnore("customers", CUSTOMER_INSERT_COLUMNS, [
-        sqlText(customer.id),
-        sqlText(customer.orgId),
-        sqlText(customer.name),
-        sqlText(customer.email),
-        sqlText(customer.phone),
-        sqlText(customer.notes),
-        sqlText(customer.status),
-        String(customer.version),
-        sqlText(customer.createdBy),
-        sqlText(customer.createdAt),
-        sqlText(customer.updatedAt),
+      insertOrIgnore("events", EVENT_INSERT_COLUMNS, [
+        sqlText(event.id),
+        sqlText(event.orgId),
+        sqlText(event.name),
+        sqlText(event.startsAt),
+        String(event.roomWidth),
+        String(event.roomHeight),
+        sqlText(event.status),
+        String(event.version),
+        sqlText(event.createdBy),
+        sqlText(event.createdAt),
+        sqlText(event.updatedAt),
       ]),
     );
   }
 
-  for (const job of scenario.jobs) {
+  for (const table of scenario.seatingTables) {
     statements.push(
-      insertOrIgnore("jobs", JOB_INSERT_COLUMNS, [
-        sqlText(job.id),
-        sqlText(job.orgId),
-        sqlText(job.customerId),
-        sqlText(job.title),
-        sqlText(job.description),
-        sqlText(job.status),
-        sqlText(job.scheduledAt),
-        sqlText(job.assignedTo),
-        sqlText(job.completedAt),
-        sqlText(job.archivedAt),
-        sqlText(job.accountingReference),
-        sqlText(job.accountingSentAt),
-        String(job.version),
-        sqlText(job.createdBy),
-        sqlText(job.createdAt),
-        sqlText(job.updatedAt),
+      insertOrIgnore("seating_tables", SEATING_TABLE_INSERT_COLUMNS, [
+        sqlText(table.id),
+        sqlText(table.orgId),
+        sqlText(table.eventId),
+        sqlText(table.name),
+        sqlText(table.kind),
+        String(table.size),
+        table.endSeats ? "1" : "0",
+        String(table.rotation),
+        String(table.gridX),
+        String(table.gridY),
+        sqlText(JSON.stringify(table.seats)),
+        sqlText(table.status),
+        String(table.version),
+        sqlText(table.createdBy),
+        sqlText(table.createdAt),
+        sqlText(table.updatedAt),
       ]),
     );
+  }
+
+  // Occupancy is derived, never hand-written: the same `cellsOf` the
+  // application uses renders it, so a seeded plan cannot disagree with the rule
+  // the `seating_cells` primary key enforces.
+  for (const table of scenario.seatingTables) {
+    if (table.status !== "active") continue;
+    for (const cell of cellsOf(table)) {
+      statements.push(
+        insertOrIgnore("seating_cells", SEATING_CELL_INSERT_COLUMNS, [
+          sqlText(table.orgId),
+          sqlText(table.eventId),
+          String(cell.x),
+          String(cell.y),
+          sqlText(table.id),
+        ]),
+      );
+    }
   }
 
   for (const operation of scenario.operations) {
@@ -877,9 +769,9 @@ export function buildScenarioSql(): string[] {
  * ids, so a database that also holds hand-made rows for another organization
  * keeps them (blueprint B12).
  *
- * Child rows first — operations, jobs, customers — so the foreign key from
- * `jobs` to `customers` holds throughout, then the two framework-owned
- * tables. User accounts are not deleted: the seed did not create them by SQL
+ * Child rows first — operations, seating tables, events — so the foreign key
+ * from `seating_tables` to `events` holds throughout, then the two
+ * framework-owned tables. User accounts are not deleted: the seed did not create them by SQL
  * and does not know which rows the framework's auth tables own.
  */
 export function buildScenarioResetSql(): string[] {
@@ -889,9 +781,9 @@ export function buildScenarioResetSql(): string[] {
 
   return [
     `DELETE FROM operations WHERE org_id IN (${orgIds});`,
-    `DELETE FROM accounting_exports WHERE org_id IN (${orgIds});`,
-    `DELETE FROM jobs WHERE org_id IN (${orgIds});`,
-    `DELETE FROM customers WHERE org_id IN (${orgIds});`,
+    `DELETE FROM seating_cells WHERE org_id IN (${orgIds});`,
+    `DELETE FROM seating_tables WHERE org_id IN (${orgIds});`,
+    `DELETE FROM events WHERE org_id IN (${orgIds});`,
     `DELETE FROM org_members WHERE org_id IN (${orgIds});`,
     `DELETE FROM organizations WHERE id IN (${orgIds});`,
   ];

@@ -19,21 +19,23 @@ logic, no database, no branching. It may import `src/interface`, types from `src
 `@agent-native/core/action` and `zod` — and nothing else.
 
 ```ts
-// actions/complete-job.ts
+// actions/label-seat.ts
 import { defineAction } from "@agent-native/core/action";
 import { z } from "zod";
 
-import { completeJob } from "../src/application/use-cases/complete-job";
+import { labelSeat } from "../src/application/use-cases/label-seat";
 import { runAppAction } from "../src/interface/run-app-action";
 
 export default defineAction({
   description:
-    "Mark a job as completed. Use when the work for a job is done. Allowed from status " +
-    "scheduled or in_progress — a job need not have been started first; a completed or " +
-    "archived job fails with INVARIANT. Reversible with undo-operation, which restores the " +
-    "status the job had before.",
+    "Write a name on one seat of one table — this is how a guest is seated. Seats are " +
+    "numbered clockwise around the table's outline from 0, in the order get-event returns " +
+    "them, so read the plan first and say which number you mean. An empty label clears the " +
+    "seat. Reversible: undo-operation puts the previous name back.",
   schema: z.object({
-    jobId: z.string().min(1).describe("Id of the job to complete"),
+    tableId: z.string().min(1).describe("Id of the table the seat belongs to"),
+    seat: z.number().int().min(0).describe("Which seat, counting clockwise from 0"),
+    label: z.string().max(32).describe("The name to write, or empty to clear it"),
     expectedVersion: z
       .number()
       .int()
@@ -43,11 +45,11 @@ export default defineAction({
   }),
   mcpTool: true,
   audit: {
-    target: (args) => ({ type: "job", id: args.jobId, visibility: "org" }),
-    summary: (args) => `Completed job ${args.jobId}`,
+    target: (args) => ({ type: "seating_table", id: args.tableId, visibility: "org" }),
+    summary: (args) => `Seated ${args.label} at seat ${args.seat + 1}`,
   },
   run: (args, ctx) =>
-    runAppAction(ctx, "complete-job", (actor, deps) => completeJob(deps, actor, args)),
+    runAppAction(ctx, "label-seat", (actor, deps) => labelSeat(deps, actor, args)),
 });
 ```
 
@@ -62,9 +64,9 @@ export default defineAction({
 | `audit` | `target` gives the audit row its `target_type`, `target_id` and visibility; `summary` gives it one human-readable line. Required on every mutation. |
 | `run` | One call to `runAppAction`. Nothing else. |
 
-The **action name is the file name**: `actions/complete-job.ts` is `complete-job` as an agent
-tool, at `POST /_agent-native/actions/complete-job`, as an MCP tool and as
-`pnpm action complete-job`. There is no registry to keep in step and no second place to put an
+The **action name is the file name**: `actions/label-seat.ts` is `label-seat` as an agent
+tool, at `POST /_agent-native/actions/label-seat`, as an MCP tool and as
+`pnpm action label-seat`. There is no registry to keep in step and no second place to put an
 implementation, which is exactly why the surfaces cannot diverge.
 
 Two naming traps in the framework's discovery: files starting with `_`, and files named
@@ -111,11 +113,11 @@ what actually broke. The caller sees `INTERNAL` and the constant string `"Unexpe
 | --- | --- | --- | --- |
 | `VALIDATION` | 400 | Bad argument, or a cross-record check that fails | `That person is not a member of this organization` |
 | `AUTHENTICATION` | 401 | No session | `Sign in required` |
-| `AUTHORIZATION` | 403 | No active organization, no membership, or no capability | `Role member may not customers:archive` |
-| `NOT_FOUND` | 404 | Missing, or in another organization | `Job not found` |
+| `AUTHORIZATION` | 403 | No active organization, no membership, or no capability | `Role member may not events:archive` |
+| `NOT_FOUND` | 404 | Missing, or in another organization | `Table not found` |
 | `CONFLICT` | 409 | Somebody changed it first; the caller can re-read and retry | `Newer changes exist; undo refused` |
-| `INVARIANT` | 422 | A domain rule refuses this transition, whatever the caller does | `Cannot reschedule a job that is completed` |
-| `EXTERNAL` | 502 | A vendor call did not confirm | `Accounting system unavailable: … Retry will reconcile the pending request.` |
+| `INVARIANT` | 422 | A domain rule refuses this transition, whatever the caller does | `Tables may not overlap` |
+| `EXTERNAL` | 502 | A vendor call did not confirm | `<vendor> unavailable: … Retry will reconcile the pending request.` (no action raises this today) |
 | `INTERNAL` | 500 | Unanticipated | `Unexpected error`, always exactly that |
 
 `CONFLICT` versus `INVARIANT` is the distinction worth internalising: `CONFLICT` means "try
@@ -134,7 +136,7 @@ with `version + 1`. Every write is guarded on the version the caller read — in
 in application code:
 
 ```sql
-UPDATE jobs SET status = ?, …, version = ?, updated_at = ?
+UPDATE seating_tables SET grid_x = ?, grid_y = ?, …, version = ?, updated_at = ?
 WHERE org_id = ? AND id = ? AND version = ?;   -- expectedVersion
 ```
 
@@ -147,27 +149,37 @@ That guard is always on. `expectedVersion` on an action is a *second*, earlier c
 case where a human or an agent is acting on information they read a while ago:
 
 ```ts
-if (input.expectedVersion !== undefined && input.expectedVersion !== job.version) {
-  throw new AppError("CONFLICT", "The job was changed by someone else");
+if (input.expectedVersion !== undefined && input.expectedVersion !== table.version) {
+  throw new AppError("CONFLICT", "The table was changed by someone else");
 }
 ```
 
-Pass it from the UI (the detail page has the version it rendered) so the user gets a clean
+Pass it from the UI (the floor plan has the version it rendered) so the user gets a clean
 "this changed, refresh" instead of an attempt that fails deeper down. Omitting it is safe; the
 SQL guard still holds.
+
+A version guard answers "has *this* record changed". Some invariants are about a record's
+relationship to others — the floor plan's "two tables may not overlap" is the one here — and no
+version can express them, because the two writers are touching different rows. Those become
+constraints instead: `seating_cells` carries one row per cell a table covers, keyed
+`(org_id, event_id, x, y)`, and every seating commit rewrites its table's cells in the same
+atomic batch. The second writer violates the key, the batch is rolled back, and
+`isCellCollision` in `src/infrastructure/d1/seating-tables-repository.ts` turns that into a
+`CONFLICT`.
 
 ## Idempotency
 
 Only the two creates take an `idempotencyKey`, and only because a create is the one command
-where a retry after an unclear failure would otherwise produce a duplicate record. A transition
-is naturally idempotent-ish — completing an already-completed job is an `INVARIANT`, not a
-second completion.
+where a retry after an unclear failure would otherwise produce a duplicate record. Every other
+command is naturally idempotent-ish — writing the label a seat already has is an `INVARIANT`,
+not a second write.
 
 ```ts
-await callAction("create-job", {
-  customerId: "cus_a",
-  title: "Boiler service",
-  scheduledAt: "2026-10-01T08:00:00.000Z",
+await callAction("create-seating-table", {
+  eventId: "evt_gala",
+  name: "Table 7",
+  kind: "round",
+  size: 3,
   idempotencyKey: "intake-form-7d3f",     // unique per organization and action
 });
 ```
@@ -204,24 +216,24 @@ Queries — `http: { method: "GET" }`, `readOnly: true`:
 
 | Action | Capability | What it returns |
 | --- | --- | --- |
-| `list-customers` | `customers:read` | Customers, name order; archived only when asked |
-| `get-customer` | `customers:read` | One customer |
-| `list-jobs` | `jobs:read` | Jobs, earliest scheduled first; filters `status`, `customerId`, `from` (inclusive), `to` (**exclusive**), `includeArchived` |
-| `get-job` | `jobs:read` | One job, its customer name and its `accountingExportStatus` |
+| `list-events` | `events:read` | Events, earliest first; archived only when asked |
+| `get-event` | `events:read` + `seating:read` | One event and its whole floor plan: every active table, where it stands, and every seat label |
 | `list-recent-activity` | `history:read` | Recent operations, each with `undoable` / `redoable` computed for the caller's current role |
 
 Commands:
 
 | Action | Capability | Classification | Inverse |
 | --- | --- | --- | --- |
-| `create-customer` | `customers:create` | `compensatable` | archive the new customer |
-| `archive-customer` | `customers:archive` | `reversible` | restore the customer |
-| `create-job` | `jobs:create` | `compensatable` | archive the new job |
-| `reschedule-job` | `jobs:reschedule` | `reversible` | restore the previous instant |
-| `start-job` | `jobs:transition` | `reversible` | restore the previous status triple |
-| `complete-job` | `jobs:transition` | `reversible` | restore the previous status triple |
-| `archive-job` | `jobs:transition` | `reversible` | restore the previous status triple |
-| `send-job-to-accounting` | `jobs:export` | `irreversible` | none; `needsApproval: true` |
+| `create-event` | `events:create` | `compensatable` | archive the new event |
+| `archive-event` | `events:archive` | `reversible` | restore the event |
+| `create-seating-table` | `seating:write` | `compensatable` | remove the new table |
+| `move-seating-table` | `seating:write` | `reversible` | restore the recorded cell, if it is still free |
+| `rotate-seating-table` | `seating:write` | `reversible` | turn it back, and return it to where it stood |
+| `reshape-seating-table` | `seating:write` | `reversible` | restore the recorded form and seat list, labels included |
+| `remove-seat` | `seating:write` | `reversible` | put the chair back, if its cell is still free |
+| `restore-seat` | `seating:write` | `reversible` | take the chair away again |
+| `label-seat` | `seating:write` | `reversible` | restore the name that was there |
+| `archive-seating-table` | `seating:write` | `reversible` | put the table back, if its space is still free |
 | `undo-operation` | `history:undo` + the effect's own capability | `reversible` | re-apply, via `redo-operation` |
 | `redo-operation` | `history:undo` + the original command's capability | `reversible` | the forward operation's inverse |
 
@@ -235,35 +247,35 @@ in `server/plugins/agent-chat.ts`.
 
 ```tsx
 // UI — a query and a mutation. ctx.caller === "frontend".
-const jobs = useActionQuery("list-jobs", { status: "scheduled" });
-const complete = useActionMutation("complete-job");
-await complete.mutateAsync({ jobId, expectedVersion: job.version });
+const events = useActionQuery("list-events", {});
+const move = useActionMutation("move-seating-table");
+await move.mutateAsync({ tableId, gridX, gridY, expectedVersion: table.version });
 ```
 
 ```bash
 # HTTP — ctx.caller === "http". A GET action takes query parameters.
 curl -s -b cookies.txt \
-  'http://127.0.0.1:8787/_agent-native/actions/list-jobs?status=scheduled'
+  'http://127.0.0.1:8787/_agent-native/actions/get-event?eventId=evt_gala'
 
 curl -s -b cookies.txt -X POST \
   -H 'content-type: application/json' \
-  -d '{"jobId":"job_in_progress"}' \
-  http://127.0.0.1:8787/_agent-native/actions/complete-job
+  -d '{"tableId":"tbl_side","gridX":4,"gridY":4}' \
+  http://127.0.0.1:8787/_agent-native/actions/move-seating-table
 ```
 
 ```bash
 # CLI — ctx.caller === "cli". Identity from the two environment variables.
 AGENT_USER_EMAIL=member1@example.invalid AGENT_ORG_ID=org_acme \
-  pnpm action complete-job '{"jobId":"job_in_progress"}'
+  pnpm action label-seat '{"tableId":"tbl_head","seat":0,"label":"Ada"}'
 
 pnpm action --help                          # lists every action
-pnpm action list-jobs --status nope         # an invalid value prints the full signature
+pnpm action list-events --status nope       # an invalid value prints the full signature
 ```
 
-Agent and MCP need no example: the model calls `complete-job` by name, and an MCP client sees
+Agent and MCP need no example: the model calls `label-seat` by name, and an MCP client sees
 the same tool with the same schema. `POST /mcp` unauthenticated is 401 with a
 `WWW-Authenticate` challenge.
 
 Without an identity the CLI fails with `errorCode: "AUTHENTICATION"` and
-`Action "list-jobs" failed: Sign in required` — which is the runner doing its job, not a
+`Action "list-events" failed: Sign in required` — which is the runner doing its job, not a
 misconfiguration.

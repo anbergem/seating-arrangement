@@ -31,8 +31,6 @@ run against the real Worker, and a restore procedure that has actually been test
 - **An audit trail and a semantic undo ledger.** Every mutation writes an operation row with
   its inverse; undo replays that inverse through the domain and refuses when newer changes
   exist. Redo re-runs the forward command.
-- **One external integration**, `send-job-to-accounting`, showing the two-step write, the
-  idempotency key, the durable pending request and the `needsApproval` gate for the agent.
 - **A hermetic test pyramid**: unit and application tests with in-memory doubles, integration
   tests against real SQL, a Worker smoke against the built bundle, and Playwright driving the
   real Worker on a throwaway D1. No test touches a cloud resource.
@@ -83,7 +81,7 @@ So if `pnpm dev:worker` gives you a sign-in page that rejects every password, th
 is an unseeded database rather than a wrong one — no account exists to sign in to. Check with:
 
 ```bash
-pnpm exec wrangler d1 execute example-jobs-local --local --command "SELECT count(*) FROM user"
+pnpm exec wrangler d1 execute seating-arrangement-local --local --command "SELECT count(*) FROM user"
 ```
 
 Zero means run `pnpm db:seed:worker` while `pnpm dev:worker` is up. The seed password is the
@@ -119,24 +117,36 @@ Every arrow into `actions/` is a different surface; everything from there down h
 `ARCHITECTURE.md` explains each layer, with diagrams for request flow, parity, authorization,
 organization scoping, ports, undo, CI/CD and recovery.
 
-## The example application
+## The application
 
-A generic field-service application, so the architecture is visible without domain knowledge:
+Seating plans for events — who sits where, at which table, in which room:
 
 - An **organization** ("Acme Services") has **members** with a role.
-- A **customer** has a name, contact details and notes, and is `active` or `archived`.
-- A **job** belongs to one customer and moves `scheduled` → `in_progress` → `completed`, or
-  `archived` from any of those. A completed job can be exported to accounting once.
+- An **event** is the occasion a plan belongs to: a name, a start time, and `active` or
+  `archived`. Each event owns exactly one floor plan.
+- Each event owns its **room** — the floor its tables stand on, `roomWidth` by `roomHeight` in
+  grid cells, starting at 16 by 10 and resizable. A shrink that would strand a table is refused.
+- A **seating table** is **rectangular or round**, never itself bent: a `kind`, a `size` (a
+  rectangle's length or a round table's diameter), whether it has `endSeats`, and a `rotation`
+  in quarter turns. **Two tables may never cover the same cell** — a rule enforced by a primary
+  key on the cells a table occupies, not by a check before the write, so two people dragging at
+  once cannot produce a plan that breaks it.
+- A **seat** is a chair, numbered clockwise around the table's outline from 0 and _derived_ from
+  the shape: a rectangle of length n has 2n plus its ends, a round table of diameter n has 4n.
+  Its label is whoever sits there.
+- An L- or U-shaped **arrangement** is several tables standing end to end, with the chairs that
+  would be inside a neighbour's body taken off. `bootstrap-event-layout` builds one on an empty
+  plan and grows the room to hold it.
 - Every change writes an **operation** recording who did it, from which surface, and how to
   reverse it. `/activity` shows the history with Undo and Redo.
 
-Fifteen actions cover it: five queries, eight commands, and undo/redo. The interesting ones
-are `complete-job` (reversible, and the worked example throughout the docs),
-`undo-operation` (refuses when the record moved on) and `send-job-to-accounting`
-(irreversible, admin-only, needs the agent to obtain human approval).
+Sixteen actions cover it: two queries, twelve commands, and undo/redo. The interesting ones are
+`move-seating-table` (reversible, and the worked example throughout the docs — its undo can
+legitimately fail, because the space it wants back may have been taken),
+`bootstrap-event-layout` (one operation that places a dozen tables and may enlarge the room, and
+one Undo that takes all of it back) and `undo-operation` (refuses when the record moved on).
 
-Delete all of it when you build your own — `docs/adding-a-feature.md` walks through adding a
-feature end to end so you know what to keep.
+`docs/adding-a-feature.md` walks through adding a feature end to end.
 
 ## Authentication
 
@@ -186,8 +196,8 @@ Applications created from the template develop independently; they do not stay r
 
 ## Philosophy
 
-- **Capabilities, not CRUD.** `complete-job`, never `updateJob({status})`. An action names
-  something the business does, and its name is what the agent sees.
+- **Capabilities, not CRUD.** `move-seating-table`, never `updateTable({gridX, gridY})`. An
+  action names something the business does, and its name is what the agent sees.
 - **Humans and agents share use cases.** Parity is not a feature; it is the consequence of
   having one implementation.
 - **Security lives in the application boundary.** Not the UI, not a hook, not a prompt. Hide a
@@ -204,4 +214,4 @@ Applications created from the template develop independently; they do not stay r
 ## License
 
 MIT. See [LICENSE](LICENSE). No customer-specific information is in this repository; sample
-names are `Acme Services`, `Example Customer A` and addresses under `example.invalid`.
+names are `Acme Services`, `Spring Gala` and addresses under `example.invalid`.

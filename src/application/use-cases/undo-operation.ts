@@ -4,9 +4,9 @@
  * Undo here is semantic, not a snapshot restore: every command recorded the
  * *inverse command* that reverses it (B8), and this use case replays that
  * inverse through the same domain functions any other command uses. So undoing
- * a create archives the resource rather than deleting it, and undoing a
- * transition restores the exact status triple that was recorded — never a
- * status guessed from the action name.
+ * a create removes the resource rather than deleting it, and undoing a move
+ * restores the exact cell that was recorded — never one guessed from the
+ * action name.
  *
  * The one rule that makes it safe is `canUndo`: the resource must still be at
  * the version the operation left it at. If anyone changed the record since —
@@ -27,30 +27,33 @@
  */
 
 import type {
-  Customer,
+  Event,
+  FloorPlan,
   InverseCommand,
-  Job,
   Operation,
   ResourceType,
+  SeatingTable,
 } from "../../domain";
 import {
-  archiveCustomer,
-  archiveJob,
+  archiveEvent,
+  archiveSeatingTable,
   canUndo,
-  restoreCustomer,
-  restoreJobSchedule,
-  restoreJobStatus,
+  restoreEvent,
+  restoreRoomSize,
+  restoreSeatingTable,
+  restoreSeatingTablePosition,
+  restoreSeatingTableRotation,
+  restoreSeatingTableShape,
+  restoreSeatLabel,
+  restoreSeatPresence,
 } from "../../domain";
 import type { Actor } from "../actor";
 import { requireCapability } from "../authorization";
 import { AppError } from "../errors";
-import {
-  mayUndo,
-  reopensCompletedJob,
-  requireHistoryPermission,
-} from "../history-policy";
+import { mayUndo, requireHistoryPermission } from "../history-policy";
 import type { Dependencies } from "../ports";
 import { applyDomain, type UndoRedoResult } from "./command";
+import { loadFloorPlan } from "./floor-plan";
 
 const ACTION = "undo-operation";
 
@@ -81,7 +84,7 @@ function assertUndoable(op: Operation, currentVersion: number): void {
 
 /**
  * An operation whose `inverse` does not fit the resource it names — a
- * `restore-customer` recorded against a job, or a missing inverse on an
+ * `restore-event` recorded against a table, or a missing inverse on an
  * operation `canUndo` accepted — is a corrupt row, not a caller's mistake, so
  * it is `INTERNAL` with the reason withheld (B5).
  */
@@ -89,38 +92,64 @@ function inverseMismatch(): AppError {
   return new AppError("INTERNAL", "Unexpected error");
 }
 
-/** The customer half of B9 step 4. */
-function applyCustomerInverse(
+/** The event half of B9 step 4. `tables` is only wanted by `restore-room-size`,
+ * which may not shrink the floor out from under a table somebody has placed in
+ * the meantime. */
+function applyEventInverse(
   inverse: InverseCommand | null,
-  customer: Customer,
+  event: Event,
+  tables: readonly SeatingTable[],
   now: string,
-): Customer {
+): Event {
   switch (inverse?.type) {
-    case "restore-customer":
-      return restoreCustomer(customer, now);
-    case "archive-customer":
-      return archiveCustomer(customer, now);
+    case "restore-event":
+      return restoreEvent(event, now);
+    case "archive-event":
+      return archiveEvent(event, now);
+    case "restore-room-size":
+      return restoreRoomSize(event, inverse.previous, tables, now);
     default:
       throw inverseMismatch();
   }
 }
 
-/** The job half of B9 step 4. `restore-job-schedule` goes through
- * `restoreJobSchedule`, not `rescheduleJob`, because undo must be able to put
- * back the exact instant it recorded and `rescheduleJob` refuses a move to the
- * instant the job already has. */
-function applyJobInverse(
+/**
+ * The seating half of B9 step 4.
+ *
+ * Most of these put the table back into *space* — a position, a rotation, a
+ * shape, a chair — so they take the event's other tables and refuse when
+ * those cells have been taken in the meantime: undo restores a recorded fact,
+ * but it may not restore it on top of somebody else. `siblings` is therefore a
+ * parameter rather than a lookup inside each branch, since only
+ * `restore-seat-label` can do without it.
+ */
+function applySeatingTableInverse(
   inverse: InverseCommand | null,
-  job: Job,
+  table: SeatingTable,
+  plan: FloorPlan,
   now: string,
-): Job {
+): SeatingTable {
   switch (inverse?.type) {
-    case "restore-job-status":
-      return restoreJobStatus(job, inverse.previous, now);
-    case "restore-job-schedule":
-      return restoreJobSchedule(job, inverse.previousScheduledAt, now);
-    case "archive-job":
-      return archiveJob(job, now);
+    case "restore-seating-table-position":
+      return restoreSeatingTablePosition(table, inverse.previous, plan, now);
+    case "restore-seating-table-rotation":
+      return restoreSeatingTableRotation(table, inverse.previous, plan, now);
+    case "restore-seating-table-shape":
+      return restoreSeatingTableShape(table, inverse.previous, plan, now);
+    case "restore-seat-label":
+      return restoreSeatLabel(table, inverse.seat, inverse.previousLabel, now);
+    case "restore-seat-presence":
+      return restoreSeatPresence(
+        table,
+        inverse.seat,
+        inverse.present,
+        plan,
+        now,
+      );
+    case "restore-seating-table":
+      return restoreSeatingTable(table, plan, now);
+    case "archive-seating-table":
+      return archiveSeatingTable(table, now);
     default:
       throw inverseMismatch();
   }
@@ -172,30 +201,38 @@ export async function undoOperation(
   const op = await deps.operations.getById(actor.orgId, input.operationId);
   if (!op) throw new AppError("NOT_FOUND", "Operation not found");
 
-  if (op.resourceType === "customer") {
-    const customer = await deps.customers.getById(actor.orgId, op.resourceId);
-    if (!customer) throw new AppError("NOT_FOUND", "Customer not found");
-    assertUndoable(op, customer.version);
+  if (op.resourceType === "event") {
+    const event = await deps.events.getById(actor.orgId, op.resourceId);
+    if (!event) throw new AppError("NOT_FOUND", "Event not found");
+    assertUndoable(op, event.version);
     requireHistoryPermission(mayUndo(actor, op));
 
+    if (op.inverse?.type === "undo-bootstrap") {
+      return undoBootstrap(deps, actor, op, event, op.inverse);
+    }
+
+    const siblings = await deps.seatingTables.list(actor.orgId, {
+      eventId: event.id,
+      status: "active",
+    });
     const now = deps.clock.now();
     const restored = applyDomain(() =>
-      applyCustomerInverse(op.inverse, customer, now),
+      applyEventInverse(op.inverse, event, siblings, now),
     );
     const undoOp = undoOperationRow({
       id: deps.ids.next(),
       actor,
       undone: op,
-      resourceType: "customer",
-      resourceId: customer.id,
-      versionBefore: customer.version,
+      resourceType: "event",
+      resourceId: event.id,
+      versionBefore: event.version,
       versionAfter: restored.version,
       now,
     });
 
-    await deps.customers.commit({
-      customer: restored,
-      expectedVersion: customer.version,
+    await deps.events.commit({
+      event: restored,
+      expectedVersion: event.version,
       operation: undoOp,
       markUndone: op.id,
     });
@@ -203,46 +240,112 @@ export async function undoOperation(
     return {
       resource: restored,
       operationId: undoOp.id,
-      resourceType: "customer",
+      resourceType: "event",
     };
   }
 
-  const job = await deps.jobs.getById(actor.orgId, op.resourceId);
-  if (!job) throw new AppError("NOT_FOUND", "Job not found");
-  assertUndoable(op, job.version);
-  requireHistoryPermission(mayUndo(actor, op));
-  const requireNoAccountingExport = reopensCompletedJob(op);
-  if (
-    requireNoAccountingExport &&
-    (job.accountingReference !== null ||
-      (await deps.accountingExports.getByJobId(actor.orgId, job.id)))
-  ) {
-    throw new AppError(
-      "INVARIANT",
-      "A job with an accounting export cannot be reopened",
-    );
-  }
+  // Only two resource types remain, so this is the tail rather than a third
+  // `if`: TypeScript narrows `op.resourceType` to "seating_table" here.
+  {
+    const table = await deps.seatingTables.getById(actor.orgId, op.resourceId);
+    if (!table) throw new AppError("NOT_FOUND", "Table not found");
+    assertUndoable(op, table.version);
+    requireHistoryPermission(mayUndo(actor, op));
 
+    const { plan } = await loadFloorPlan(deps, actor.orgId, table.eventId);
+    const now = deps.clock.now();
+    const restored = applyDomain(() =>
+      applySeatingTableInverse(op.inverse, table, plan, now),
+    );
+    const undoOp = undoOperationRow({
+      id: deps.ids.next(),
+      actor,
+      undone: op,
+      resourceType: "seating_table",
+      resourceId: table.id,
+      versionBefore: table.version,
+      versionAfter: restored.version,
+      now,
+    });
+
+    await deps.seatingTables.commit({
+      table: restored,
+      expectedVersion: table.version,
+      operation: undoOp,
+      markUndone: op.id,
+    });
+
+    return {
+      resource: restored,
+      operationId: undoOp.id,
+      resourceType: "seating_table",
+    };
+  }
+}
+
+/**
+ * Undoing a venue bootstrap: every table it placed comes off the plan and the
+ * room goes back to the size it was.
+ *
+ * It is its own function rather than a branch of `applyEventInverse` because it
+ * is the one inverse that is not a single record changing state — it writes the
+ * event and a dozen tables, so it needs the repository method that does both at
+ * once rather than `events.commit`.
+ *
+ * A table that is already archived, or that somebody has deleted from under us,
+ * is skipped rather than being an error: the point of the undo is that the
+ * layout is gone afterwards, and a table that is already gone satisfies that.
+ */
+async function undoBootstrap(
+  deps: Dependencies,
+  actor: Actor,
+  op: Operation,
+  event: Event,
+  inverse: Extract<InverseCommand, { type: "undo-bootstrap" }>,
+): Promise<UndoRedoResult> {
   const now = deps.clock.now();
-  const restored = applyDomain(() => applyJobInverse(op.inverse, job, now));
+  const found = await Promise.all(
+    inverse.tableIds.map((id) => deps.seatingTables.getById(actor.orgId, id)),
+  );
+  const standing = found.filter(
+    (table): table is SeatingTable => table?.status === "active",
+  );
+  const archived = standing.map((table) => ({
+    table: applyDomain(() => archiveSeatingTable(table, now)),
+    expectedVersion: table.version,
+  }));
+
+  // The tables are coming off, so nothing can be standing in the space the
+  // smaller room is about to give up — but somebody may have added a table of
+  // their own since, and `restoreRoomSize` is what refuses that.
+  const remaining = (
+    await deps.seatingTables.list(actor.orgId, {
+      eventId: event.id,
+      status: "active",
+    })
+  ).filter((table) => !inverse.tableIds.includes(table.id));
+  const restored = applyDomain(() =>
+    restoreRoomSize(event, inverse.previousRoom, remaining, now),
+  );
+
   const undoOp = undoOperationRow({
     id: deps.ids.next(),
     actor,
     undone: op,
-    resourceType: "job",
-    resourceId: job.id,
-    versionBefore: job.version,
+    resourceType: "event",
+    resourceId: event.id,
+    versionBefore: event.version,
     versionAfter: restored.version,
     now,
   });
 
-  await deps.jobs.commit({
-    job: restored,
-    requireNoAccountingExport,
-    expectedVersion: job.version,
+  await deps.seatingTables.archiveLayout({
+    event: restored,
+    expectedVersion: event.version,
+    tables: archived,
     operation: undoOp,
     markUndone: op.id,
   });
 
-  return { resource: restored, operationId: undoOp.id, resourceType: "job" };
+  return { resource: restored, operationId: undoOp.id, resourceType: "event" };
 }

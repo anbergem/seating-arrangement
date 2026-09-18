@@ -37,8 +37,8 @@ const repoRoot = path.resolve(
 );
 
 /** Worker and database base name (decision D18). Local D1 is always
- * `example-jobs-local`; a remote environment's database is `example-jobs-<env>`. */
-const BASE_NAME = "example-jobs";
+ * `seating-arrangement-local`; a remote environment's database is `seating-arrangement-<env>`. */
+const BASE_NAME = "seating-arrangement";
 
 const TARGETS = ["node", "d1-local", "d1-remote"];
 
@@ -218,7 +218,7 @@ async function executeOnNodeDatabase(statements) {
   const databasePath = databaseFilePath(url);
   const client = createClient({ url: `file:${databasePath}` });
   try {
-    // Foreign keys on, so the jobs → customers reference is checked rather than silently
+    // Foreign keys on, so the seating_tables → events reference is checked rather than silently
     // producing orphans; the statement order below satisfies it.
     await client.execute("PRAGMA foreign_keys = ON");
     // One transaction: a half-seeded database is worse than an unseeded one, and a failure

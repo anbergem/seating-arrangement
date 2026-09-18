@@ -21,20 +21,33 @@
  *   `docs/plan/DISCREPANCIES.md`.
  */
 
-import type { Customer, Job, Operation, ResourceType } from "../../domain";
+import type {
+  Event,
+  FloorPlan,
+  Operation,
+  ResourceType,
+  SeatingTable,
+  TableShapeKind,
+} from "../../domain";
 import {
-  archiveCustomer,
-  archiveJob,
-  completeJob,
-  rescheduleJob,
-  startJob,
+  archiveEvent,
+  resizeRoom,
+  archiveSeatingTable,
+  labelSeat,
+  moveSeatingTable,
+  removeSeat,
+  reshapeSeatingTable,
+  restoreSeat,
+  rotateSeatingTable,
+  TABLE_SHAPE_KINDS,
 } from "../../domain";
 import type { Actor } from "../actor";
 import { requireCapability } from "../authorization";
 import { AppError } from "../errors";
 import { mayRedo, requireHistoryPermission } from "../history-policy";
 import type { Dependencies } from "../ports";
-import { applyDomain, isCreateOperation, type UndoRedoResult } from "./command";
+import { applyDomain, isCompensated, type UndoRedoResult } from "./command";
+import { loadFloorPlan } from "./floor-plan";
 
 const ACTION = "redo-operation";
 
@@ -86,7 +99,9 @@ async function loadForwardOperation(
     ? await deps.operations.getById(actor.orgId, undoOp.relatedOperationId)
     : null;
   if (!forward) throw new AppError("INTERNAL", "Unexpected error");
-  if (isCreateOperation(forward)) {
+  // A create, or a layout: its undo archived what it made, so re-running it
+  // would produce a second one rather than bring the first back.
+  if (isCompensated(forward)) {
     throw new AppError("INVARIANT", "A create cannot be redone");
   }
   if (forward.kind !== "forward")
@@ -95,44 +110,145 @@ async function loadForwardOperation(
   return forward;
 }
 
-/** The instant a `reschedule-job` recorded as the argument to replay. */
-function scheduledAtFrom(payload: Record<string, unknown> | null): string {
-  const value = payload?.scheduledAt;
+/**
+ * Reads one recorded argument out of a forward operation's payload.
+ *
+ * A payload that does not hold what its own action needs is a corrupt row
+ * rather than a caller error, so every one of these is `INTERNAL` with the
+ * reason withheld (B5).
+ */
+function payloadNumber(
+  payload: Record<string, unknown> | null,
+  key: string,
+): number {
+  const value = payload?.[key];
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new AppError("INTERNAL", "Unexpected error");
+  }
+  return value;
+}
+
+function payloadBoolean(
+  payload: Record<string, unknown> | null,
+  key: string,
+): boolean {
+  const value = payload?.[key];
+  if (typeof value !== "boolean") {
+    throw new AppError("INTERNAL", "Unexpected error");
+  }
+  return value;
+}
+
+function payloadString(
+  payload: Record<string, unknown> | null,
+  key: string,
+): string {
+  const value = payload?.[key];
   if (typeof value !== "string") {
     throw new AppError("INTERNAL", "Unexpected error");
   }
   return value;
 }
 
-/** B9 step 3 for a customer: `archive-customer` is the only customer command
- * that is neither a create nor read-only. */
-function reapplyCustomerForward(
+function payloadShapeKind(
+  payload: Record<string, unknown> | null,
+): TableShapeKind {
+  const value = payloadString(payload, "kind");
+  const kind = TABLE_SHAPE_KINDS.find((candidate) => candidate === value);
+  if (!kind) throw new AppError("INTERNAL", "Unexpected error");
+  return kind;
+}
+
+function payloadSize(payload: Record<string, unknown> | null): number {
+  const value = payload?.size;
+  if (typeof value !== "number" || !Number.isInteger(value)) {
+    throw new AppError("INTERNAL", "Unexpected error");
+  }
+  return value;
+}
+
+/** B9 step 3 for an event. `bootstrap-event-layout` is deliberately absent: it
+ * creates tables, so like every other create its undo was a compensation and
+ * re-running it would make a second set rather than bring the first back. */
+function reapplyEventForward(
   forward: Operation,
-  customer: Customer,
+  event: Event,
+  tables: readonly SeatingTable[],
   now: string,
-): Customer {
+): Event {
   switch (forward.action) {
-    case "archive-customer":
-      return archiveCustomer(customer, now);
+    case "archive-event":
+      return archiveEvent(event, now);
+    case "resize-room":
+      return resizeRoom(
+        event,
+        {
+          width: payloadNumber(forward.payload, "width"),
+          height: payloadNumber(forward.payload, "height"),
+        },
+        tables,
+        now,
+      );
     default:
       throw new AppError("INVARIANT", NOT_REDOABLE_MESSAGE);
   }
 }
 
-/** B9 step 3 for a job. `rescheduleJob` is the ordinary domain function, not
- * the undo-only `restoreJobSchedule`: a redo moves the job back off the
- * instant the undo restored, so the "already scheduled at that time" rule is
- * not in the way. */
-function reapplyJobForward(forward: Operation, job: Job, now: string): Job {
+/**
+ * B9 step 3 for a seating table.
+ *
+ * These are the ordinary domain functions, not the undo-only restore twins: a
+ * redo moves the table back off wherever the undo put it, so the "already
+ * there" and "already has that label" rules are not in the way.
+ */
+function reapplySeatingTableForward(
+  forward: Operation,
+  table: SeatingTable,
+  plan: FloorPlan,
+  now: string,
+): SeatingTable {
   switch (forward.action) {
-    case "start-job":
-      return startJob(job, now);
-    case "complete-job":
-      return completeJob(job, now);
-    case "archive-job":
-      return archiveJob(job, now);
-    case "reschedule-job":
-      return rescheduleJob(job, scheduledAtFrom(forward.payload), now);
+    case "move-seating-table":
+      return moveSeatingTable(
+        table,
+        {
+          gridX: payloadNumber(forward.payload, "gridX"),
+          gridY: payloadNumber(forward.payload, "gridY"),
+        },
+        plan,
+        now,
+      );
+    case "reshape-seating-table":
+      return reshapeSeatingTable(
+        table,
+        {
+          kind: payloadShapeKind(forward.payload),
+          size: payloadSize(forward.payload),
+          endSeats: payloadBoolean(forward.payload, "endSeats"),
+        },
+        plan,
+        now,
+      );
+    case "label-seat":
+      return labelSeat(
+        table,
+        payloadNumber(forward.payload, "seat"),
+        payloadString(forward.payload, "label"),
+        now,
+      );
+    case "rotate-seating-table":
+      return rotateSeatingTable(table, plan, now);
+    case "remove-seat":
+      return removeSeat(table, payloadNumber(forward.payload, "seat"), now);
+    case "restore-seat":
+      return restoreSeat(
+        table,
+        payloadNumber(forward.payload, "seat"),
+        plan,
+        now,
+      );
+    case "archive-seating-table":
+      return archiveSeatingTable(table, now);
     default:
       throw new AppError("INVARIANT", NOT_REDOABLE_MESSAGE);
   }
@@ -188,66 +304,81 @@ export async function redoOperation(
   if (!undoOp) throw new AppError("NOT_FOUND", "Operation not found");
   assertRedoable(undoOp);
 
-  if (undoOp.resourceType === "customer") {
-    const customer = await deps.customers.getById(
-      actor.orgId,
-      undoOp.resourceId,
-    );
-    if (!customer) throw new AppError("NOT_FOUND", "Customer not found");
-    assertUnchanged(undoOp, customer.version);
+  if (undoOp.resourceType === "event") {
+    const event = await deps.events.getById(actor.orgId, undoOp.resourceId);
+    if (!event) throw new AppError("NOT_FOUND", "Event not found");
+    assertUnchanged(undoOp, event.version);
     const forward = await loadForwardOperation(deps, actor, undoOp);
 
+    const siblings = await deps.seatingTables.list(actor.orgId, {
+      eventId: event.id,
+      status: "active",
+    });
     const now = deps.clock.now();
     const next = applyDomain(() =>
-      reapplyCustomerForward(forward, customer, now),
+      reapplyEventForward(forward, event, siblings, now),
     );
     const redoOp = redoOperationRow({
       id: deps.ids.next(),
       actor,
       undoOp,
       forward,
-      resourceType: "customer",
-      resourceId: customer.id,
-      versionBefore: customer.version,
+      resourceType: "event",
+      resourceId: event.id,
+      versionBefore: event.version,
       versionAfter: next.version,
       now,
     });
 
-    await deps.customers.commit({
-      customer: next,
-      expectedVersion: customer.version,
+    await deps.events.commit({
+      event: next,
+      expectedVersion: event.version,
       operation: redoOp,
       markUndone: undoOp.id,
     });
 
-    return { resource: next, operationId: redoOp.id, resourceType: "customer" };
+    return { resource: next, operationId: redoOp.id, resourceType: "event" };
   }
 
-  const job = await deps.jobs.getById(actor.orgId, undoOp.resourceId);
-  if (!job) throw new AppError("NOT_FOUND", "Job not found");
-  assertUnchanged(undoOp, job.version);
-  const forward = await loadForwardOperation(deps, actor, undoOp);
+  // Only two resource types remain, so this is the tail rather than a third
+  // `if`: TypeScript narrows `undoOp.resourceType` to "seating_table" here.
+  {
+    const table = await deps.seatingTables.getById(
+      actor.orgId,
+      undoOp.resourceId,
+    );
+    if (!table) throw new AppError("NOT_FOUND", "Table not found");
+    assertUnchanged(undoOp, table.version);
+    const forward = await loadForwardOperation(deps, actor, undoOp);
 
-  const now = deps.clock.now();
-  const next = applyDomain(() => reapplyJobForward(forward, job, now));
-  const redoOp = redoOperationRow({
-    id: deps.ids.next(),
-    actor,
-    undoOp,
-    forward,
-    resourceType: "job",
-    resourceId: job.id,
-    versionBefore: job.version,
-    versionAfter: next.version,
-    now,
-  });
+    const { plan } = await loadFloorPlan(deps, actor.orgId, table.eventId);
+    const now = deps.clock.now();
+    const next = applyDomain(() =>
+      reapplySeatingTableForward(forward, table, plan, now),
+    );
+    const redoOp = redoOperationRow({
+      id: deps.ids.next(),
+      actor,
+      undoOp,
+      forward,
+      resourceType: "seating_table",
+      resourceId: table.id,
+      versionBefore: table.version,
+      versionAfter: next.version,
+      now,
+    });
 
-  await deps.jobs.commit({
-    job: next,
-    expectedVersion: job.version,
-    operation: redoOp,
-    markUndone: undoOp.id,
-  });
+    await deps.seatingTables.commit({
+      table: next,
+      expectedVersion: table.version,
+      operation: redoOp,
+      markUndone: undoOp.id,
+    });
 
-  return { resource: next, operationId: redoOp.id, resourceType: "job" };
+    return {
+      resource: next,
+      operationId: redoOp.id,
+      resourceType: "seating_table",
+    };
+  }
 }

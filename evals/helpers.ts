@@ -87,36 +87,24 @@ export const noMutations = createScorer({
   name: "no-mutations",
   generateScore(run: AgentRunOutput) {
     const commands = new Set([
-      "create-customer",
-      "archive-customer",
-      "create-job",
-      "reschedule-job",
-      "start-job",
-      "complete-job",
-      "archive-job",
-      "send-job-to-accounting",
       "undo-operation",
       "redo-operation",
+      "create-event",
+      "archive-event",
+      "bootstrap-event-layout",
+      "resize-room",
+      "create-seating-table",
+      "move-seating-table",
+      "rotate-seating-table",
+      "reshape-seating-table",
+      "remove-seat",
+      "restore-seat",
+      "label-seat",
+      "archive-seating-table",
     ]);
     return run.toolCalls.some((name) => commands.has(name)) ? 0 : 1;
   },
 });
-
-export function approvalPaused(tool: string) {
-  return createScorer({
-    name: `${tool}-awaits-human-approval`,
-    generateReason: ({ run }) => trace(run, tool),
-    generateScore(run: AgentRunOutput) {
-      const detail = detailFor(run, tool);
-      return detail?.completed === true &&
-        detail.completedSideEffect === false &&
-        detail.isError !== true &&
-        detail.result?.includes("Awaiting human approval")
-        ? 1
-        : 0;
-    },
-  });
-}
 
 export function toolDenied(tool: string) {
   return createScorer({

@@ -8,7 +8,7 @@
  * someone else changes the same record, and nothing rewrites the old row when
  * that happens.
  *
- * Each distinct resource is loaded once, not once per operation: a busy job
+ * Each distinct resource is loaded once, not once per operation: a busy table
  * accumulates many operations and they all resolve to the same version.
  *
  * The flags are an affordance, not the authority. `undo-operation` and
@@ -22,9 +22,9 @@ import { canUndo } from "../../domain";
 import type { Actor } from "../actor";
 import { requireCapability } from "../authorization";
 import { AppError } from "../errors";
-import { mayUndo, mayRedo, reopensCompletedJob } from "../history-policy";
+import { mayUndo, mayRedo } from "../history-policy";
 import type { Dependencies } from "../ports";
-import { isCreateOperation } from "./command";
+import { isCompensated } from "./command";
 
 export const DEFAULT_ACTIVITY_LIMIT = 20;
 export const MAX_ACTIVITY_LIMIT = 100;
@@ -57,6 +57,22 @@ function clampLimit(limit: number | undefined): number {
   return Math.min(Math.max(Math.trunc(limit), 1), MAX_ACTIVITY_LIMIT);
 }
 
+/** The current state of one resource, whatever kind it is. Only `version` is
+ * read, but each repository has its own `getById`, so the switch is the whole
+ * of it. */
+async function readResource(
+  deps: Dependencies,
+  orgId: string,
+  resource: { type: ResourceType; id: string },
+): Promise<{ version: number } | null> {
+  switch (resource.type) {
+    case "event":
+      return deps.events.getById(orgId, resource.id);
+    case "seating_table":
+      return deps.seatingTables.getById(orgId, resource.id);
+  }
+}
+
 export async function listRecentActivity(
   deps: Dependencies,
   actor: Actor,
@@ -65,7 +81,7 @@ export async function listRecentActivity(
   requireCapability(actor, "history:read");
 
   // The port offers "recent for the organization" and "recent for one
-  // resource"; there is no "recent for every job", and filtering a page of
+  // resource"; there is no "recent for every table", and filtering a page of
   // rows after the fact would silently return fewer than `limit`.
   if ((input.resourceType === undefined) !== (input.resourceId === undefined)) {
     throw new AppError(
@@ -97,10 +113,7 @@ export async function listRecentActivity(
   const versions = new Map<string, number | null>(
     await Promise.all(
       Array.from(distinct, async ([key, resource]) => {
-        const found =
-          resource.type === "customer"
-            ? await deps.customers.getById(actor.orgId, resource.id)
-            : await deps.jobs.getById(actor.orgId, resource.id);
+        const found = await readResource(deps, actor.orgId, resource);
         return [key, found?.version ?? null] as const;
       }),
     ),
@@ -135,21 +148,6 @@ export async function listRecentActivity(
     ),
   );
 
-  const reopeningIds = new Set(
-    operations.filter(reopensCompletedJob).map((op) => op.resourceId),
-  );
-  const exportLocked = new Set(
-    (
-      await Promise.all(
-        Array.from(reopeningIds, async (id) =>
-          (await deps.accountingExports.getByJobId(actor.orgId, id))
-            ? id
-            : null,
-        ),
-      )
-    ).filter((id): id is string => id !== null),
-  );
-
   return operations.map((op) => {
     const version =
       versions.get(resourceKey(op.resourceType, op.resourceId)) ?? null;
@@ -160,17 +158,14 @@ export async function listRecentActivity(
     return {
       ...op,
       undoable:
-        version !== null &&
-        canUndo(op, version).ok &&
-        mayUndo(actor, op) &&
-        !(reopensCompletedJob(op) && exportLocked.has(op.resourceId)),
+        version !== null && canUndo(op, version).ok && mayUndo(actor, op),
       redoable:
         version !== null &&
         op.kind === "undo" &&
         op.undoneByOperationId === null &&
         op.versionAfter === version &&
         forward !== null &&
-        !isCreateOperation(forward) &&
+        !isCompensated(forward) &&
         mayRedo(actor, forward),
     };
   });

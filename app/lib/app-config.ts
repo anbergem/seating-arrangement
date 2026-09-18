@@ -1,5 +1,5 @@
-const rawAppName = "example-jobs";
-const rawAppTitle = "Example Jobs";
+const rawAppName = "seating-arrangement";
+const rawAppTitle = "Seating Arrangement";
 
 const APP_NAME_PLACEHOLDER = "{" + "{APP_NAME}}";
 const APP_TITLE_PLACEHOLDER = "{" + "{APP_TITLE}}";

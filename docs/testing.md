@@ -24,7 +24,7 @@ Those four are what CI runs and what a pull request pastes.
 
 ## Domain tests
 
-`tests/unit/domain/{customer,job,operation}.test.ts`. Pure functions in, pure functions out:
+`tests/unit/domain/{event,seating-table,operation}.test.ts`. Pure functions in, pure functions out:
 which transitions are allowed, which throw `INVARIANT`, which inputs throw `VALIDATION`, that
 `version` increments exactly once, that `updatedAt` is the `now` that was passed in.
 
@@ -43,16 +43,18 @@ them.
 | --- | --- |
 | `authorization.test.ts` | The whole role/capability table. Adding a capability fails this until you update it. |
 | `actor.test.ts` | `resolveActor`: no user → `AUTHENTICATION`; no org → `AUTHORIZATION`; no membership → `AUTHORIZATION` |
-| `queries.test.ts` | Filters, defaults, and that a foreign organization's rows are never returned |
-| `commands.test.ts` | Each command's happy path, capability denial, `NOT_FOUND` for a foreign id, `CONFLICT` on a stale version, and the operation row it writes |
-| `undo.test.ts` | The undo and redo algorithm, including the concurrency scenario below |
-| `send-job-to-accounting.test.ts`, `accounting-history.test.ts` | The external-integration flow: response loss, concurrent requests, an archive between the vendor call and the local commit, and that undo cannot reopen a job with a pending export |
+| `seating-commands.test.ts` | Each command's happy path, capability denial, `NOT_FOUND` for a foreign id, `CONFLICT` on a stale version, the filters and defaults of the queries, and the operation row each command writes — plus the one that proves the no-overlap rule is enforced by the *write* and not the read before it |
+| `seating-undo.test.ts` | The undo and redo algorithm, including the concurrency scenario below and the two refusals only seating produces: an undo whose space has been taken, and a reshape whose discarded seat labels have to come back |
 | `errors.test.ts` | `DomainError` → `AppError` mapping and the HTTP status table |
 
 The concurrency scenario is worth naming, because it is the property that makes undo safe:
-user A reschedules a job v12 → v13; user B completes it v13 → v14; A's undo of their own
-reschedule is refused with `CONFLICT`; B's undo of the completion succeeds, taking it to v15;
-A's undo is *still* refused, because 15 is not 13. The test asserts all four outcomes.
+user A labels a seat v12 → v13; user B labels another v13 → v14; A's undo of their own label is
+refused with `CONFLICT`; B's undo succeeds, taking it to v15; A's undo is *still* refused,
+because 15 is not 13.
+
+`beforeSeatingTableCommit` on the in-memory state is there for the other one. A test installs a
+one-shot mutation that runs between the use case's read and its commit, which is the only way to
+model — without a database — the race the SQL free-space predicate exists to lose.
 
 **What they prove:** authorization, organization scoping, orchestration, conflict handling —
 without a database. **What they cannot:** that the SQL says what the in-memory double says.
@@ -89,18 +91,21 @@ lifecycle: it creates `data/test-integration.db`, applies `migrations/`, seeds t
 SQL, then runs Vitest and the CLI assertions. Vitest only checks that the prepared database
 exists, so it cannot erase the CLI fixtures mid-run.
 
-- `repositories.test.ts` — the real parameterized SQL and the real atomic batches: that a
-  stale `commit` throws `CONFLICT` **and leaves no operation row**, that a create against an
-  archived customer is `NOT_FOUND`, that `markUndone` cannot outlive a batch whose guards
-  failed, and that the executor probe works when the first database call of the process is a
-  write.
+- `seating-repositories.test.ts` — the real parameterized SQL and the real atomic batches: that
+  a stale `commit` throws `CONFLICT` **and leaves neither statement's row**, that a table for an
+  archived event is `NOT_FOUND`, that the free-space predicate refuses an overlapping insert and
+  an overlapping move while allowing two tables that merely share an edge, that an archived table
+  stops occupying its cells, that a seat array round-trips through the JSON column unchanged, and
+  that a round table stores and reads back with its full ring of chairs, and that two tables
+  cannot stand end to end until the chair at the join comes off.
 - `use-cases-d1.test.ts` — the same use cases the unit tests cover, against real SQL, so a
   divergence between the double and the adapter shows up.
 - The CLI surface: `AGENT_USER_EMAIL=member1@example.invalid AGENT_ORG_ID=org_acme pnpm action
-  complete-job '{"jobId":"job_in_progress"}'` returns a completed job and writes a `forward`
-  operation; `outsider@example.invalid` asking for an Acme job gets `NOT_FOUND`;
-  `member1@example.invalid` claiming `org_other` gets `AUTHORIZATION` *before* any resource
-  access.
+  label-seat '{"tableId":"tbl_head","seat":3,"label":"…"}'` bumps the
+  version and writes a `forward` operation; an overlapping `move-seating-table` is refused;
+  `outsider@example.invalid` asking for an Acme event gets `NOT_FOUND`; a member attempting
+  `archive-event` gets `AUTHORIZATION`; and a repeated `create-event` idempotency key returns
+  the first event rather than a second one.
 
 That last one is the parity claim tested at its cheapest layer: the CLI is a different
 `ctx.caller` reaching the same action.
@@ -129,15 +134,15 @@ node scripts/worker-smoke.mjs --base-url http://127.0.0.1:8787 --mode local \
 | `GET /api/ready` 200 with `applied === expected` | ✓ | ✓ | ✓ |
 | `GET /sign-in` 200 HTML | ✓ | ✓ | ✓ |
 | `GET /` is 200 — the static shell, never a 302 | ✓ | ✓ | ✓ |
-| `list-jobs` unauthenticated is 401 | ✓ | ✓ | ✓ |
+| `list-events` unauthenticated is 401 | ✓ | ✓ | ✓ |
 | `POST /mcp` unauthenticated is 401 with `WWW-Authenticate` | ✓ | ✓ | ✓ |
 | Sign in as the QA user, `org/me.orgId` matches | ✓ | ✓ | — |
-| `list-jobs` authenticated is a 200 array | ✓ | ✓ | — |
-| A reversible write: `create-job` with an idempotency key, then `archive-job` | ✓ | ✓ | — |
+| `list-events` authenticated is a 200 array | ✓ | ✓ | — |
+| A reversible write: `create-seating-table` with an idempotency key, a `label-seat`, a stale-version refusal, an undo, a cross-organization 404, then `archive-seating-table` | ✓ | ✓ | — |
 | `POST /_agent-native/agent-chat` returns `text/event-stream` | ✓ | ✓ | — |
 
 **The production smoke is read-only.** No sign-in, no writes, no agent chat: a deployment check
-must not create rows in a customer's database. Locally the agent-chat check expects the first
+must not create rows in a client's database. Locally the agent-chat check expects the first
 event to be `missing_credentials`, which proves the runtime path without a provider key.
 
 **What it proves:** the built bundle boots on workerd, the framework's own migrations run, and a
@@ -153,6 +158,12 @@ creates its tables, then applies the scenario SQL while the server keeps running
 its own Wrangler configuration in a temporary directory and sets
 `CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false`, so the suite is independent of any developer's
 `.dev.vars`.
+
+**Use `test:e2e:full`, not `test:e2e`, after touching anything under `app/`.** Playwright serves
+the built bundle in `dist/`, and the bare `pnpm test:e2e` does not rebuild it — so a UI change
+that is already correct will fail against the previous build, and a UI bug that is already fixed
+will keep failing until you notice. `pnpm test:e2e` is for iterating on a spec against a bundle
+you have just built; `pnpm build:worker` is the same thing by hand.
 
 `global-setup.ts` registers the five seed users over HTTP, signs each in, and stores a storage
 state per role. The fixtures are `ownerPage`, `adminPage`, `memberPage`, `outsiderPage`.
@@ -170,17 +181,18 @@ Two properties every page fixture carries:
 
 | Spec | What it proves |
 | --- | --- |
-| `auth.spec.ts` | Sign-in and the dashboard |
-| `jobs-list.spec.ts` | A member lists and filters jobs |
-| `jobs-lifecycle.spec.ts` | Start, reschedule, complete, archive through the UI |
-| `complete-job.spec.ts` | The mutation appears in activity **and** in the framework audit trail with `caller: "frontend"` |
-| `undo.spec.ts` | Undo restores the status and appears as its own operation |
-| `undo-conflict.spec.ts` | Reschedule in the UI, complete over HTTP as another user, then undo shows the conflict |
-| `customers.spec.ts` | A member creates a customer in the dialog and opens its detail route |
-| `authorization.spec.ts` | A member calling `archive-customer` over HTTP gets 403 |
-| `isolation.spec.ts` | An outsider at `/jobs/job_scheduled` sees not-found, and `get-job` returns 404 |
-| `accounting.spec.ts` | The export button is hidden from a member; an admin confirms an irreversible dialog; the operation is neither undoable nor redoable |
+| `auth.spec.ts` | Sign-in and the landing page |
+| `invite-only-organization.spec.ts` | An uninvited signed-in user cannot self-admit; invitation membership still works |
+| `seating.spec.ts` | The floor plan itself: a real pointer **drag** to a free cell that survives a reload, a drag onto a neighbour that snaps back, a move performed entirely by keyboard, labelling a seat and undoing it from the toast, adding a table, turning one, taking a chair away and putting it back, adding a **round** table and reshaping a rectangle into one, and **bootstrapping an event with a U-shaped layout** from the new-event dialog |
+| `undo-conflict.spec.ts` | Label a seat in the UI, have a coworker change the same table over HTTP, then undo shows the conflict and **neither** change is lost; and a move refused because the space was taken in between |
+| `authorization.spec.ts` | A member calling `archive-event` over HTTP gets 403 and an admin does not; the control is hidden from the member; the member can still change the seating |
+| `isolation.spec.ts` | An outsider at `/events/evt_gala` sees not-found, `get-event` returns 404, a write returns 404, and neither organization's events appear in the other's list |
 | `parity.spec.ts` | A UI click and an HTTP call reach the same action — the audit rows differ **only** in `caller` |
+
+The drag tests deserve a note, because the gesture is the feature. They drive
+`page.mouse.down/move/up` over real pixels rather than dispatching synthetic events, and they
+assert on the `data-grid-x` / `data-grid-y` attributes the table renders, so the assertions are
+about grid cells rather than about where a div happened to land.
 
 Two teardown details, learned the hard way and easy to reintroduce: Wrangler's stdio is piped
 rather than inherited (a descendant holding Playwright's own handles hangs the run at
@@ -231,10 +243,10 @@ database.
 
 | Eval | What it asserts |
 | --- | --- |
-| `complete-job` | `usesTool("complete-job")`, aimed at the in-progress job |
-| `list-today` | `usesTool("list-jobs")`, and a custom scorer asserting **no** mutating tool was called |
-| `undo` | `usesTool("undo-operation")` after a completion |
-| `accounting-approval` | The agent pauses for explicit human approval and leaves no export request |
+| `list-events` | `usesTool("list-events")`, and a custom scorer asserting **no** mutating tool was called |
+| `label-seat` | The seat is named the way a person would say it ("the second seat along the near side of the head table"), so the agent has to read the plan and resolve it to a seat number |
+| `move-seating-table` | The agent has to read the plan, pick somewhere genuinely empty, and leave a floor plan that still obeys the no-overlap rule |
+| `undo` | `usesTool("undo-operation")` after a seating change, and the label is actually back |
 | `member-denial` | Ends in an authorization denial, not merely the right tool choice |
 
 Evals are **release evidence, not a pull-request gate** — they cost money, they need a
@@ -246,7 +258,7 @@ upgrade playbook says to report release evidence as pending rather than claim it
 
 Two things still need a person, and they are listed here so nobody assumes otherwise:
 
-- **The agent answering a real question** ("list my jobs") in the deployed UI, and the German
+- **The agent answering a real question** ("what's on this week") in the deployed UI, and the German
   or Norwegian round trip of the language picker. Both need a provider key or a human eye.
 - **A restore from a real production backup.** `scripts/restore-d1-check.sh` proves a dump
   imports and has plausible row counts; it cannot prove your production backup is the one you

@@ -14,36 +14,30 @@ import { AppError } from "./errors";
 export type Role = "owner" | "admin" | "member";
 
 export type Capability =
-  | "customers:read"
-  | "customers:create"
-  | "customers:archive"
-  | "jobs:read"
-  | "jobs:create"
-  | "jobs:transition"
-  | "jobs:reschedule"
-  | "jobs:export"
+  | "events:read"
+  | "events:create"
+  | "events:archive"
+  | "seating:read"
+  | "seating:write"
   | "history:read"
   | "history:undo";
 
 const MEMBER_CAPABILITIES: readonly Capability[] = [
-  "customers:read",
-  "customers:create",
-  "jobs:read",
-  "jobs:create",
-  "jobs:transition",
-  "jobs:reschedule",
+  "events:read",
+  "events:create",
+  "seating:read",
+  "seating:write",
   "history:read",
   "history:undo",
 ];
 
-// `archive-customer` and `send-job-to-accounting` are the admin-only
-// demonstrations the blueprint calls for; `owner` currently grants the same
-// set as `admin` and is kept as its own entry because the blueprint names it
-// separately and a future task may split them.
+// Archiving an event is the admin-only capability: it takes a whole floor plan
+// out of the working set at once, where every other seating change touches one
+// table. `owner` currently grants the same set as `admin` and is kept as its
+// own entry because a future task may split them.
 const ADMIN_CAPABILITIES: readonly Capability[] = [
   ...MEMBER_CAPABILITIES,
-  "customers:archive",
-  "jobs:export",
+  "events:archive",
 ];
 
 const OWNER_CAPABILITIES: readonly Capability[] = ADMIN_CAPABILITIES;

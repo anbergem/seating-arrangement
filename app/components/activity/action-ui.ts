@@ -20,7 +20,7 @@ export interface ActivityItem {
   id: string;
   action: string;
   kind: "forward" | "undo" | "redo";
-  resourceType: "customer" | "job";
+  resourceType: "event" | "seating_table";
   resourceId: string;
   performedAt: string;
   performedBy: string;

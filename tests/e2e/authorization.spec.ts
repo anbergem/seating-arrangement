@@ -1,43 +1,45 @@
-import { CUSTOMER_B_ID } from "../fixtures/scenario";
+import { EVENT_GALA_ID } from "../fixtures/scenario";
 import { expect, test } from "./fixtures";
 
-test("archiving a customer is refused for a member and allowed for an admin", async ({
+test("archiving an event is refused for a member and allowed for an admin", async ({
   memberPage,
   adminPage,
 }) => {
+  // The server is the constraint, so the member's attempt goes straight at the
+  // action rather than through whatever the UI chooses to show.
   const refused = await memberPage.request.post(
-    "/_agent-native/actions/archive-customer",
-    { data: { customerId: CUSTOMER_B_ID, expectedVersion: 1 } },
+    "/_agent-native/actions/archive-event",
+    { data: { eventId: EVENT_GALA_ID } },
   );
   expect(refused.status()).toBe(403);
-  const body = (await refused.json()) as { errorCode?: string };
-  expect(body.errorCode).toBe("AUTHORIZATION");
+  expect(await refused.text()).toContain("events:archive");
 
   const allowed = await adminPage.request.post(
-    "/_agent-native/actions/archive-customer",
-    { data: { customerId: CUSTOMER_B_ID, expectedVersion: 1 } },
+    "/_agent-native/actions/archive-event",
+    { data: { eventId: EVENT_GALA_ID } },
   );
   expect(allowed.status(), await allowed.text()).toBe(200);
 });
 
-test("the archive button is hidden from a member and shown to an admin", async ({
+test("the archive control is hidden from a member and shown to an admin", async ({
   memberPage,
   adminPage,
 }) => {
-  // The UI hides what the caller cannot do; the server refuses it regardless
-  // (T14 step 4).
-  await memberPage.goto("/customers");
-  await expect(memberPage.getByText("Example Customer B")).toBeVisible();
-  await expect(
-    memberPage.getByTestId(`archive-customer-${CUSTOMER_B_ID}`),
-  ).toHaveCount(0);
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  await expect(memberPage.getByTestId("archive-event")).toHaveCount(0);
 
-  await adminPage.goto("/customers");
-  const archive = adminPage.getByTestId(`archive-customer-${CUSTOMER_B_ID}`);
-  await expect(archive).toBeVisible();
-  await archive.click();
-  await expect(adminPage.getByText("Customer updated")).toBeVisible();
-  await expect(
-    adminPage.getByTestId(`archive-customer-${CUSTOMER_B_ID}`),
-  ).toHaveCount(0);
+  await adminPage.goto(`/events/${EVENT_GALA_ID}`);
+  await expect(adminPage.getByTestId("archive-event")).toBeVisible();
+});
+
+test("a member may still change the seating on an event they cannot archive", async ({
+  memberPage,
+}) => {
+  const moved = await memberPage.request.post(
+    "/_agent-native/actions/create-seating-table",
+    {
+      data: { eventId: EVENT_GALA_ID, name: "Member's table", size: 2 },
+    },
+  );
+  expect(moved.status(), await moved.text()).toBe(200);
 });

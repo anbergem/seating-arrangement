@@ -38,8 +38,8 @@ through a hook:
 ```tsx
 const t = useT();
 // …
-<h1>{t("jobs.title")}</h1>
-<p>{t("jobs.scheduledFor", { date: formatted })}</p>
+<h1>{t("events.title")}</h1>
+<p>{t("seating.seatedCount", { seated, total })}</p>
 ```
 
 `messages` is the fallback catalog — the one used when a key is missing from the active locale,
@@ -55,7 +55,7 @@ locale's catalog is only downloaded when somebody selects it.
 | `common` | `save`, `cancel`, `confirm`, `archive`, `undo`, `redo`, `loading` |
 | `navigation` | The sidebar and its accessible labels |
 | `pages` | Page titles and their `<title>` tags |
-| `jobs`, `customers`, `activity` | The three feature areas, including dialog labels and status names |
+| `events`, `seating`, `activity` | The three feature areas, including dialog labels and seat names |
 | `errors` | **One key per `AppErrorCode`**, plus an `UNKNOWN` fallback |
 
 The `errors` group is the one to get right, because it is what a user sees when something
@@ -95,15 +95,15 @@ return template.replace(/\{\{(\w+)\}\}/g, (_, name) => { … });
 ```
 
 A single-brace `{name}` is never substituted and reaches the screen verbatim. That is not a
-theoretical risk — `jobs.scheduledFor: "Scheduled for {date}"` shipped once and the job detail
+theoretical risk — `seating.moveTable: "Move {name}"` shipped once and the floor plan
 page displayed the literal text *Scheduled for {date}*. Both catalogs agreed, so a parity check
 could not catch it, which is why the guard now checks the *form* as well as the parity.
 
 ```ts
 // right
-jobs.scheduledFor: "Scheduled for {{date}}"
+seating.moveTable: "Move {{name}}"
 // wrong, silently
-jobs.scheduledFor: "Scheduled for {date}"
+seating.moveTable: "Move {name}"
 ```
 
 Pluralization is not part of the framework's interpolation. When a count changes the sentence
@@ -217,7 +217,7 @@ rendered in the user's locale rather than the developer's:
 
 ```tsx
 const { formatDateTime } = useFormatters();
-<span>{t("jobs.scheduledFor", { date: formatDateTime(job.scheduledAt) })}</span>
+<span>{fmt.formatDate(event.startsAt, { dateStyle: "long", timeStyle: "short" })}</span>
 ```
 
 Timestamps are stored as ISO 8601 UTC strings with milliseconds
@@ -244,6 +244,6 @@ Deliberately:
 - **Log lines and audit summaries.** Records, not user interface.
 - **This documentation.**
 
-If a customer needs error messages in their language on a non-browser surface, the translation
+If a client needs error messages in their language on a non-browser surface, the translation
 belongs at that surface, keyed on `errorCode` — not in `src/application`, which must stay free
 of presentation concerns.

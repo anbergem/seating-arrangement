@@ -16,7 +16,7 @@ export default createAuthPlugin({
   // or a smoke test has no session. It exposes migration file names and nothing else.
   publicPaths: ["/api/ready"],
   marketing: {
-    appName: "Example Jobs",
+    appName: "Seating Arrangement",
     tagline: "Sign in to continue.",
   },
 });

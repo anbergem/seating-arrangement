@@ -2,7 +2,7 @@
  * The real id generator (blueprint B3, B7).
  *
  * Ids are opaque `crypto.randomUUID()` strings, never sequential: an id that
- * counts leaks how many customers an organization has, and a guessable id in a
+ * counts leaks how many events an organization has, and a guessable id in a
  * multi-tenant URL is one authorization bug away from being a data leak.
  *
  * `node:crypto` rather than the global, because that is the import the layer

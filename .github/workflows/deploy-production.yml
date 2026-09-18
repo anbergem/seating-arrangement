@@ -106,7 +106,7 @@ jobs:
           node scripts/verify-promotion-artifact.mjs
       - name: Record Time Travel bookmark
         run: |
-          pnpm exec wrangler d1 time-travel info example-jobs-production \
+          pnpm exec wrangler d1 time-travel info seating-arrangement-production \
             --env production --json > "$TIME_TRAVEL_JSON"
           {
             echo '### Pre-deploy D1 Time Travel bookmark'
@@ -146,6 +146,6 @@ jobs:
             echo '```'
             echo 'Restore D1 only if a migration corrupted data:'
             echo '```bash'
-            echo 'pnpm exec wrangler d1 time-travel restore example-jobs-production --bookmark <bookmark>'
+            echo 'pnpm exec wrangler d1 time-travel restore seating-arrangement-production --bookmark <bookmark>'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

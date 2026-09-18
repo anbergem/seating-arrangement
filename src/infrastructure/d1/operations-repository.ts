@@ -1,8 +1,8 @@
 /**
  * `OperationRepository` against D1 / SQLite (blueprint B7, B9, B11).
  *
- * Read-only: operation rows are written by `customers-repository.ts` and
- * `jobs-repository.ts`, inside the same atomic batch as the change they
+ * Read-only: operation rows are written by `events-repository.ts` and
+ * `seating-tables-repository.ts`, inside the same atomic batch as the change they
  * describe, and marked undone by the batch that reverses them. There is no
  * write method here on purpose — an audit row that could be written on its own
  * could disagree with the resource it claims to describe.

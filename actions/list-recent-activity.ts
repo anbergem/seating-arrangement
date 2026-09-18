@@ -6,7 +6,7 @@ import { runAppAction } from "../src/interface/run-app-action";
 
 export default defineAction({
   description:
-    "List what has recently been done in the signed-in user's organization, newest first: who changed which customer or job, when, and through which surface. Use when the user asks what changed, or to find the operationId to pass to undo-operation or redo-operation. Each entry carries undoable and redoable, computed against the record's current version, so an entry that someone else has since changed is reported as not undoable. Read-only: it changes nothing.",
+    "List what has recently been done in the signed-in user's organization, newest first: who changed which event or seating table, when, and through which surface. Use when the user asks what changed, or to find the operationId to pass to undo-operation or redo-operation. Each entry carries undoable and redoable, computed against the record's current version, so an entry that someone else has since changed is reported as not undoable. Read-only: it changes nothing.",
   schema: z.object({
     limit: z
       .number()
@@ -16,7 +16,7 @@ export default defineAction({
       .optional()
       .describe("How many operations to return; defaults to 20, at most 100"),
     resourceType: z
-      .enum(["customer", "job"])
+      .enum(["event", "seating_table"])
       .optional()
       .describe("Only the history of one record; requires resourceId"),
     resourceId: z

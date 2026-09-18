@@ -3,7 +3,7 @@
 Operational procedures. Command-oriented, meant to be readable at 2am.
 
 Every command below assumes `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` are exported,
-and `<app>` is the Worker base name from `wrangler.jsonc` (`example-jobs` until the rename).
+and `<app>` is the Worker base name from `wrangler.jsonc` (`seating-arrangement` until the rename).
 Replace `<app>` and the hosts.
 
 **Before you touch anything:** write down what you observed and what time it is. Half of these
@@ -116,7 +116,7 @@ code.
 - **Roll back the static assets** independently: the assets are part of the version, so they go
   back together with the script — but a browser holding a cached HTML shell may briefly run new
   client code against old server code, or the reverse. A hard reload resolves it.
-- **Undo an external effect.** An invoice draft the accounting system accepted is still
+- **Undo an external effect.** Anything a vendor system already accepted is still
   accepted.
 
 So the recovery order for a bad release is: roll the Worker back first to stop the bleeding,
@@ -162,7 +162,7 @@ pnpm exec wrangler tail --env production --format json --search '"event":"action
 Every action call writes one JSON line:
 
 ```json
-{"level":"error","event":"action","action":"complete-job","outcome":"error",
+{"level":"error","event":"action","action":"move-seating-table","outcome":"error",
  "errorCode":"CONFLICT","caller":"frontend","orgId":"org_acme","durationMs":12}
 ```
 
@@ -174,7 +174,7 @@ did something — that is the audit trail's job:
 # in the app, as an owner or admin: the framework's audit reader
 # or over HTTP with a session cookie
 curl -s -b cookies.txt \
-  'https://<host>/_agent-native/actions/list-audit-events?targetType=job&targetId=job_x&limit=50'
+  'https://<host>/_agent-native/actions/list-audit-events?targetType=seating_table&targetId=tbl_x&limit=50'
 ```
 
 The dashboard equivalent is **Workers & Pages** → the Worker → **Logs**, where the same lines
@@ -298,7 +298,7 @@ last night's object exists and is a plausible size. File names are
 deployed commit.
 
 Every backup is already checked at the moment it is written: `scripts/backup-d1.sh` fails the
-run unless the export is non-empty and contains `CREATE TABLE` and `customers`. That proves
+run unless the export is non-empty and contains `CREATE TABLE` and `events`. That proves
 the file is a database dump. It does not prove the dump restores — which is the next section.
 
 A failed or missing nightly run is an incident: the gap between "backups stopped" and
@@ -316,12 +316,12 @@ bash scripts/restore-d1-check.sh backups/<app>-production-20260908-030000-abc123
 ```
 
 It decompresses, repeats the content checks, imports the SQL and prints a row count for
-`customers`, `jobs`, `operations` and `d1_migrations`, teeing everything into a report file
+`events`, `seating_tables`, `operations` and `d1_migrations`, teeing everything into a report file
 (`RESTORE_REPORT` overrides the name). Read it as:
 
 - **The import must complete without an error.** A failure means the dump is unusable and the
   backup configuration is broken — not that the data is wrong.
-- **`customers`, `jobs` and `operations` must be plausible** for the day the backup was taken.
+- **`events`, `seating_tables` and `operations` must be plausible** for the day the backup was taken.
   Zero where you expect rows means the export ran against the wrong database or environment.
 - **`d1_migrations` tells you which schema the dump belongs to.** If it is behind
   `migrations/`, a real restore has to apply the newer migrations after importing.
@@ -403,7 +403,7 @@ For somebody who has left, in this order:
 4. **Leave their history alone.** Their operations and audit rows stay: they are the record of
    what happened, and `performed_by` on an operation is not a login. Do not delete rows to
    "clean up".
-5. **Reassign their open work.** Jobs still assigned to them keep the assignment until somebody
+5. **Hand over their open work.** Events they created keep their `created_by` until somebody
    changes it, which is intentional — an assignment silently clearing itself loses information.
 
 To downgrade rather than remove, change their role on the Team page. Capability checks read the
@@ -430,7 +430,7 @@ Assume the attacker has whatever that account could reach. Speed matters more th
    including the ones that were denied — a run of `denied` rows is somebody probing.
 5. **Reverse what can be reversed.** `/activity` lists the operations with Undo where the
    version rule and the policy allow it. What cannot be reversed:
-   - anything `irreversible` — an accounting export that was accepted;
+   - anything `irreversible` — an external effect a vendor already accepted;
    - anything a newer change has moved past, which will refuse with `CONFLICT`. For those,
      Time Travel to before the incident is the option, and it costs everyone else's work since
      then.

@@ -1,7 +1,8 @@
 import { defineEval, usesTool } from "@agent-native/core/eval";
 
 import type { Actor } from "../src/application/actor.ts";
-import { completeJob } from "../src/application/use-cases/complete-job.ts";
+import { labelSeat } from "../src/application/use-cases/label-seat.ts";
+import { findSeat } from "../src/domain/index.ts";
 import { getDependencies } from "../src/infrastructure/container.ts";
 import {
   MODEL_EVAL_SKIP_REASON,
@@ -19,11 +20,11 @@ const member: Actor = {
 let restored = false;
 
 export default defineEval({
-  name: "undo the intended completion",
+  name: "undo the intended seating change",
   input: {
     history: [
-      { role: "user", text: "Complete job_in_progress." },
-      { role: "assistant", text: "I completed that job." },
+      { role: "user", text: "Seat Katherine Johnson at the head table." },
+      { role: "assistant", text: "I seated her at the head table." },
     ],
     prompt: "Undo that.",
   },
@@ -31,18 +32,20 @@ export default defineEval({
   threshold: 1,
   run: async ({ input, runAgent }) => {
     await resetEvalScenario();
-    const completed = await completeJob(getDependencies(), member, {
-      jobId: "job_in_progress",
+    const labelled = await labelSeat(getDependencies(), member, {
+      tableId: "tbl_head",
+      seat: 2,
+      label: "Katherine Johnson",
     });
     const result = await runAgent({
       ...input,
-      prompt: `Undo that completion. Its operation id is ${completed.operationId}.`,
+      prompt: `Undo that seating change. Its operation id is ${labelled.operationId}.`,
     });
-    const job = await getDependencies().jobs.getById(
+    const table = await getDependencies().seatingTables.getById(
       "org_acme",
-      "job_in_progress",
+      "tbl_head",
     );
-    restored = job?.status === "in_progress";
+    restored = table !== null && findSeat(table, 2)?.label === "";
     return result;
   },
   scorers: [
@@ -56,7 +59,7 @@ export default defineEval({
       expectedResult: (value) =>
         typeof value === "object" &&
         value !== null &&
-        JSON.stringify(value).includes('"status":"in_progress"'),
+        JSON.stringify(value).includes('"resourceType":"seating_table"'),
     }),
     persistedState(() => restored),
   ],
