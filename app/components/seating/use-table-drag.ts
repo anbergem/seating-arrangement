@@ -96,8 +96,8 @@ export function useTableDrag(input: UseTableDragInput): TableDrag {
   );
   const [keyboardMoveFor, setKeyboardMoveFor] = useState<string | null>(null);
 
-  /** Measured, never hard-coded: the canvas is sized in CSS and the density
-   * toggle changes it underneath us. */
+  /** Measured, never hard-coded: the canvas sizes its cells to fill whatever
+   * space it is given, so the scale changes under us on every resize. */
   const cellSize = useCallback(() => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect || rect.width === 0) return null;

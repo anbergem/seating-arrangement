@@ -136,12 +136,13 @@ test("labelling a seat shows on the plan and can be undone from the toast", asyn
   const main = memberPage.locator("main");
   const head = main.getByTestId(`seating-table-${TABLE_HEAD_ID}`);
 
-  // Choosing a seat on the plan opens it in the panel beside it. Seat 4 is on
+  // Choosing a seat on the plan opens the table's panel. Seat 4 is on
   // the near side of the head table, and nobody is on it in the fixture.
   await head.getByRole("button", { name: /^Seat 4, / }).click();
   // By role, so this is the panel's field and not the seat button on the plan,
   // whose accessible name starts with the same words.
-  const field = main.getByRole("textbox", {
+  // The table panel is a sheet: a dialog in a portal, so it is outside <main>.
+  const field = memberPage.getByRole("dialog").getByRole("textbox", {
     name: `Seat 4, ${TABLE_HEAD_NAME}`,
   });
   await field.fill("Katherine Johnson");
@@ -266,9 +267,10 @@ test("two tables may be pushed together while the chairs where they meet are emp
 
   // The panel says so in place rather than leaving a gap in the numbering.
   await head.getByRole("button", { name: /^Seat 2, / }).click();
-  await expect(main.getByText("No chair here")).toBeVisible();
+  const panel = memberPage.getByRole("dialog");
+  await expect(panel.getByText("No chair here")).toBeVisible();
   await expect(
-    main.getByRole("textbox", { name: `Seat 3, ${TABLE_HEAD_NAME}` }),
+    panel.getByRole("textbox", { name: `Seat 3, ${TABLE_HEAD_NAME}` }),
   ).toHaveCount(0);
 });
 
@@ -281,7 +283,7 @@ test("the same move is refused once somebody is sitting where they would meet", 
 
   // Seat somebody in the head table's right-hand chair.
   await head.getByRole("button", { name: /^Seat 3, / }).click();
-  const field = main.getByRole("textbox", {
+  const field = memberPage.getByRole("dialog").getByRole("textbox", {
     name: `Seat 3, ${TABLE_HEAD_NAME}`,
   });
   await field.fill("Katherine Johnson");
@@ -319,7 +321,7 @@ test("a round table can be added, and reshaped from a rectangle", async ({
   await head.getByRole("button", { name: /Move / }).click();
   // A rectangle is offered a turn…
   await expect(memberPage.getByTestId("rotate-table")).toBeVisible();
-  await main.getByTestId("table-kind").selectOption("round");
+  await memberPage.getByTestId("table-kind").selectOption("round");
   await expect(memberPage.getByText("Table reshaped")).toBeVisible();
   await expect(head).toHaveAttribute("data-kind", "round");
   // …and once it is round it is not, because a square body turns into itself.
@@ -346,8 +348,9 @@ test("a round table can be added, and reshaped from a rectangle", async ({
   // may well be up against a neighbour, and any chair with nowhere to be is
   // not drawn.
   await round.getByRole("button", { name: /Move / }).click();
-  await expect(main.getByText("Seat 12, Round one")).toBeVisible();
-  await expect(main.getByText("Seat 13, Round one")).toHaveCount(0);
+  const panel = memberPage.getByRole("dialog");
+  await expect(panel.getByText("Seat 12, Round one")).toBeVisible();
+  await expect(panel.getByText("Seat 13, Round one")).toHaveCount(0);
   const drawn = await round
     .getByRole("button", { name: /^Seat \d+, / })
     .count();

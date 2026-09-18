@@ -13,7 +13,10 @@ test("the UI and a direct HTTP call run the same action and differ only in calle
 
   // The same seat, written from the browser…
   await head.getByRole("button", { name: /^Seat 1, / }).click();
-  const field = main.getByRole("textbox", { name: /^Seat 1, Head table$/ });
+  // The table panel is a sheet: a dialog in a portal, so it is outside <main>.
+  const field = memberPage
+    .getByRole("dialog")
+    .getByRole("textbox", { name: /^Seat 1, Head table$/ });
   await field.fill("Katherine Johnson");
   await field.press("Enter");
   await expect(memberPage.getByText("Seat updated")).toBeVisible();

@@ -34,6 +34,12 @@ import type { EventDetail } from "@/components/seating/types";
 import { useTableDrag } from "@/components/seating/use-table-drag";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 
 const INVALIDATES = ["get-event", "list-events", "list-recent-activity"];
 
@@ -48,7 +54,6 @@ export default function EventSeatingRoute() {
   const { canManageOrg } = useOrgRole();
   const canvasRef = useRef<HTMLDivElement | null>(null);
 
-  const [dense, setDense] = useState(false);
   const [newTableName, setNewTableName] = useState("");
   const [newTableKind, setNewTableKind] = useState<TableShapeKind>("rectangle");
   const [newTableSize, setNewTableSize] = useState(4);
@@ -190,138 +195,43 @@ export default function EventSeatingRoute() {
     tables.find((table) => table.id === selectedTableId) ?? null;
 
   return (
-    <div className="mx-auto w-full max-w-6xl space-y-6 p-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">{event.name}</h1>
-          <p className="text-muted-foreground">
+    <div className="flex h-full min-h-0 flex-col">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-3">
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-semibold">{event.name}</h1>
+          <p className="text-xs text-muted-foreground">
             {fmt.formatDate(event.startsAt, {
               dateStyle: "long",
               timeStyle: "short",
             })}
           </p>
         </div>
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="grid gap-1 text-xs text-muted-foreground">
-            {t("seating.tableName")}
-            <Input
-              aria-label={t("seating.tableName")}
-              className="w-44"
-              value={newTableName}
-              placeholder={t("seating.tableNamePlaceholder")}
-              onChange={(changed) => setNewTableName(changed.target.value)}
-            />
-          </label>
-          <label className="grid gap-1 text-xs text-muted-foreground">
-            {t("seating.shape")}
-            <select
-              className="rounded-md border bg-background px-3 py-2"
-              aria-label={t("seating.newTableShape")}
-              data-testid="new-table-kind"
-              value={newTableKind}
-              onChange={(changed) =>
-                setNewTableKind(changed.target.value as TableShapeKind)
-              }
-            >
-              <option value="rectangle">{t("seating.shapeRectangle")}</option>
-              <option value="round">{t("seating.shapeRound")}</option>
-            </select>
-          </label>
-          <label className="grid gap-1 text-xs text-muted-foreground">
-            {newTableKind === "round"
-              ? t("seating.diameter")
-              : t("seating.length")}
-            <select
-              className="rounded-md border bg-background px-3 py-2"
-              aria-label={t("seating.newTableSize")}
-              data-testid="new-table-size"
-              value={Math.min(newTableSize, MAX_SIZE[newTableKind])}
-              onChange={(changed) =>
-                setNewTableSize(Number(changed.target.value))
-              }
-            >
-              {Array.from(
-                { length: MAX_SIZE[newTableKind] - MIN_TABLE_SIZE + 1 },
-                (_, offset) => MIN_TABLE_SIZE + offset,
-              ).map((value) => (
-                <option key={value} value={value}>
-                  {value}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Button
-            data-testid="add-table"
-            disabled={busy}
-            onClick={() => {
-              const name =
-                newTableName.trim() ||
-                t("seating.defaultTableName", { number: tables.length + 1 });
-              create.mutate({
-                eventId: event.id,
-                name,
-                kind: newTableKind,
-                size: Math.min(newTableSize, MAX_SIZE[newTableKind]),
-                endSeats: true,
-              });
-              setNewTableName("");
-            }}
-          >
-            {t("seating.addTable")}
-          </Button>
-          <Button
-            variant="outline"
-            aria-pressed={dense}
-            onClick={() => setDense((current) => !current)}
-          >
-            {dense ? t("seating.comfortable") : t("seating.compact")}
-          </Button>
-        </div>
-      </div>
+        {/* The spoken half of the drag: every outcome the outline shows is
+            also said out loud, so the plan is usable without seeing it. It
+            lives in the header rather than over the canvas, where it would
+            cover the corner the plan is laid out from. */}
+        <p
+          aria-live="polite"
+          className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+        >
+          {announcement || t("seating.hint")}
+        </p>
+        {canManageOrg ? (
+          <ArchiveEventButton eventId={event.id} version={event.version} />
+        ) : null}
+      </header>
 
-      <p className="text-sm text-muted-foreground">{t("seating.hint")}</p>
-
-      {/* A bootstrap is for an empty plan, so the offer is only here while the
-          plan is empty — the same rule the server enforces. */}
-      {tables.length === 0 ? (
-        <div className="grid max-w-md gap-3 rounded-lg border p-4">
-          <div>
-            <h2 className="text-sm font-medium">{t("seating.layoutTitle")}</h2>
-            <p className="text-xs text-muted-foreground">
-              {t("seating.layoutDescription")}
-            </p>
-          </div>
-          <LayoutPicker
-            value={layout}
-            disabled={busy}
-            allowNone={false}
-            onChange={setLayout}
-          />
-          <Button
-            data-testid="lay-out-event"
-            disabled={busy}
-            onClick={() =>
-              bootstrap.mutate({
-                eventId: event.id,
-                layout: layout.layout,
-                sections: layout.sections,
-                tableLength: layout.tableLength,
-                endSeats: true,
-              })
-            }
-          >
-            {t("seating.layoutApply")}
-          </Button>
-        </div>
-      ) : null}
-
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
+      {/* The editor. The plan takes everything left over; the toolbar, the
+          empty state and the announcement float above it rather than taking
+          height away from it. */}
+      {/* `pb-24` reserves the strip the toolbar floats in, so the plan is
+          sized to fit *above* it rather than having its last row covered. */}
+      <div className="relative flex min-h-0 flex-1 flex-col p-3 pb-24">
         <FloorPlan
           room={room}
           tables={tables}
           blocked={blocked}
           drag={drag}
-          dense={dense}
           selectedTableId={selectedTableId}
           selectedSeat={selectedSeat}
           canvasRef={canvasRef}
@@ -330,56 +240,181 @@ export default function EventSeatingRoute() {
             setSelectedSeat(seat);
           }}
         />
-        <SeatPanel
-          table={selectedTable}
-          blocked={
-            (selectedTable && blocked.get(selectedTable.id)) ?? noneBlocked
-          }
-          selectedSeat={selectedSeat}
-          busy={busy}
-          onLabel={(table, seat, value) =>
-            label.mutate({
-              tableId: table.id,
-              seat,
-              label: value,
-              expectedVersion: table.version,
-            })
-          }
-          onReshape={(table, shape: ReshapeInput) =>
-            reshape.mutate({
-              tableId: table.id,
-              kind: shape.kind,
-              size: shape.size,
-              endSeats: shape.endSeats,
-              expectedVersion: table.version,
-            })
-          }
-          onRotate={(table) =>
-            rotate.mutate({
-              tableId: table.id,
-              expectedVersion: table.version,
-            })
-          }
-          onRemove={(table) => {
-            setSelectedTableId(null);
-            setSelectedSeat(null);
-            remove.mutate({
-              tableId: table.id,
-              expectedVersion: table.version,
-            });
-          }}
-        />
+
+        {/* A bootstrap is for an empty plan, so it doubles as the empty state
+            and is only offered while the plan is one — the rule the server
+            enforces anyway. */}
+        {tables.length === 0 ? (
+          <div className="pointer-events-none absolute inset-x-0 bottom-24 top-0 flex items-center justify-center p-6">
+            <div className="pointer-events-auto grid w-full max-w-sm gap-3 rounded-xl border bg-background p-4 shadow-lg">
+              <div>
+                <h2 className="text-sm font-medium">
+                  {t("seating.layoutTitle")}
+                </h2>
+                <p className="text-xs text-muted-foreground">
+                  {t("seating.layoutDescription")}
+                </p>
+              </div>
+              <LayoutPicker
+                value={layout}
+                disabled={busy}
+                allowNone={false}
+                onChange={setLayout}
+              />
+              <Button
+                data-testid="lay-out-event"
+                disabled={busy}
+                onClick={() =>
+                  bootstrap.mutate({
+                    eventId: event.id,
+                    layout: layout.layout,
+                    sections: layout.sections,
+                    tableLength: layout.tableLength,
+                    endSeats: true,
+                  })
+                }
+              >
+                {t("seating.layoutApply")}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+
+        {/* Floating, and at the bottom: the plan is laid out from its top-left
+            corner, so that is the last place to put something over it. */}
+        <div className="pointer-events-none absolute inset-x-0 bottom-5 flex justify-center px-5">
+          <div className="pointer-events-auto flex flex-wrap items-end gap-2 rounded-xl border bg-background/90 p-2 shadow-lg backdrop-blur">
+            <label className="grid gap-1 text-xs text-muted-foreground">
+              {t("seating.tableName")}
+              <Input
+                aria-label={t("seating.tableName")}
+                className="w-40"
+                value={newTableName}
+                placeholder={t("seating.tableNamePlaceholder")}
+                onChange={(changed) => setNewTableName(changed.target.value)}
+              />
+            </label>
+            <label className="grid gap-1 text-xs text-muted-foreground">
+              {t("seating.shape")}
+              <select
+                className="rounded-md border bg-background px-3 py-2"
+                aria-label={t("seating.newTableShape")}
+                data-testid="new-table-kind"
+                value={newTableKind}
+                onChange={(changed) =>
+                  setNewTableKind(changed.target.value as TableShapeKind)
+                }
+              >
+                <option value="rectangle">{t("seating.shapeRectangle")}</option>
+                <option value="round">{t("seating.shapeRound")}</option>
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs text-muted-foreground">
+              {newTableKind === "round"
+                ? t("seating.diameter")
+                : t("seating.length")}
+              <select
+                className="rounded-md border bg-background px-3 py-2"
+                aria-label={t("seating.newTableSize")}
+                data-testid="new-table-size"
+                value={Math.min(newTableSize, MAX_SIZE[newTableKind])}
+                onChange={(changed) =>
+                  setNewTableSize(Number(changed.target.value))
+                }
+              >
+                {Array.from(
+                  { length: MAX_SIZE[newTableKind] - MIN_TABLE_SIZE + 1 },
+                  (_, offset) => MIN_TABLE_SIZE + offset,
+                ).map((value) => (
+                  <option key={value} value={value}>
+                    {value}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <Button
+              data-testid="add-table"
+              disabled={busy}
+              onClick={() => {
+                const name =
+                  newTableName.trim() ||
+                  t("seating.defaultTableName", { number: tables.length + 1 });
+                create.mutate({
+                  eventId: event.id,
+                  name,
+                  kind: newTableKind,
+                  size: Math.min(newTableSize, MAX_SIZE[newTableKind]),
+                  endSeats: true,
+                });
+                setNewTableName("");
+              }}
+            >
+              {t("seating.addTable")}
+            </Button>
+          </div>
+        </div>
       </div>
 
-      {/* The spoken half of the drag: every outcome the outline shows is also
-          said out loud, so the plan is usable without seeing it. */}
-      <p aria-live="polite" className="text-sm text-muted-foreground">
-        {announcement}
-      </p>
-
-      {canManageOrg ? (
-        <ArchiveEventButton eventId={event.id} version={event.version} />
-      ) : null}
+      {/* Not modal: the plan stays draggable with the panel open, which is the
+          whole reason to put the panel over the canvas rather than beside it. */}
+      <Sheet
+        open={selectedTable !== null}
+        modal={false}
+        onOpenChange={(open) => {
+          if (open) return;
+          setSelectedTableId(null);
+          setSelectedSeat(null);
+        }}
+      >
+        {selectedTable ? (
+          <SheetContent
+            side="right"
+            showOverlay={false}
+            className="flex w-full flex-col gap-4 overflow-y-auto sm:max-w-sm"
+          >
+            <SheetHeader className="space-y-0 text-left">
+              <SheetTitle className="truncate">{selectedTable.name}</SheetTitle>
+            </SheetHeader>
+            <SeatPanel
+              table={selectedTable}
+              blocked={blocked.get(selectedTable.id) ?? noneBlocked}
+              selectedSeat={selectedSeat}
+              busy={busy}
+              onLabel={(table, seat, value) =>
+                label.mutate({
+                  tableId: table.id,
+                  seat,
+                  label: value,
+                  expectedVersion: table.version,
+                })
+              }
+              onReshape={(table, shape: ReshapeInput) =>
+                reshape.mutate({
+                  tableId: table.id,
+                  kind: shape.kind,
+                  size: shape.size,
+                  endSeats: shape.endSeats,
+                  expectedVersion: table.version,
+                })
+              }
+              onRotate={(table) =>
+                rotate.mutate({
+                  tableId: table.id,
+                  expectedVersion: table.version,
+                })
+              }
+              onRemove={(table) => {
+                setSelectedTableId(null);
+                setSelectedSeat(null);
+                remove.mutate({
+                  tableId: table.id,
+                  expectedVersion: table.version,
+                });
+              }}
+            />
+          </SheetContent>
+        ) : null}
+      </Sheet>
     </div>
   );
 }

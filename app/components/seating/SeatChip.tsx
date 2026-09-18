@@ -11,7 +11,7 @@
  * gained — it wraps to two lines and then clips, and the full value stays
  * available two other ways: the `title` attribute, which is also the accessible
  * name, so the browser shows it on hover and a screen reader announces it; and
- * the seat panel beside the canvas, which is where long names are meant to be
+ * the seat panel over the canvas, which is where long names are meant to be
  * read and edited.
  *
  * A hand-built hover bubble was tried here instead of `title` and taken out

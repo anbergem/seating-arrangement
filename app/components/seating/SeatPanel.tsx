@@ -1,6 +1,9 @@
 /**
- * The panel beside the plan: the selected table's shape, and every seat on it
- * with the name on that seat in a labelled text field.
+ * The panel for the selected table: its shape, and every seat on it with the
+ * name on that seat in a labelled text field.
+ *
+ * It renders no chrome of its own — the sheet that holds it supplies the frame,
+ * the title and the close button — so it can sit anywhere a table needs editing.
  *
  * This is the primary place to read and write seat names, and the canvas is the
  * spatial view. That split is what makes the brief's "the label must be
@@ -34,7 +37,8 @@ export interface ReshapeInput {
 }
 
 export interface SeatPanelProps {
-  table: SeatingTable | null;
+  /** Never null: the panel is only mounted for a table that is selected. */
+  table: SeatingTable;
   selectedSeat: number | null;
   busy: boolean;
   onLabel: (table: SeatingTable, seat: number, label: string) => void;
@@ -49,15 +53,6 @@ export interface SeatPanelProps {
 export function SeatPanel(props: SeatPanelProps) {
   const t = useT();
   const { table } = props;
-
-  if (!table) {
-    return (
-      <aside className="rounded-lg border p-4 text-sm text-muted-foreground">
-        {t("seating.noSelection")}
-      </aside>
-    );
-  }
-
   const available = table.seats.length - props.blocked.size;
   const sizeLabel =
     table.kind === "round" ? t("seating.diameter") : t("seating.length");
@@ -80,17 +75,14 @@ export function SeatPanel(props: SeatPanelProps) {
   );
 
   return (
-    <aside className="flex flex-col gap-4 rounded-lg border p-4">
-      <div>
-        <h2 className="text-lg font-semibold">{table.name}</h2>
-        <p className="text-sm text-muted-foreground">
-          {t("seating.tableSummary", {
-            seats: available,
-            x: table.gridX + 1,
-            y: table.gridY + 1,
-          })}
-        </p>
-      </div>
+    <div className="flex flex-col gap-4">
+      <p className="text-sm text-muted-foreground">
+        {t("seating.tableSummary", {
+          seats: available,
+          x: table.gridX + 1,
+          y: table.gridY + 1,
+        })}
+      </p>
 
       <div className="grid gap-2">
         <label className="flex items-center justify-between gap-2 text-sm">
@@ -210,7 +202,7 @@ export function SeatPanel(props: SeatPanelProps) {
           {t("seating.remove")}
         </Button>
       </div>
-    </aside>
+    </div>
   );
 }
 

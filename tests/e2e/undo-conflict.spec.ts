@@ -10,7 +10,8 @@ test("undo refuses to overwrite a newer change made by another user", async ({
   const head = main.getByTestId(`seating-table-${TABLE_HEAD_ID}`);
 
   await head.getByRole("button", { name: /^Seat 4, / }).click();
-  const field = main.getByRole("textbox", {
+  // The table panel is a sheet: a dialog in a portal, so it is outside <main>.
+  const field = memberPage.getByRole("dialog").getByRole("textbox", {
     name: /^Seat 4, Head table$/,
   });
   await field.fill("Katherine Johnson");
