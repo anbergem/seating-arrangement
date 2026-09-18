@@ -24,7 +24,7 @@ import { moveSeatingTable } from "../../src/application/use-cases/move-seating-t
 import { redoOperation } from "../../src/application/use-cases/redo-operation";
 import { reshapeSeatingTable } from "../../src/application/use-cases/reshape-seating-table";
 import { undoOperation } from "../../src/application/use-cases/undo-operation";
-import { findSeat } from "../../src/domain";
+import { blockedSeats, findSeat } from "../../src/domain";
 import { getDependencies } from "../../src/infrastructure/container";
 import {
   ADMIN_EMAIL,
@@ -200,10 +200,16 @@ describe("use cases against Node SQLite repositories", () => {
       status: "active",
     });
     expect(placed).toHaveLength(10);
-    // Every chair the plan could not have is already off, so the runs are
-    // continuous rather than merely adjacent.
+    // The runs are continuous rather than merely adjacent: bodies touching,
+    // with the chairs that have no room simply blocked.
+    const room = {
+      width: laid.resource.roomWidth,
+      height: laid.resource.roomHeight,
+    };
     expect(
-      placed.some((table) => table.seats.some((seat) => !seat.present)),
+      placed.some(
+        (table) => blockedSeats(table, { room, tables: placed }).size > 0,
+      ),
     ).toBe(true);
     // The room grew to hold it: this U needs 18 by 15, and an event starts at
     // 16 by 10. Nobody had to work that out.

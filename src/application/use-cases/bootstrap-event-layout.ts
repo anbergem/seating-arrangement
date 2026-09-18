@@ -3,14 +3,11 @@
  *
  * Lays out an L- or U-shaped arrangement in one go: a run of tables across the
  * top and one or two hanging off it, standing end to end so each section reads
- * as a single long surface, with every chair that would be inside another
- * table's body already taken off.
+ * as a single long surface.
  *
- * Doing this by hand means placing each table to the cell in the right order —
- * a table whose corner chair is still on cannot be brought up against its
- * neighbour, so the floor plan refuses it — and that is a poor first five
- * minutes with an empty plan. `planVenueLayout` in the domain does the
- * arithmetic; this use case turns the answer into rows.
+ * Doing this by hand means placing a dozen tables to the cell, which is a poor
+ * first five minutes with an empty plan. `planVenueLayout` in the domain does
+ * the arithmetic; this use case turns the answer into rows.
  *
  * Three things worth knowing about the shape of the write:
  *
@@ -30,12 +27,9 @@
 
 import type { Event, Operation, SeatingTable } from "../../domain";
 import {
-  cellKey,
-  cellsOf,
   createSeatingTable,
   growRoomToFit,
   planVenueLayout,
-  removeSeat,
   roomOf,
   type LayoutKind,
 } from "../../domain";
@@ -97,20 +91,19 @@ export async function bootstrapEventLayout(
   const grown = applyDomain(() => growRoomToFit(event, plan.room, now));
   const room = roomOf(grown);
 
-  // Each table is built on an empty floor and *then* has its planned chairs
-  // taken off, rather than being checked against the tables already built.
-  //
-  // That order is forced: a table's chairs are what collide at a join, and
-  // they cannot come off until the table exists, so checking placement first
-  // would refuse the very arrangement being built. The packing has already
-  // been solved by `planVenueLayout` — `tests/unit/domain/venue-layout.test.ts`
-  // holds it to never planning two tables into one cell — and the binding
-  // check is the `seating_cells` primary key the write goes through. What is
-  // still checked here is the room, which `createSeatingTable` does.
-  const tables: SeatingTable[] = plan.tables.map((planned, index) => {
-    const built = applyDomain(() =>
-      planned.removed.reduce(
-        (table, seat) => removeSeat(table, seat, now),
+  // Every table starts with all its chairs empty, and an empty chair claims no
+  // cell, so the tables of a run can be built against one another without any
+  // of the chair-shuffling that used to be needed: the chairs that this
+  // arrangement leaves no room for are simply blocked, worked out from the
+  // finished plan whenever anybody looks.
+  // Built in order against the ones already built, so a layout that somehow
+  // overlapped itself would be refused here rather than reaching the database.
+  // A plain loop, not `map`: each table is checked against the growing list,
+  // which cannot be referenced from inside its own initialiser.
+  const tables: SeatingTable[] = [];
+  plan.tables.forEach((planned, index) => {
+    tables.push(
+      applyDomain(() =>
         createSeatingTable(
           {
             id: deps.ids.next(),
@@ -126,28 +119,11 @@ export async function bootstrapEventLayout(
             createdBy: actor.userEmail,
             now,
           },
-          { room, tables: [] },
+          { room, tables },
         ),
       ),
     );
-    // `removeSeat` bumps the version once per chair, but nothing has been
-    // written yet: these are all still version 1 as far as the database is
-    // concerned, and storing anything else would make the first edit conflict.
-    return { ...built, version: 1 };
   });
-
-  // Belt and braces on the planner, and INTERNAL rather than INVARIANT because
-  // a layout that overlaps itself is this application's bug, not a bad request.
-  const claimed = new Set<string>();
-  for (const table of tables) {
-    for (const cell of cellsOf(table)) {
-      const key = cellKey(cell.x, cell.y);
-      if (claimed.has(key)) {
-        throw new AppError("INTERNAL", "Unexpected error");
-      }
-      claimed.add(key);
-    }
-  }
 
   const operation: Operation = {
     id: deps.ids.next(),

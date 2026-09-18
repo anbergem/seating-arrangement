@@ -21,11 +21,15 @@ import type { Room, SeatingTable } from "./geometry";
 import { TableShape } from "./TableShape";
 import type { TableDrag } from "./use-table-drag";
 
+const EMPTY: ReadonlySet<number> = new Set<number>();
+
 export interface FloorPlanProps {
   /** The event's own floor. Rooms differ per event, so nothing here assumes a
    * size. */
   room: Room;
   tables: readonly SeatingTable[];
+  /** Blocked seats by table id; see `blockedSeats`. */
+  blocked: ReadonlyMap<string, ReadonlySet<number>>;
   drag: TableDrag;
   dense: boolean;
   selectedTableId: string | null;
@@ -71,6 +75,7 @@ export function FloorPlan(props: FloorPlanProps) {
           return (
             <TableShape
               key={table.id}
+              blocked={props.blocked.get(table.id) ?? EMPTY}
               table={table}
               gridX={at.gridX}
               gridY={at.gridY}

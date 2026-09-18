@@ -171,13 +171,11 @@ function seats(row: Row, shape: TableShape): Seat[] {
     if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
       return fail("seats", row.seats);
     }
-    const seat = entry as Record<string, unknown>;
-    const label = seat.label;
-    const present = seat.present;
-    if (typeof label !== "string" || typeof present !== "boolean") {
+    const label = (entry as Record<string, unknown>).label;
+    if (typeof label !== "string") {
       return fail("seats", row.seats);
     }
-    return { label, present };
+    return { label };
   });
 }
 

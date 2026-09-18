@@ -16,8 +16,8 @@
  * The container itself is `pointer-events: none`, and only the body and the
  * seats take pointer events back. A table's bounding box legitimately contains
  * cells belonging to a *neighbouring* table — the corners a rectangle leaves
- * free, a seat that has been taken away — and the container must not swallow
- * clicks aimed at whatever is standing there.
+ * free, an empty chair the neighbour is standing in — and the container must
+ * not swallow clicks aimed at whatever is standing there.
  */
 
 import { useT } from "@agent-native/core/client/i18n";
@@ -36,6 +36,9 @@ export interface TableShapeProps {
   moving: boolean;
   selected: boolean;
   selectedSeat: number | null;
+  /** Seats with no chair right now, because a neighbour is standing in the
+   * cell. They are not drawn at all — there is nothing there to draw. */
+  blocked: ReadonlySet<number>;
   onPointerDown: (event: React.PointerEvent) => void;
   onKeyDown: (event: React.KeyboardEvent) => void;
   onSelectSeat: (seat: number) => void;
@@ -45,8 +48,8 @@ export function TableShape(props: TableShapeProps) {
   const t = useT();
   const { table } = props;
   const layout = layoutOf(table);
-  const present = table.seats.filter((seat) => seat.present);
-  const seated = present.filter((seat) => seat.label.length > 0).length;
+  const available = table.seats.length - props.blocked.size;
+  const seated = table.seats.filter((seat) => seat.label.length > 0).length;
 
   // The body's extent within the bounding box. It is a solid block, so its
   // corners are all the geometry a single spanning element needs.
@@ -107,13 +110,13 @@ export function TableShape(props: TableShapeProps) {
           {table.name}
         </span>
         <span className="w-full truncate text-[10px] leading-tight text-muted-foreground">
-          {t("seating.seatedCount", { seated, total: present.length })}
+          {t("seating.seatedCount", { seated, total: available })}
         </span>
       </button>
 
       {layout.seats.map((cell, index) => {
         const seat = table.seats[index];
-        if (!seat?.present) return null;
+        if (!seat || props.blocked.has(index)) return null;
         const place = t("seating.seatPlace", {
           number: index + 1,
           table: table.name,

@@ -11,9 +11,10 @@ import {
 
 /**
  * The planned arrangement drawn as text, so a failing assertion shows the
- * actual furniture: a letter is that table's body, `o` is a chair that is
- * there, and `.` is free floor — including a chair the plan took off, which is
- * the whole point of the thing being tested.
+ * actual furniture: a letter is that table's body, `o` is a chair, and `.` is
+ * free floor. Where two tables' chairs meet, the later one draws over the
+ * earlier — they are the same physical chair, and only one of the two tables
+ * will keep it once the plan is real.
  */
 function picture(plan: PlannedLayout): string {
   const grid = Array.from({ length: plan.room.height }, () =>
@@ -25,24 +26,34 @@ function picture(plan: PlannedLayout): string {
     for (const cell of layout.body) {
       grid[table.gridY + cell.y]![table.gridX + cell.x] = mark.toUpperCase();
     }
-    layout.seats.forEach((cell, seat) => {
-      if (table.removed.includes(seat)) return;
-      grid[table.gridY + cell.y]![table.gridX + cell.x] = "o";
-    });
+    for (const cell of layout.seats) {
+      const row = grid[table.gridY + cell.y]!;
+      // A body already drawn here wins: that chair has nowhere to be.
+      if (row[table.gridX + cell.x] === ".") row[table.gridX + cell.x] = "o";
+    }
   });
   return grid.map((row) => row.join("")).join("\n");
 }
 
+/** Chairs that have somewhere to be: a cell no body and no earlier chair has
+ * already taken. This is what `blockedSeats` works out against a real plan. */
 function seats(plan: PlannedLayout): number {
-  return plan.tables.reduce(
-    (total, table) =>
-      total + layoutOf(table.shape).seats.length - table.removed.length,
-    0,
-  );
-}
-
-function blocked(plan: PlannedLayout): number {
-  return plan.tables.reduce((total, table) => total + table.removed.length, 0);
+  const taken = new Set<string>();
+  for (const table of plan.tables) {
+    for (const cell of layoutOf(table.shape).body) {
+      taken.add(`${table.gridX + cell.x},${table.gridY + cell.y}`);
+    }
+  }
+  let free = 0;
+  for (const table of plan.tables) {
+    for (const cell of layoutOf(table.shape).seats) {
+      const key = `${table.gridX + cell.x},${table.gridY + cell.y}`;
+      if (taken.has(key)) continue;
+      taken.add(key);
+      free += 1;
+    }
+  }
+  return free;
 }
 
 function request(overrides: Partial<LayoutRequest> = {}): LayoutRequest {
@@ -79,9 +90,10 @@ describe("planVenueLayout", () => {
         "......o.",
       ].join("\n"),
     );
-    // Two runs of three that would seat 8 + 8 = 16 as separate tables.
+    // Two runs of three that would seat 8 + 8 = 16 as separate tables. Pushed
+    // into an L they seat more, because the run is longer — but fewer than the
+    // chairs the shapes describe, because the corner has no room for them all.
     expect(seats(plan)).toBe(19);
-    expect(blocked(plan)).toBe(5);
   });
 
   it("draws a U with both wings hanging off the middle", () => {
@@ -126,29 +138,20 @@ describe("planVenueLayout", () => {
       request({ sections: [1, 1], endSeats: false }),
     );
     expect(seats(capped)).toBeGreaterThan(seats(bare));
-    // The chairs at the join come off either way: that is where the other
-    // table stands, not a matter of taste.
-    expect(blocked(capped)).toBeGreaterThan(0);
-    expect(blocked(bare)).toBeGreaterThan(0);
   });
 
-  it("never plans two tables into the same cell", () => {
+  it("never plans two table bodies into the same cell", () => {
     for (const kind of ["L", "U"] as const) {
       for (const length of [1, 2, 3, 5, 8]) {
         const sections = kind === "L" ? [3, 2] : [2, 3, 2];
         const plan = planVenueLayout(
           request({ kind, sections, tableLength: length }),
         );
+        // Bodies only: chairs are allowed to want the same cell, and the
+        // floor plan sorts that out by blocking one of them.
         const taken = new Set<string>();
         for (const table of plan.tables) {
-          const geometry = layoutOf(table.shape);
-          const cells = [
-            ...geometry.body,
-            ...geometry.seats.filter(
-              (_, seat) => !table.removed.includes(seat),
-            ),
-          ];
-          for (const cell of cells) {
+          for (const cell of layoutOf(table.shape).body) {
             const key = `${table.gridX + cell.x},${table.gridY + cell.y}`;
             expect(taken.has(key)).toBe(false);
             taken.add(key);

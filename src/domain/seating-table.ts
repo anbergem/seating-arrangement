@@ -42,12 +42,22 @@
  * never moves a guest. It is *not* stable under reshaping, which renumbers the
  * perimeter; that is why a reshape records the whole seat array as its inverse.
  *
- * ## Occupancy and the room
+ * ## Occupancy, and why an empty chair holds nothing
  *
- * What a table occupies is a set of cells: its body, plus one cell per seat that
- * is present. A removed seat holds nothing, which is how a neighbouring table
- * can be brought right up against this one — and is exactly how a continuous
- * run of tables is built.
+ * What a table **claims** is its body cells plus one cell per seat that has a
+ * name on it. An empty chair claims nothing at all.
+ *
+ * That is the rule that lets tables be pushed together: drag one table's end
+ * against another's and, as long as nobody is sitting in the chairs that meet,
+ * the bodies may touch. Physically it is the obvious thing — an empty chair is
+ * pushed in or moved aside without a thought, where a chair with somebody in it
+ * is not.
+ *
+ * A seat whose cell is claimed by another table is **blocked**: there is no
+ * chair there while the neighbour stands there, so it is not drawn, not offered
+ * and cannot be named (`blockedSeats`). Blocked is *derived* from the floor
+ * plan every time it is asked, never stored — put the neighbour somewhere else
+ * and the chair is simply back.
  *
  * The room those cells live in belongs to the **event**, not to this module, so
  * every placement rule takes a `FloorPlan` — the room's size and the other
@@ -100,11 +110,14 @@ export const MAX_SIZE: Readonly<Record<TableShapeKind, number>> = {
   round: MAX_ROUND_DIAMETER,
 };
 
-/** What is written on a seat, and whether the chair is there at all. A seat's
- * identity is its position in the table's `seats` array. */
+/** What a user authored about a seat: the name of whoever sits there, or `""`
+ * for nobody. A seat's identity is its position in the table's `seats` array.
+ *
+ * There is deliberately no "is the chair there" flag. Whether a chair can be
+ * there is a fact about the floor plan, not about the table, so it is derived
+ * by `blockedSeats` rather than stored and kept in step. */
 export interface Seat {
   label: string;
-  present: boolean;
 }
 
 /** One whole cell of the floor-plan grid. */
@@ -335,7 +348,6 @@ export function buildSeats(
 ): Seat[] {
   return layoutOf(shape).seats.map((_, index) => ({
     label: carryOver[index]?.label ?? "",
-    present: carryOver[index]?.present ?? true,
   }));
 }
 
@@ -353,8 +365,14 @@ export function seatOffset(
   return cell ? { column: cell.x, row: cell.y } : null;
 }
 
-/** Every cell a table would hold standing here: its body, plus each seat that
- * is still there. */
+/**
+ * Every cell a table would **claim** standing here: its body, plus one cell per
+ * seat with a name on it.
+ *
+ * An empty chair is left out on purpose. It is what makes two tables able to
+ * meet, and it is the whole of the rule — there is no second concept of a chair
+ * that has been "taken away".
+ */
 export function cellsAt(
   shape: TableShape,
   seats: readonly Seat[],
@@ -367,7 +385,7 @@ export function cellsAt(
     y: gridY + cell.y,
   }));
   layout.seats.forEach((cell, index) => {
-    if (seats[index]?.present !== false) {
+    if (seats[index]?.label) {
       cells.push({ x: gridX + cell.x, y: gridY + cell.y });
     }
   });
@@ -390,6 +408,67 @@ export function occupiedCellKeys(
     for (const cell of cellsOf(table)) taken.add(cellKey(cell.x, cell.y));
   }
   return taken;
+}
+
+/**
+ * The seats of `table` that have no chair right now, because something else is
+ * standing in the cell the chair would occupy.
+ *
+ * Derived, never stored. A chair is blocked exactly while a neighbour is there
+ * and back the moment it moves — a stored flag would have to be kept in step
+ * with every move, reshape and rotation of every *other* table on the plan,
+ * which is a great deal of bookkeeping for a fact that is one set intersection
+ * away.
+ *
+ * Two things block a chair:
+ *
+ *   * **A claimed cell** — another table's body, or a chair with somebody in
+ *     it. There is no room for this chair while that is there.
+ *   * **Another table's empty chair, if that table came first.** Two empty
+ *     chairs contending for one cell are not two chairs: they are one piece of
+ *     furniture that both tables could use, and drawing it twice would be a
+ *     lie. `plan.tables` is in creation order, so the table that was there
+ *     first keeps it and the newcomer goes without — the same first-come rule
+ *     the rest of the floor plan runs on.
+ *
+ * A table's own cells never block its own chairs.
+ */
+export function blockedSeats(
+  table: SeatingTable,
+  plan: FloorPlan,
+): Set<number> {
+  const taken = occupiedCellKeys(plan.tables, table.id);
+  // A table not on the plan — a drag preview, a table being built — is treated
+  // as the newest, so it yields rather than taking a chair off something real.
+  const position = plan.tables.findIndex((other) => other.id === table.id);
+  const earlier =
+    position === -1 ? plan.tables : plan.tables.slice(0, position);
+  for (const other of earlier) {
+    if (other.status !== "active" || other.id === table.id) continue;
+    const layout = layoutOf(other);
+    layout.seats.forEach((cell, index) => {
+      // A filled chair is already in `taken`; this is only about empty ones.
+      if (other.seats[index]?.label) return;
+      taken.add(cellKey(other.gridX + cell.x, other.gridY + cell.y));
+    });
+  }
+
+  const blocked = new Set<number>();
+  if (taken.size === 0) return blocked;
+  layoutOf(table).seats.forEach((cell, index) => {
+    if (taken.has(cellKey(table.gridX + cell.x, table.gridY + cell.y))) {
+      blocked.add(index);
+    }
+  });
+  return blocked;
+}
+
+/** How many of a table's chairs can actually be sat in. */
+export function availableSeatCount(
+  table: SeatingTable,
+  plan: FloorPlan,
+): number {
+  return table.seats.length - blockedSeats(table, plan).size;
 }
 
 export function isWithinRoom(
@@ -698,24 +777,32 @@ export function reshapeSeatingTable(
   };
 }
 
-/** Writes a name on one seat. An empty label clears it. */
+/**
+ * Writes a name on one seat. An empty label clears it.
+ *
+ * Naming somebody is what makes a seat claim its cell, so it is the one seat
+ * change that can be refused for want of space: while a neighbour is standing
+ * in the chair's cell there is no chair to sit in. Clearing a name always
+ * works — it only ever gives space up.
+ */
 export function labelSeat(
   table: SeatingTable,
   index: number,
   label: string,
+  plan: FloorPlan,
   now: string,
 ): SeatingTable {
   assertActive(table, "label a seat of");
   const seat = requireSeat(table, index);
-  if (!seat.present) {
-    throw new DomainError(
-      "INVARIANT",
-      "That seat has been taken away; put it back first",
-    );
-  }
   const normalized = normalizeLabel(label);
   if (normalized === seat.label) {
     throw new DomainError("INVARIANT", "The seat already has that label");
+  }
+  if (normalized !== "" && blockedSeats(table, plan).has(index)) {
+    throw new DomainError(
+      "INVARIANT",
+      "There is no chair there: another table is standing in that space",
+    );
   }
   return {
     ...table,
@@ -723,55 +810,6 @@ export function labelSeat(
     version: table.version + 1,
     updatedAt: now,
   };
-}
-
-/**
- * Takes one chair away, freeing the grid cell it stood in, so a neighbouring
- * table can be brought right up against this one.
- *
- * This is how a continuous run is made — the bootstrap in `venue-layout.ts`
- * does exactly this at every join and inside every corner — and it is also
- * available by hand for any two tables a user wants to push together.
- *
- * It refuses a seat somebody is sitting in: freeing space is not a good enough
- * reason to discard a name, so the caller clears the label first.
- */
-export function removeSeat(
-  table: SeatingTable,
-  index: number,
-  now: string,
-): SeatingTable {
-  assertActive(table, "change the seats of");
-  const seat = requireSeat(table, index);
-  if (!seat.present) {
-    throw new DomainError("INVARIANT", "That seat has already been taken away");
-  }
-  if (seat.label !== "") {
-    throw new DomainError("INVARIANT", "Clear the seat before taking it away");
-  }
-  return {
-    ...table,
-    seats: withSeat(table.seats, index, { present: false }),
-    version: table.version + 1,
-    updatedAt: now,
-  };
-}
-
-/** Puts a chair back, if the cell it wants is still free. */
-export function restoreSeat(
-  table: SeatingTable,
-  index: number,
-  plan: FloorPlan,
-  now: string,
-): SeatingTable {
-  assertActive(table, "change the seats of");
-  const seat = requireSeat(table, index);
-  if (seat.present) {
-    throw new DomainError("INVARIANT", "That seat is already there");
-  }
-  const seats = withSeat(table.seats, index, { present: true });
-  assertPlaceable(table, seats, table.gridX, table.gridY, plan, table.id);
-  return { ...table, seats, version: table.version + 1, updatedAt: now };
 }
 
 export function archiveSeatingTable(
@@ -872,35 +910,28 @@ export function restoreSeatingTableShape(
   };
 }
 
+/** Undoing a `label-seat`. Putting a *name* back needs the chair's cell to be
+ * free, because a name is what claims it; clearing one never does. */
 export function restoreSeatLabel(
   table: SeatingTable,
   index: number,
   previousLabel: string,
+  plan: FloorPlan,
   now: string,
 ): SeatingTable {
   requireSeatForRestore(table, index);
+  if (previousLabel !== "" && blockedSeats(table, plan).has(index)) {
+    throw new DomainError(
+      "INVARIANT",
+      "There is no chair there: another table is standing in that space",
+    );
+  }
   return {
     ...table,
     seats: withSeat(table.seats, index, { label: previousLabel }),
     version: table.version + 1,
     updatedAt: now,
   };
-}
-
-/** Undoing a `remove-seat`: the chair goes back, and its cell has to be free. */
-export function restoreSeatPresence(
-  table: SeatingTable,
-  index: number,
-  present: boolean,
-  plan: FloorPlan,
-  now: string,
-): SeatingTable {
-  requireSeatForRestore(table, index);
-  const seats = withSeat(table.seats, index, { present });
-  if (present) {
-    assertPlaceable(table, seats, table.gridX, table.gridY, plan, table.id);
-  }
-  return { ...table, seats, version: table.version + 1, updatedAt: now };
 }
 
 /** A recorded inverse naming a seat the table no longer has is a corrupt row,

@@ -218,7 +218,7 @@ who may do what, and `requireCapability(actor, cap)` is the first statement of e
 | `events:create` | ✓ | ✓ | ✓ | `create-event` |
 | `events:archive` | — | ✓ | ✓ | `archive-event` |
 | `seating:read` | ✓ | ✓ | ✓ | `get-event` |
-| `seating:write` | ✓ | ✓ | ✓ | `create-seating-table`, `move-seating-table`, `rotate-seating-table`, `reshape-seating-table`, `remove-seat`, `restore-seat`, `label-seat`, `archive-seating-table` |
+| `seating:write` | ✓ | ✓ | ✓ | `create-seating-table`, `move-seating-table`, `rotate-seating-table`, `reshape-seating-table`, `label-seat`, `bootstrap-event-layout`, `resize-room`, `archive-seating-table` |
 | `history:read` | ✓ | ✓ | ✓ | `list-recent-activity` |
 | `history:undo` | ✓ | ✓ | ✓ | `undo-operation`, `redo-operation` |
 

@@ -65,7 +65,6 @@ export type InverseCommand =
       previousRoom: Room;
     }
   | { type: "restore-seat-label"; seat: number; previousLabel: string }
-  | { type: "restore-seat-presence"; seat: number; present: boolean }
   | { type: "restore-seating-table" }
   | { type: "archive-seating-table" }; // compensation for create-seating-table
 
@@ -82,8 +81,6 @@ export const OPERATION_CLASSIFICATION: Readonly<
   "move-seating-table": "reversible",
   "rotate-seating-table": "reversible",
   "reshape-seating-table": "reversible",
-  "remove-seat": "reversible",
-  "restore-seat": "reversible",
   "label-seat": "reversible",
   "archive-seating-table": "reversible",
   "undo-operation": "reversible",

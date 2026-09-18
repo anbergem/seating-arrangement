@@ -17,6 +17,8 @@
  */
 
 export {
+  availableSeatCount,
+  blockedSeats,
   boundingBoxOf,
   buildSeats,
   cellKey,

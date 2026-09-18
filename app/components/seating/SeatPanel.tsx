@@ -40,11 +40,9 @@ export interface SeatPanelProps {
   onLabel: (table: SeatingTable, seat: number, label: string) => void;
   onReshape: (table: SeatingTable, shape: ReshapeInput) => void;
   onRotate: (table: SeatingTable) => void;
-  onSetSeatPresent: (
-    table: SeatingTable,
-    seat: number,
-    present: boolean,
-  ) => void;
+  /** Seats with no chair right now, because a neighbour is standing in the
+   * cell. Derived from the plan by the route; see `blockedSeats`. */
+  blocked: ReadonlySet<number>;
   onRemove: (table: SeatingTable) => void;
 }
 
@@ -60,7 +58,7 @@ export function SeatPanel(props: SeatPanelProps) {
     );
   }
 
-  const present = table.seats.filter((seat) => seat.present).length;
+  const available = table.seats.length - props.blocked.size;
   const sizeLabel =
     table.kind === "round" ? t("seating.diameter") : t("seating.length");
 
@@ -87,7 +85,7 @@ export function SeatPanel(props: SeatPanelProps) {
         <h2 className="text-lg font-semibold">{table.name}</h2>
         <p className="text-sm text-muted-foreground">
           {t("seating.tableSummary", {
-            seats: present,
+            seats: available,
             x: table.gridX + 1,
             y: table.gridY + 1,
           })}
@@ -159,7 +157,7 @@ export function SeatPanel(props: SeatPanelProps) {
       <div className="grid gap-3">
         <h3 className="text-sm font-medium">{t("seating.seats")}</h3>
         {/* Numbered as the shape derives them, so there is never a gap to
-            explain: a chair taken away keeps its number and says so. */}
+            explain: a chair with no room keeps its number and says so. */}
         {table.seats.map((seat, index) => {
           const place = t("seating.seatPlace", {
             number: index + 1,
@@ -167,29 +165,15 @@ export function SeatPanel(props: SeatPanelProps) {
           });
           return (
             <div className="grid gap-1" key={`${table.id}-seat-${index}`}>
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-muted-foreground">{place}</span>
-                {/* Taking a chair away frees its cell, so another table can be
-                    brought right up against this one. */}
-                <label className="flex items-center gap-1 text-xs text-muted-foreground">
-                  {t("seating.seatPresent")}
-                  <input
-                    type="checkbox"
-                    className="size-3.5"
-                    aria-label={t("seating.seatPresentFor", { place })}
-                    disabled={props.busy || seat.label !== ""}
-                    checked={seat.present}
-                    onChange={(changed) =>
-                      props.onSetSeatPresent(
-                        table,
-                        index,
-                        changed.target.checked,
-                      )
-                    }
-                  />
-                </label>
-              </div>
-              {seat.present ? (
+              <span className="text-xs text-muted-foreground">{place}</span>
+              {/* A blocked seat is not offered rather than offered and
+                  refused: while the neighbour is there, there is no chair. It
+                  keeps its number, so the list still reads straight through. */}
+              {props.blocked.has(index) ? (
+                <p className="text-xs italic text-muted-foreground">
+                  {t("seating.seatBlocked")}
+                </p>
+              ) : (
                 <SeatField
                   place={place}
                   label={seat.label}
@@ -198,10 +182,6 @@ export function SeatPanel(props: SeatPanelProps) {
                   placeholder={t("seating.emptySeat")}
                   onCommit={(value) => props.onLabel(table, index, value)}
                 />
-              ) : (
-                <p className="text-xs italic text-muted-foreground">
-                  {t("seating.seatTakenAway")}
-                </p>
               )}
             </div>
           );

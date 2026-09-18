@@ -96,8 +96,9 @@ exists, so it cannot erase the CLI fixtures mid-run.
   archived event is `NOT_FOUND`, that the free-space predicate refuses an overlapping insert and
   an overlapping move while allowing two tables that merely share an edge, that an archived table
   stops occupying its cells, that a seat array round-trips through the JSON column unchanged, and
-  that a round table stores and reads back with its full ring of chairs, and that two tables
-  cannot stand end to end until the chair at the join comes off.
+  that a round table stores and reads back with its full ring of chairs, that a chair claims
+  its cell only once somebody is sitting in it, and that two tables may meet end to end while
+  the chairs at the join are empty but not once one of them is taken.
 - `use-cases-d1.test.ts` — the same use cases the unit tests cover, against real SQL, so a
   divergence between the double and the adapter shows up.
 - The CLI surface: `AGENT_USER_EMAIL=member1@example.invalid AGENT_ORG_ID=org_acme pnpm action
@@ -183,7 +184,7 @@ Two properties every page fixture carries:
 | --- | --- |
 | `auth.spec.ts` | Sign-in and the landing page |
 | `invite-only-organization.spec.ts` | An uninvited signed-in user cannot self-admit; invitation membership still works |
-| `seating.spec.ts` | The floor plan itself: a real pointer **drag** to a free cell that survives a reload, a drag onto a neighbour that snaps back, a move performed entirely by keyboard, labelling a seat and undoing it from the toast, adding a table, turning one, taking a chair away and putting it back, adding a **round** table and reshaping a rectangle into one, and **bootstrapping an event with a U-shaped layout** from the new-event dialog |
+| `seating.spec.ts` | The floor plan itself: a real pointer **drag** to a free cell that survives a reload, a drag onto a neighbour that snaps back, a move performed entirely by keyboard, labelling a seat and undoing it from the toast, adding a table, turning one, **pushing two tables together while the chairs where they meet are empty** and being refused once somebody is sitting there, adding a **round** table and reshaping a rectangle into one, and **bootstrapping an event with a U-shaped layout** from the new-event dialog |
 | `undo-conflict.spec.ts` | Label a seat in the UI, have a coworker change the same table over HTTP, then undo shows the conflict and **neither** change is lost; and a move refused because the space was taken in between |
 | `authorization.spec.ts` | A member calling `archive-event` over HTTP gets 403 and an admin does not; the control is hidden from the member; the member can still change the seating |
 | `isolation.spec.ts` | An outsider at `/events/evt_gala` sees not-found, `get-event` returns 404, a write returns 404, and neither organization's events appear in the other's list |

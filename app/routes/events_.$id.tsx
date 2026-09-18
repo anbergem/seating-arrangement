@@ -15,6 +15,7 @@ import {
 import { useOperationFeedback } from "@/components/activity/use-operation-feedback";
 import { FloorPlan } from "@/components/seating/FloorPlan";
 import {
+  blockedSeats,
   DEFAULT_ROOM_HEIGHT,
   DEFAULT_ROOM_WIDTH,
   MAX_SIZE,
@@ -93,14 +94,6 @@ export default function EventSeatingRoute() {
     "rotate-seating-table",
     options("seating.rotated"),
   );
-  const removeSeat = useActionMutation<TableResult, TableArgs>(
-    "remove-seat",
-    options("seating.seatRemoved"),
-  );
-  const restoreSeat = useActionMutation<TableResult, TableArgs>(
-    "restore-seat",
-    options("seating.seatRestored"),
-  );
   const label = useActionMutation<TableResult, TableArgs>(
     "label-seat",
     options("seating.labelled"),
@@ -125,8 +118,6 @@ export default function EventSeatingRoute() {
     move.isPending ||
     reshape.isPending ||
     rotate.isPending ||
-    removeSeat.isPending ||
-    restoreSeat.isPending ||
     bootstrap.isPending ||
     label.isPending ||
     remove.isPending;
@@ -153,6 +144,13 @@ export default function EventSeatingRoute() {
       return false;
     }
   }
+
+  // Which chairs have no room right now, per table. Derived from the plan the
+  // same way the server derives it, so the page and the write agree.
+  const blocked = new Map<string, ReadonlySet<number>>(
+    tables.map((table) => [table.id, blockedSeats(table, { room, tables })]),
+  );
+  const noneBlocked: ReadonlySet<number> = new Set<number>();
 
   const drag = useTableDrag({
     canvasRef,
@@ -321,6 +319,7 @@ export default function EventSeatingRoute() {
         <FloorPlan
           room={room}
           tables={tables}
+          blocked={blocked}
           drag={drag}
           dense={dense}
           selectedTableId={selectedTableId}
@@ -333,6 +332,9 @@ export default function EventSeatingRoute() {
         />
         <SeatPanel
           table={selectedTable}
+          blocked={
+            (selectedTable && blocked.get(selectedTable.id)) ?? noneBlocked
+          }
           selectedSeat={selectedSeat}
           busy={busy}
           onLabel={(table, seat, value) =>
@@ -355,13 +357,6 @@ export default function EventSeatingRoute() {
           onRotate={(table) =>
             rotate.mutate({
               tableId: table.id,
-              expectedVersion: table.version,
-            })
-          }
-          onSetSeatPresent={(table, seat, present) =>
-            (present ? restoreSeat : removeSeat).mutate({
-              tableId: table.id,
-              seat,
               expectedVersion: table.version,
             })
           }

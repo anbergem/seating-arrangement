@@ -3,14 +3,12 @@
  *
  * A table is never itself bent (`seating-table.ts`). An L- or U-shaped
  * *arrangement* is several rectangular tables standing against one another, and
- * laying one out by hand is fiddly work: every table has to be placed to the
- * cell, and every chair that would stand where the next table's body goes has
- * to be taken off first, or the floor plan refuses the placement.
+ * laying one out by hand means placing each table to the cell.
  *
  * This module does that arithmetic. It is pure and knows nothing about
  * persistence: it answers "given these section sizes, where does each table go,
- * which of its chairs cannot be there, and how big a room does the whole thing
- * need" — and the use case turns that into real tables in one atomic write.
+ * and how big a room does the whole thing need" — and the use case turns that
+ * into real tables in one atomic write.
  *
  * ## Sections
  *
@@ -21,22 +19,15 @@
  *     L    [across, down]                across the top, then down from its right end
  *     U    [leftWing, middle, rightWing]  middle across the top, a wing down from each end
  *
- * ## Which chairs come off, and why
+ * ## Nothing here takes a chair off
  *
- * Cells are allocated in two passes. **Every body cell is reserved first**, then
- * each table's chairs are offered their cells in turn and a chair is dropped
- * when its cell is already taken.
+ * It used to, and it no longer has to. An empty chair claims no cell
+ * (`seating-table.ts`), so the bodies of two tables may be adjacent while their
+ * end chairs overlap, and every chair this arrangement leaves no room for is
+ * *blocked* — derived from the finished floor plan rather than recorded here.
  *
- * Bodies first is the whole trick. A chair and a body want the same cell at
- * every join and at every corner, and the body has to win — a table cannot give
- * up the space it physically occupies, while a chair can simply not be there.
- * Doing it in one pass would let whichever table happened to be placed first
- * keep a chair standing inside the next table's body.
- *
- * What falls out is exactly what a person would do with real furniture: the two
- * end chairs at each join come off because the neighbouring table is there, and
- * the chairs on the inside of each corner come off because the other run is.
- * Nothing here enumerates them.
+ * All this module has to get right, then, is that no two **bodies** land in the
+ * same cell, which `planVenueLayout` asserts before returning.
  */
 
 import { DomainError } from "./errors";
@@ -45,7 +36,6 @@ import {
   MAX_TABLE_LENGTH,
   MIN_TABLE_SIZE,
   normalizeShape,
-  type Cell,
   type Room,
   type SeatingTablePosition,
   type TableShape,
@@ -81,9 +71,6 @@ export interface PlannedTable {
   shape: TableShape;
   gridX: number;
   gridY: number;
-  /** Seat indices that cannot be there, because another table of this layout
-   * stands in the cell. Ascending. */
-  removed: readonly number[];
 }
 
 export interface PlannedLayout {
@@ -205,65 +192,49 @@ function assertRequest(request: LayoutRequest): void {
 export function planVenueLayout(request: LayoutRequest): PlannedLayout {
   assertRequest(request);
   const placed = placements(request);
+  const boxes = placed.map((placement) => ({
+    placement,
+    layout: layoutOf(placement.shape),
+  }));
 
-  // Pass one: every body cell, before any chair is considered. A collision here
-  // would mean the arithmetic above put two tables in the same place, which is
-  // this module's own bug rather than anything a caller did.
-  const taken = new Set<string>();
-  const cells = placed.map((placement) => {
-    const layout = layoutOf(placement.shape);
-    const at = (cell: Cell): Cell => ({
-      x: placement.gridX + cell.x,
-      y: placement.gridY + cell.y,
-    });
-    return { body: layout.body.map(at), seats: layout.seats.map(at) };
-  });
-  for (const table of cells) {
-    for (const cell of table.body) {
-      const key = `${cell.x},${cell.y}`;
-      if (taken.has(key)) {
+  // Two tables in the same cell would be this module's own bug rather than
+  // anything a caller did, so it is an INVARIANT with a plain message rather
+  // than something a user could have asked for differently.
+  const bodies = new Set<string>();
+  for (const { placement, layout } of boxes) {
+    for (const cell of layout.body) {
+      const key = `${placement.gridX + cell.x},${placement.gridY + cell.y}`;
+      if (bodies.has(key)) {
         throw new DomainError(
           "INVARIANT",
           "That layout would stand two tables in the same place",
         );
       }
-      taken.add(key);
+      bodies.add(key);
     }
   }
 
-  // Pass two: offer each chair its cell, in table and then seat order. A chair
-  // whose cell is spoken for is simply not there.
-  const removedPerTable = cells.map((table) => {
-    const removed: number[] = [];
-    table.seats.forEach((cell, index) => {
-      const key = `${cell.x},${cell.y}`;
-      if (taken.has(key)) {
-        removed.push(index);
-        return;
-      }
-      taken.add(key);
-    });
-    return removed;
-  });
-
-  // Normalise: shift everything so the arrangement sits against the top-left
-  // corner, and measure what is left.
-  const occupied = [...taken].map((key) => {
-    const [x, y] = key.split(",");
-    return { x: Number(x), y: Number(y) };
-  });
-  const minX = Math.min(...occupied.map((cell) => cell.x));
-  const minY = Math.min(...occupied.map((cell) => cell.y));
-  const maxX = Math.max(...occupied.map((cell) => cell.x));
-  const maxY = Math.max(...occupied.map((cell) => cell.y));
+  // The room is measured from the bounding boxes, not from the cells the
+  // tables claim: an empty chair claims nothing, but it still has to be drawn
+  // somewhere, and a room that stopped at the bodies would cut it off.
+  const corners = boxes.flatMap(({ placement, layout }) => [
+    { x: placement.gridX, y: placement.gridY },
+    {
+      x: placement.gridX + layout.width - 1,
+      y: placement.gridY + layout.height - 1,
+    },
+  ]);
+  const minX = Math.min(...corners.map((cell) => cell.x));
+  const minY = Math.min(...corners.map((cell) => cell.y));
+  const maxX = Math.max(...corners.map((cell) => cell.x));
+  const maxY = Math.max(...corners.map((cell) => cell.y));
 
   return {
     room: { width: maxX - minX + 1, height: maxY - minY + 1 },
-    tables: placed.map((placement, index) => ({
+    tables: placed.map((placement) => ({
       shape: placement.shape,
       gridX: placement.gridX - minX,
       gridY: placement.gridY - minY,
-      removed: removedPerTable[index]!,
     })),
   };
 }

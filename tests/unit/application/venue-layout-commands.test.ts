@@ -17,7 +17,7 @@ import { createEvent } from "../../../src/application/use-cases/create-event";
 import { createSeatingTable } from "../../../src/application/use-cases/create-seating-table";
 import { resizeRoom } from "../../../src/application/use-cases/resize-room";
 import { undoOperation } from "../../../src/application/use-cases/undo-operation";
-import { layoutOf } from "../../../src/domain";
+import { blockedSeats, layoutOf } from "../../../src/domain";
 import {
   createInMemoryDependencies,
   type InMemoryDependencies,
@@ -96,10 +96,10 @@ describe("bootstrapEventLayout", () => {
     });
   });
 
-  it("takes the chairs off wherever another table of the layout stands", async () => {
+  it("leaves the chairs a neighbouring table is standing in blocked", async () => {
     const d = deps();
     const event = await emptyEvent(d);
-    await bootstrapEventLayout(d, actor(), {
+    const laid = await bootstrapEventLayout(d, actor(), {
       eventId: event.id,
       layout: "L",
       sections: [2, 1],
@@ -108,28 +108,34 @@ describe("bootstrapEventLayout", () => {
     });
 
     const placed = tablesOf(d, event.id);
-    const absent = placed.reduce(
-      (total, table) => total + table.seats.filter((s) => !s.present).length,
+    const room = {
+      width: laid.resource.roomWidth,
+      height: laid.resource.roomHeight,
+    };
+    const plan = { room, tables: placed };
+
+    // Nothing is stored about it: every chair is simply empty, and the ones
+    // with no room are worked out from where the tables ended up.
+    expect(
+      placed.every((table) => table.seats.every((s) => s.label === "")),
+    ).toBe(true);
+    const blocked = placed.reduce(
+      (total, table) => total + blockedSeats(table, plan).size,
       0,
     );
-    // Five chairs cannot be there: the two at the join, the one where the
-    // wing's body meets the run, and the two inside the corner.
-    expect(absent).toBe(5);
+    expect(blocked).toBeGreaterThan(0);
 
-    // And no two tables hold the same cell — the arrangement is legal floor
-    // plan, not just a drawing.
-    const taken = new Set<string>();
+    // And no chair is drawn twice: each cell holds at most one.
+    const chairs = new Set<string>();
     for (const table of placed) {
       const geometry = layoutOf(table);
-      const cells = [
-        ...geometry.body,
-        ...geometry.seats.filter((_, seat) => table.seats[seat]?.present),
-      ];
-      for (const cell of cells) {
+      const gone = blockedSeats(table, plan);
+      geometry.seats.forEach((cell, seat) => {
+        if (gone.has(seat)) return;
         const key = `${table.gridX + cell.x},${table.gridY + cell.y}`;
-        expect(taken.has(key)).toBe(false);
-        taken.add(key);
-      }
+        expect(chairs.has(key)).toBe(false);
+        chairs.add(key);
+      });
     }
   });
 

@@ -97,8 +97,6 @@ export const noMutations = createScorer({
       "move-seating-table",
       "rotate-seating-table",
       "reshape-seating-table",
-      "remove-seat",
-      "restore-seat",
       "label-seat",
       "archive-seating-table",
     ]);

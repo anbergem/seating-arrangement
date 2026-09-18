@@ -29,7 +29,6 @@ import {
   createSeatingTable,
   labelSeat,
   moveSeatingTable,
-  removeSeat,
   rotateSeatingTable,
   roomOf,
   OPERATION_CLASSIFICATION,
@@ -128,6 +127,17 @@ const lShapeEvent: Event = createEvent({
   now: CREATED_AT,
 });
 
+/** And another, because the run below needs two six-cell tables side by side
+ * and the plan above has no room left for them. */
+const runEvent: Event = createEvent({
+  id: "repo_evt_run",
+  orgId: ORG_ACME_ID,
+  name: "Integration run",
+  startsAt: STARTS_AT,
+  createdBy: OWNER_EMAIL,
+  now: CREATED_AT,
+});
+
 const otherEvent: Event = createEvent({
   id: "repo_evt_other",
   orgId: ORG_OTHER_ID,
@@ -202,7 +212,7 @@ async function insert(row: SeatingTable): Promise<void> {
 }
 
 beforeAll(async () => {
-  for (const event of [acmeEvent, lShapeEvent, otherEvent]) {
+  for (const event of [acmeEvent, lShapeEvent, runEvent, otherEvent]) {
     await events.create({
       event,
       operation: operationFor({
@@ -314,7 +324,7 @@ describe("the free-space predicate", () => {
   it("lets a label through without asking for space", async () => {
     const subject = table({ id: "repo_tbl_label", gridX: 12, gridY: 4 });
     await insert(subject);
-    const labelled = labelSeat(subject, 0, "Ada Lovelace", LATER);
+    const labelled = labelSeat(subject, 0, "Ada Lovelace", plan(), LATER);
     await tables.commit({
       table: labelled,
       expectedVersion: subject.version,
@@ -328,10 +338,7 @@ describe("the free-space predicate", () => {
       }),
     });
     const stored = await tables.getById(ORG_ACME_ID, subject.id);
-    expect(stored?.seats[0]).toMatchObject({
-      present: true,
-      label: "Ada Lovelace",
-    });
+    expect(stored?.seats[0]).toEqual({ label: "Ada Lovelace" });
     expect(stored?.version).toBe(2);
   });
 
@@ -403,6 +410,7 @@ describe("round-tripping", () => {
       }),
       0,
       "Grace Hopper",
+      plan(),
       CREATED_AT,
     );
     // Written as created, so the labelled copy is what goes in.
@@ -468,15 +476,21 @@ describe("the cell ledger", () => {
     await expect(insert(successor)).resolves.toBeUndefined();
   });
 
-  it("frees exactly one cell when a chair is taken away", async () => {
+  it("claims a chair's cell only once somebody is sitting in it", async () => {
     const subject = table({ id: "repo_tbl_cells_seat", gridX: 14, gridY: 4 });
     await insert(subject);
-    const before = await storedCells(subject.id);
-    const trimmed = removeSeat(subject, 1, LATER);
-    await commit(trimmed, subject.version, "remove-seat");
-    const after = await storedCells(subject.id);
-    expect(after).toHaveLength(before.length - 1);
-    expect(after).toEqual(expectedCells(trimmed));
+    const empty = await storedCells(subject.id);
+
+    const seated = labelSeat(subject, 1, "Ada Lovelace", plan(), LATER);
+    await commit(seated, subject.version, "label-seat");
+    const taken = await storedCells(subject.id);
+    expect(taken).toHaveLength(empty.length + 1);
+    expect(taken).toEqual(expectedCells(seated));
+
+    // …and gives it straight back when the name comes off.
+    const cleared = labelSeat(seated, 1, "", plan(), LATER);
+    await commit(cleared, seated.version, "label-seat");
+    expect(await storedCells(subject.id)).toEqual(empty);
   });
 
   it("keeps the cells in step through a rotation", async () => {
@@ -557,12 +571,16 @@ describe("round tables", () => {
   });
 });
 
+/**
+ * The rule an empty chair exists for, against the real primary key: two tables
+ * may be pushed together while nobody is sitting where they meet, and may not
+ * once somebody is.
+ */
 describe("a continuous run", () => {
-  it("refuses two tables end to end until the chairs at the join come off", async () => {
-    // A table of four with a chair capping each end, standing at the left of
-    // an empty plan: its right-hand cap is the cell the next table's body
-    // wants.
-    let first = table({
+  it("lets two tables meet while the chairs at the join are empty", async () => {
+    // A table of four with a chair capping each end. Its body runs from column
+    // 1 to column 4; column 5 is its right-hand cap.
+    const first = table({
       id: "repo_tbl_run_a",
       eventId: lShapeEvent.id,
       size: 4,
@@ -572,24 +590,49 @@ describe("a continuous run", () => {
     });
     await insert(first);
 
-    const second = () =>
-      table({
-        id: "repo_tbl_run_b",
-        eventId: lShapeEvent.id,
-        size: 4,
-        endSeats: true,
-        gridX: 5,
-        gridY: 6,
-      });
-    await expect(insert(second())).rejects.toMatchObject({ code: "CONFLICT" });
+    // The second table's body wants column 5 — the first table's cap. Nobody
+    // is in it, so it claims nothing and the two bodies may touch.
+    await expect(
+      insert(
+        table({
+          id: "repo_tbl_run_b",
+          eventId: lShapeEvent.id,
+          size: 4,
+          endSeats: true,
+          gridX: 4,
+          gridY: 6,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
 
-    // Seat 4 is the chair on the right-hand end of the first table.
-    const trimmed = removeSeat(first, 4, LATER);
-    await commit(trimmed, first.version, "remove-seat");
-    first = trimmed;
+  it("refuses the same placement once somebody is sitting at the join", async () => {
+    const first = table({
+      id: "repo_tbl_run_c",
+      eventId: runEvent.id,
+      size: 4,
+      endSeats: true,
+      gridX: 0,
+      gridY: 0,
+    });
+    await insert(first);
 
-    // Now the two bodies meet, which is what a continuous run is.
-    await expect(insert(second())).resolves.toBeUndefined();
-    expect(await storedCells(first.id)).toEqual(expectedCells(first));
+    // Seat 4 is the chair capping the right-hand end. With a name on it, it
+    // claims its cell like any other occupied space.
+    const seated = labelSeat(first, 4, "Ada Lovelace", plan(), LATER);
+    await commit(seated, first.version, "label-seat");
+
+    await expect(
+      insert(
+        table({
+          id: "repo_tbl_run_d",
+          eventId: runEvent.id,
+          size: 4,
+          endSeats: true,
+          gridX: 4,
+          gridY: 0,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });

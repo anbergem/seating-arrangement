@@ -6,7 +6,7 @@ import { runAppAction } from "../src/interface/run-app-action";
 
 export default defineAction({
   description:
-    "Write a name on one seat of one table — this is how a guest is seated. Seats are numbered clockwise around the table starting from 0, and get-event returns them in that order with their labels, so read it first to see which number you want and which are still empty. The numbering follows the table's shape, so reshaping a table renumbers its seats and a chair that has been taken away is simply not there. An empty label clears the seat. Reversible: undo-operation puts the previous name back.",
+    "Write a name on one seat of one table — this is how a guest is seated. Seats are numbered clockwise around the table starting from 0, and get-event returns them in that order with their labels, so read it first to see which number you want and which are still empty. The numbering follows the table's shape, so reshaping a table renumbers its seats. A seat get-event reports as blocked has a neighbouring table standing in it and cannot be named until that table moves; naming somebody is also what makes a chair claim its space, so it can be refused with INVARIANT for want of room. An empty label clears the seat. Reversible: undo-operation puts the previous name back.",
   schema: z.object({
     tableId: z.string().min(1).describe("Id of the table the seat belongs to"),
     seat: z

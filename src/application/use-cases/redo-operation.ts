@@ -35,9 +35,7 @@ import {
   archiveSeatingTable,
   labelSeat,
   moveSeatingTable,
-  removeSeat,
   reshapeSeatingTable,
-  restoreSeat,
   rotateSeatingTable,
   TABLE_SHAPE_KINDS,
 } from "../../domain";
@@ -234,19 +232,11 @@ function reapplySeatingTableForward(
         table,
         payloadNumber(forward.payload, "seat"),
         payloadString(forward.payload, "label"),
+        plan,
         now,
       );
     case "rotate-seating-table":
       return rotateSeatingTable(table, plan, now);
-    case "remove-seat":
-      return removeSeat(table, payloadNumber(forward.payload, "seat"), now);
-    case "restore-seat":
-      return restoreSeat(
-        table,
-        payloadNumber(forward.payload, "seat"),
-        plan,
-        now,
-      );
     case "archive-seating-table":
       return archiveSeatingTable(table, now);
     default:

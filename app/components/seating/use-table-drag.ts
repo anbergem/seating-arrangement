@@ -107,9 +107,9 @@ export function useTableDrag(input: UseTableDragInput): TableDrag {
   const isLegal = useCallback(
     (table: SeatingTable, to: SeatingTablePosition) =>
       // Cell for cell, the same arithmetic the server runs: a table with end
-      // seats leaves its corners free, and a seat that has been taken away
-      // leaves its cell free, so a neighbour may legally sit inside what looks
-      // like this table's rectangle.
+      // seats leaves its corners free, and an empty chair claims nothing at
+      // all, so a neighbour may legally sit inside what looks like this
+      // table's rectangle.
       fitsAt(
         table,
         table.seats,

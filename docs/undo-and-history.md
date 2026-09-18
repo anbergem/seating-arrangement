@@ -58,7 +58,7 @@ Every command is one of three things, declared in `OPERATION_CLASSIFICATION`
 
 | Classification | Meaning | Commands |
 | --- | --- | --- |
-| `reversible` | An inverse restores the previous state exactly | `archive-event`, `move-seating-table`, `rotate-seating-table`, `reshape-seating-table`, `label-seat`, `remove-seat`, `restore-seat`, `archive-seating-table`, `undo-operation`, `redo-operation` |
+| `reversible` | An inverse restores the previous state exactly | `archive-event`, `move-seating-table`, `rotate-seating-table`, `reshape-seating-table`, `label-seat`, `resize-room`, `archive-seating-table`, `undo-operation`, `redo-operation` |
 | `compensatable` | No inverse, but a documented compensating command exists | `create-event`, `create-seating-table` |
 | `irreversible` | Nothing can undo it | none today; an external effect would be |
 
@@ -83,7 +83,6 @@ Full inverse table:
 | `create-seating-table` | `{ type: "archive-seating-table" }` | Takes the new table off the plan |
 | `move-seating-table` | `{ type: "restore-seating-table-position", previous: { gridX, gridY } }` | The exact cell it stood in |
 | `rotate-seating-table` | `{ type: "restore-seating-table-rotation", previous: { rotation, gridX, gridY } }` | The way it faced *and* where it stood, since turning moves it |
-| `remove-seat` / `restore-seat` | `{ type: "restore-seat-presence", seat, present }` | Whether the chair was there |
 | `reshape-seating-table` | `{ type: "restore-seating-table-shape", previous: { kind, size, endSeats, seats } }` | The whole seat array, labels included |
 | `resize-room` | `{ type: "restore-room-size", previous: { width, height } }` | The floor's previous size, if nothing has been put in the space since |
 | `bootstrap-event-layout` | `{ type: "undo-bootstrap", tableIds, previousRoom }` | Archives every table the layout placed **and** puts the room back — one compensation for a write that spanned both |

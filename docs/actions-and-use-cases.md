@@ -230,8 +230,6 @@ Commands:
 | `move-seating-table` | `seating:write` | `reversible` | restore the recorded cell, if it is still free |
 | `rotate-seating-table` | `seating:write` | `reversible` | turn it back, and return it to where it stood |
 | `reshape-seating-table` | `seating:write` | `reversible` | restore the recorded form and seat list, labels included |
-| `remove-seat` | `seating:write` | `reversible` | put the chair back, if its cell is still free |
-| `restore-seat` | `seating:write` | `reversible` | take the chair away again |
 | `label-seat` | `seating:write` | `reversible` | restore the name that was there |
 | `archive-seating-table` | `seating:write` | `reversible` | put the table back, if its space is still free |
 | `undo-operation` | `history:undo` + the effect's own capability | `reversible` | re-apply, via `redo-operation` |

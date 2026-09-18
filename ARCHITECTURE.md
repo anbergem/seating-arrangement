@@ -484,7 +484,6 @@ under the same version rule. Classification per command:
 | `move-seating-table`                   | `reversible`    | `restore-seating-table-position` to the recorded cell          |
 | `rotate-seating-table`                 | `reversible`    | `restore-seating-table-rotation`, and where it stood           |
 | `reshape-seating-table`                | `reversible`    | `restore-seating-table-shape`, seats and their labels included |
-| `remove-seat`, `restore-seat`          | `reversible`    | `restore-seat-presence` for that chair                         |
 | `label-seat`                           | `reversible`    | `restore-seat-label` to the name that was there                |
 | `archive-seating-table`                | `reversible`    | `restore-seating-table`, while the space is still free         |
 

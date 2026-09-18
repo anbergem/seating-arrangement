@@ -310,10 +310,12 @@ export function createSeatingArrangement(): SeatingScenario {
   );
   // Seats are numbered clockwise from the start of the table's run, so 0 and 1
   // are the first two along its far side.
+  const galaPlan = { room: roomOf(gala), tables: [] };
   const headLabelled = labelSeat(
-    labelSeat(head, 0, SEAT_LABEL_ADA, SEED_CREATED_AT),
+    labelSeat(head, 0, SEAT_LABEL_ADA, galaPlan, SEED_CREATED_AT),
     1,
     SEAT_LABEL_GRACE,
+    galaPlan,
     SEED_CREATED_AT,
   );
   const side = createSeatingTable(

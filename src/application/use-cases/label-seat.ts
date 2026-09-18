@@ -17,6 +17,7 @@ import { requireCapability } from "../authorization";
 import { AppError } from "../errors";
 import type { Dependencies } from "../ports";
 import { applyDomain, type CommandResult } from "./command";
+import { loadFloorPlan } from "./floor-plan";
 
 export interface LabelSeatInput {
   tableId: string;
@@ -45,9 +46,13 @@ export async function labelSeat(
     throw new AppError("CONFLICT", "The table was changed by someone else");
   }
 
+  // The plan is read because naming somebody is what makes a chair claim its
+  // cell: a seat a neighbouring table is standing in cannot be sat in.
+  const { plan } = await loadFloorPlan(deps, actor.orgId, table.eventId);
+
   const now = deps.clock.now();
   const next = applyDomain(() =>
-    labelSeatDomain(table, input.seat, input.label, now),
+    labelSeatDomain(table, input.seat, input.label, plan, now),
   );
 
   const operation: Operation = {

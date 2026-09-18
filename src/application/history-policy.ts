@@ -38,7 +38,6 @@ export function mayUndo(actor: Actor, operation: Operation): boolean {
     case "restore-seating-table-rotation":
     case "restore-seating-table-shape":
     case "restore-seat-label":
-    case "restore-seat-presence":
     case "restore-seating-table":
     case "archive-seating-table":
       // Everyone who may change a floor plan may reverse a change to it:

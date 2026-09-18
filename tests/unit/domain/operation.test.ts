@@ -39,8 +39,6 @@ describe("OPERATION_CLASSIFICATION", () => {
       "move-seating-table": "reversible",
       "rotate-seating-table": "reversible",
       "reshape-seating-table": "reversible",
-      "remove-seat": "reversible",
-      "restore-seat": "reversible",
       "label-seat": "reversible",
       "archive-seating-table": "reversible",
       "undo-operation": "reversible",

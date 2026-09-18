@@ -45,7 +45,6 @@ import {
   restoreSeatingTableRotation,
   restoreSeatingTableShape,
   restoreSeatLabel,
-  restoreSeatPresence,
 } from "../../domain";
 import type { Actor } from "../actor";
 import { requireCapability } from "../authorization";
@@ -137,12 +136,10 @@ function applySeatingTableInverse(
     case "restore-seating-table-shape":
       return restoreSeatingTableShape(table, inverse.previous, plan, now);
     case "restore-seat-label":
-      return restoreSeatLabel(table, inverse.seat, inverse.previousLabel, now);
-    case "restore-seat-presence":
-      return restoreSeatPresence(
+      return restoreSeatLabel(
         table,
         inverse.seat,
-        inverse.present,
+        inverse.previousLabel,
         plan,
         now,
       );

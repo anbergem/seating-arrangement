@@ -229,29 +229,77 @@ test("a table can be turned ninety degrees without reseating anybody", async ({
   ).toHaveAttribute("data-rotation", "90");
 });
 
-test("a chair can be taken away and put back, and the space becomes usable", async ({
+/**
+ * The rule an empty chair exists for, driven with a real pointer: nobody is
+ * sitting where the two tables meet, so they may be pushed together, and the
+ * chair that has nowhere to be simply is not there any more.
+ */
+test("two tables may be pushed together while the chairs where they meet are empty", async ({
+  memberPage,
+}) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  const main = memberPage.locator("main");
+  const head = main.getByTestId(`seating-table-${TABLE_HEAD_ID}`);
+  const side = main.getByTestId(`seating-table-${TABLE_SIDE_ID}`);
+  await expect(head.getByRole("button", { name: /^Seat \d+, / })).toHaveCount(
+    6,
+  );
+
+  // One cell to the left puts Table 2's body in the head table's right-hand
+  // chair. It is empty, so the two may meet.
+  const cell = await cellSize(memberPage);
+  const from = await bodyCentre(memberPage, TABLE_SIDE_ID);
+  await memberPage.mouse.move(from.x, from.y);
+  await memberPage.mouse.down();
+  await memberPage.mouse.move(from.x - cell.x * 0.5, from.y);
+  await memberPage.mouse.move(from.x - cell.x, from.y);
+  await memberPage.mouse.up();
+
+  await expect(memberPage.getByText("Table moved")).toBeVisible();
+  await expect(side).toHaveAttribute("data-grid-x", "3");
+
+  // Seat 3 is that chair, and there is no longer anywhere for it to be.
+  await expect(head.getByRole("button", { name: /^Seat \d+, / })).toHaveCount(
+    5,
+  );
+  await expect(head.getByRole("button", { name: /^Seat 3, / })).toHaveCount(0);
+
+  // The panel says so in place rather than leaving a gap in the numbering.
+  await head.getByRole("button", { name: /^Seat 2, / }).click();
+  await expect(main.getByText("No chair here")).toBeVisible();
+  await expect(
+    main.getByRole("textbox", { name: `Seat 3, ${TABLE_HEAD_NAME}` }),
+  ).toHaveCount(0);
+});
+
+test("the same move is refused once somebody is sitting where they would meet", async ({
   memberPage,
 }) => {
   await memberPage.goto(`/events/${EVENT_GALA_ID}`);
   const main = memberPage.locator("main");
   const head = main.getByTestId(`seating-table-${TABLE_HEAD_ID}`);
 
-  await head.getByRole("button", { name: /^Seat 4, / }).click();
-  const chair = main.getByRole("checkbox", {
-    name: `Chair at Seat 4, ${TABLE_HEAD_NAME}`,
+  // Seat somebody in the head table's right-hand chair.
+  await head.getByRole("button", { name: /^Seat 3, / }).click();
+  const field = main.getByRole("textbox", {
+    name: `Seat 3, ${TABLE_HEAD_NAME}`,
   });
-  await expect(chair).toBeChecked();
-  // `.click()`, not `.uncheck()`: the box is controlled by the server's answer,
-  // so its state changes a round trip later than Playwright's helper expects.
-  await chair.click();
-  await expect(memberPage.getByText("Chair taken away")).toBeVisible();
-  // The chip is gone from the plan, so its cell is free for a neighbour.
-  await expect(head.getByRole("button", { name: /^Seat 4, / })).toHaveCount(0);
+  await field.fill("Katherine Johnson");
+  await field.press("Enter");
+  await expect(memberPage.getByText("Seat updated")).toBeVisible();
 
-  await expect(chair).not.toBeChecked();
-  await chair.click();
-  await expect(memberPage.getByText("Chair put back")).toBeVisible();
-  await expect(head.getByRole("button", { name: /^Seat 4, / })).toBeVisible();
+  const cell = await cellSize(memberPage);
+  const from = await bodyCentre(memberPage, TABLE_SIDE_ID);
+  await memberPage.mouse.move(from.x, from.y);
+  await memberPage.mouse.down();
+  await memberPage.mouse.move(from.x - cell.x * 0.5, from.y);
+  await memberPage.mouse.move(from.x - cell.x, from.y);
+  await memberPage.mouse.up();
+
+  await expect(main.getByText("Tables may not overlap.")).toBeVisible();
+  await expect(
+    main.getByTestId(`seating-table-${TABLE_SIDE_ID}`),
+  ).toHaveAttribute("data-grid-x", "4");
 });
 
 /**
@@ -292,9 +340,19 @@ test("a round table can be added, and reshaped from a rectangle", async ({
     .locator("[data-testid^=seating-table-]")
     .filter({ hasText: "Round one" });
   await expect(round).toHaveAttribute("data-kind", "round");
-  await expect(round.getByRole("button", { name: /^Seat \d+, / })).toHaveCount(
-    12,
-  );
+
+  // Twelve chairs around a 3x3 block. The count is asserted through the panel
+  // rather than the plan: the table is dropped into the first free spot, which
+  // may well be up against a neighbour, and any chair with nowhere to be is
+  // not drawn.
+  await round.getByRole("button", { name: /Move / }).click();
+  await expect(main.getByText("Seat 12, Round one")).toBeVisible();
+  await expect(main.getByText("Seat 13, Round one")).toHaveCount(0);
+  const drawn = await round
+    .getByRole("button", { name: /^Seat \d+, / })
+    .count();
+  expect(drawn).toBeGreaterThan(0);
+  expect(drawn).toBeLessThanOrEqual(12);
 });
 
 /**

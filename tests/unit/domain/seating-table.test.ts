@@ -16,16 +16,14 @@ import {
   labelSeat,
   layoutOf,
   moveSeatingTable,
+  blockedSeats,
   occupiedCellKeys,
-  removeSeat,
   reshapeSeatingTable,
-  restoreSeat,
   restoreSeatingTable,
   restoreSeatingTablePosition,
   restoreSeatingTableRotation,
   restoreSeatingTableShape,
   restoreSeatLabel,
-  restoreSeatPresence,
   rotatedPlacement,
   rotateSeatingTable,
   seatCount,
@@ -81,6 +79,21 @@ function shape(overrides: Partial<TableShape> = {}): TableShape {
     rotation: 0,
     ...overrides,
   });
+}
+
+/** The same table with a name on every chair, so it claims every cell its
+ * shape describes. Empty chairs claim nothing, which is the point of most of
+ * the occupancy tests below — this is how to ask the other question. */
+function fullySeated(subject: SeatingTable): SeatingTable {
+  return subject.seats.reduce(
+    (next, _, index) => ({
+      ...next,
+      seats: next.seats.map((seat, at) =>
+        at === index ? { label: `Guest ${index}` } : seat,
+      ),
+    }),
+    subject,
+  );
 }
 
 /** The cells a table holds, as a sorted, comparable list. */
@@ -200,23 +213,22 @@ describe("shapes", () => {
 });
 
 describe("seats", () => {
-  it("starts every seat present and unlabelled", () => {
+  it("starts every seat unlabelled", () => {
     expect(buildSeats(shape({ size: 2 }))).toEqual([
-      { label: "", present: true },
-      { label: "", present: true },
-      { label: "", present: true },
-      { label: "", present: true },
+      { label: "" },
+      { label: "" },
+      { label: "" },
+      { label: "" },
     ]);
   });
 
-  it("carries labels and presence over by number", () => {
-    const before = buildSeats(shape({ size: 4 })).map((seat, index) => ({
+  it("carries names over by number", () => {
+    const before = buildSeats(shape({ size: 4 })).map((_, index) => ({
       label: `seat-${index}`,
-      present: index !== 2,
     }));
     const after = buildSeats(shape({ size: 3 }), before);
-    expect(after[0]).toEqual({ label: "seat-0", present: true });
-    expect(after[2]).toEqual({ label: "seat-2", present: false });
+    expect(after[0]).toEqual({ label: "seat-0" });
+    expect(after[2]).toEqual({ label: "seat-2" });
     expect(after).toHaveLength(seatCount(shape({ size: 3 })));
   });
 
@@ -229,14 +241,16 @@ describe("seats", () => {
 });
 
 describe("occupancy", () => {
-  it("holds its body and every seat that is present", () => {
-    expect(cells(table())).toEqual(
+  it("holds its body, and its chairs only once they are filled", () => {
+    // A table nobody is sitting at holds its two body cells and nothing else.
+    expect(cells(table())).toEqual(["0,1", "1,1"].sort());
+    expect(cells(fullySeated(table()))).toEqual(
       ["0,0", "0,1", "0,2", "1,0", "1,1", "1,2"].sort(),
     );
   });
 
-  it("leaves the corners of the bounding box free when it has end seats", () => {
-    const withEnds = table({ size: 2, endSeats: true });
+  it("leaves the corners of the bounding box free even when every chair is filled", () => {
+    const withEnds = fullySeated(table({ size: 2, endSeats: true }));
     expect(footprintSize(withEnds)).toEqual({ width: 4, height: 3 });
     expect(cells(withEnds)).toHaveLength(8);
     for (const corner of ["0,0", "3,0", "0,2", "3,2"]) {
@@ -245,7 +259,7 @@ describe("occupancy", () => {
   });
 
   it("leaves the corners of a round table free for a neighbour", () => {
-    const round = table({ kind: "round", size: 2 });
+    const round = fullySeated(table({ kind: "round", size: 2 }));
     // Four body cells and eight chairs, out of a 4x4 bounding box: nobody
     // sits at a corner, so those four cells belong to nobody and a neighbour
     // may stand in them.
@@ -255,10 +269,11 @@ describe("occupancy", () => {
     }
   });
 
-  it("frees a cell when a seat is taken away", () => {
-    const full = table();
-    const trimmed = removeSeat(full, 2, later);
-    expect(cells(trimmed)).toHaveLength(cells(full).length - 1);
+  it("holds one more cell for each chair somebody sits in", () => {
+    const empty = table();
+    expect(cells(empty)).toHaveLength(layoutOf(empty).body.length);
+    const seated = labelSeat(empty, 2, "Ada Lovelace", plan(), later);
+    expect(cells(seated)).toHaveLength(cells(empty).length + 1);
   });
 
   it("counts nothing for an archived table, or for itself", () => {
@@ -298,7 +313,7 @@ describe("occupancy", () => {
   });
 
   it("answers for a position the table is not standing in", () => {
-    const subject = table();
+    const subject = fullySeated(table());
     expect(
       cellsAt(subject, subject.seats, 5, 5)
         .map((cell) => cellKey(cell.x, cell.y))
@@ -380,13 +395,8 @@ describe("moveSeatingTable", () => {
     ).toMatchObject({ gridX: 4, gridY: 0 });
   });
 
-  it("may move into a cell a neighbour has given up", () => {
-    const neighbour = removeSeat(
-      table({ id: "tbl_2", size: 4, gridX: 4, gridY: 0 }),
-      // Clockwise from the far side, so seat 4 is the near-side cell at 4,2.
-      4,
-      later,
-    );
+  it("may move into a cell a neighbour's empty chair is sitting in", () => {
+    const neighbour = table({ id: "tbl_2", size: 4, gridX: 4, gridY: 0 });
     const freed = cellsOf(neighbour).map((cell) => cellKey(cell.x, cell.y));
     expect(freed).not.toContain("7,2");
     const subject = table({ size: 1, gridX: 0, gridY: 6 });
@@ -424,6 +434,7 @@ describe("rotateSeatingTable", () => {
       table({ size: 4, gridX: 4, gridY: 3 }),
       0,
       "Ada Lovelace",
+      plan(),
       later,
     );
     const turned = rotateSeatingTable(seated, plan(), later);
@@ -466,7 +477,11 @@ describe("rotateSeatingTable", () => {
 
   it("refuses to turn into a neighbour, or when removed", () => {
     const subject = table({ size: 4, gridX: 4, gridY: 3 });
-    const blocker = table({ id: "tbl_2", size: 2, gridX: 5, gridY: 6 });
+    // Seated, so its body is not the only thing in the way — an empty chair
+    // would simply yield and the turn would be allowed.
+    const blocker = fullySeated(
+      table({ id: "tbl_2", size: 2, gridX: 5, gridY: 6 }),
+    );
     expect(() => rotateSeatingTable(subject, plan([blocker]), later)).toThrow(
       "Tables may not overlap",
     );
@@ -476,59 +491,96 @@ describe("rotateSeatingTable", () => {
   });
 });
 
-describe("removeSeat and restoreSeat", () => {
-  it("takes an empty chair away and puts it back", () => {
+/**
+ * An empty chair claims nothing, which is what lets two tables be pushed
+ * together — and a chair a neighbour is standing in is *blocked*, worked out
+ * from the plan rather than recorded anywhere.
+ */
+describe("empty chairs and blocked seats", () => {
+  it("claims a cell only once somebody is sitting in it", () => {
     const subject = table();
-    const trimmed = removeSeat(subject, 2, later);
-    expect(findSeat(trimmed, 2)?.present).toBe(false);
-    expect(trimmed.version).toBe(2);
-
-    const back = restoreSeat(trimmed, 2, plan(), later);
-    expect(findSeat(back, 2)?.present).toBe(true);
-    expect(back.version).toBe(3);
+    const empty = cells(subject);
+    const seated = labelSeat(subject, 2, "Ada Lovelace", plan(), later);
+    expect(cells(seated)).toHaveLength(empty.length + 1);
+    // And gives it back the moment the name comes off.
+    expect(cells(labelSeat(seated, 2, "", plan(), later))).toEqual(empty);
   });
 
-  it("refuses to take away a chair somebody is sitting in", () => {
-    const seated = labelSeat(table(), 0, "Ada Lovelace", later);
-    expect(() => removeSeat(seated, 0, later)).toThrow(
-      "Clear the seat before taking it away",
+  it("lets two tables meet where their chairs are empty, but not where they are not", () => {
+    // A table of three with a chair at each end: body at columns 1 to 3, right
+    // cap at column 4.
+    const left = table({ size: 3, endSeats: true, gridX: 0, gridY: 0 });
+    const right = table({
+      id: "tbl_2",
+      size: 3,
+      endSeats: true,
+      gridX: 3,
+      gridY: 0,
+    });
+    // `right`'s body starts in `left`'s cap cell. Nobody is in it, so the two
+    // bodies may touch.
+    expect(
+      fitsAt(
+        right,
+        right.seats,
+        right.gridX,
+        right.gridY,
+        occupiedCellKeys([left]),
+        ROOM,
+      ),
+    ).toBe(true);
+
+    // Seat 3 is that cap. With a name on it, the same placement is refused.
+    const seated = labelSeat(left, 3, "Ada Lovelace", plan(), later);
+    expect(
+      fitsAt(
+        right,
+        right.seats,
+        right.gridX,
+        right.gridY,
+        occupiedCellKeys([seated]),
+        ROOM,
+      ),
+    ).toBe(false);
+  });
+
+  it("reports the chairs a neighbour is standing in as blocked", () => {
+    const left = table({ size: 3, endSeats: true, gridX: 0, gridY: 0 });
+    const right = table({
+      id: "tbl_2",
+      size: 3,
+      endSeats: true,
+      gridX: 3,
+      gridY: 0,
+    });
+    // Each loses exactly the chair the other's body is standing in.
+    expect([...blockedSeats(left, plan([right]))]).toEqual([3]);
+    expect([...blockedSeats(right, plan([left]))]).toEqual([7]);
+    // Nothing is blocked by the table's own cells, or on an empty plan.
+    expect(blockedSeats(left, plan()).size).toBe(0);
+  });
+
+  it("refuses to seat somebody in a chair that is not there", () => {
+    const left = table({ size: 3, endSeats: true, gridX: 0, gridY: 0 });
+    const right = table({
+      id: "tbl_2",
+      size: 3,
+      endSeats: true,
+      gridX: 3,
+      gridY: 0,
+    });
+    expect(() => labelSeat(left, 3, "Ada", plan([right]), later)).toThrow(
+      "There is no chair there",
     );
-  });
-
-  it("refuses to label a chair that is not there", () => {
-    const trimmed = removeSeat(table(), 0, later);
-    expect(() => labelSeat(trimmed, 0, "Ada", later)).toThrow(
-      "That seat has been taken away",
+    // Clearing one never needs space, so it is never refused.
+    expect(() => labelSeat(left, 3, "", plan([right]), later)).toThrow(
+      "The seat already has that label",
     );
   });
 
   it("refuses a seat number the table does not have", () => {
-    expect(() => labelSeat(table(), 99, "Ada", later)).toThrow(
+    expect(() => labelSeat(table(), 99, "Ada", plan(), later)).toThrow(
       "This table has no seat 100; it has 4",
-    );
-  });
-
-  it("refuses a double removal and a pointless restore", () => {
-    const trimmed = removeSeat(table(), 0, later);
-    expect(() => removeSeat(trimmed, 0, later)).toThrow(
-      "That seat has already been taken away",
-    );
-    expect(() => restoreSeat(table(), 0, plan(), later)).toThrow(
-      "That seat is already there",
-    );
-  });
-
-  it("refuses to put a chair back where another table now stands", () => {
-    const trimmed = removeSeat(table({ size: 2 }), 2, later);
-    const cell = layoutOf(trimmed).seats[2]!;
-    const squatter = table({
-      id: "tbl_2",
-      size: 1,
-      gridX: trimmed.gridX + cell.x,
-      gridY: trimmed.gridY + cell.y,
-    });
-    expect(() => restoreSeat(trimmed, 2, plan([squatter]), later)).toThrow(
-      "Tables may not overlap",
     );
   });
 });
@@ -551,7 +603,7 @@ describe("reshapeSeatingTable", () => {
   });
 
   it("keeps the names it can when only the length changes", () => {
-    const seated = labelSeat(table({ size: 3 }), 0, "Ada", later);
+    const seated = labelSeat(table({ size: 3 }), 0, "Ada", plan(), later);
     const shorter = reshapeSeatingTable(
       seated,
       { kind: "rectangle", size: 2, endSeats: false },
@@ -602,17 +654,17 @@ describe("reshapeSeatingTable", () => {
 
 describe("labelSeat", () => {
   it("writes a trimmed label on one seat and leaves the others alone", () => {
-    const labelled = labelSeat(table(), 2, "  Ada Lovelace  ", later);
+    const labelled = labelSeat(table(), 2, "  Ada Lovelace  ", plan(), later);
     expect(findSeat(labelled, 2)?.label).toBe("Ada Lovelace");
     expect(findSeat(labelled, 0)?.label).toBe("");
     expect(labelled.version).toBe(2);
   });
 
   it("rejects an over-long label and a no-op", () => {
-    expect(() => labelSeat(table(), 0, "a".repeat(33), later)).toThrow(
+    expect(() => labelSeat(table(), 0, "a".repeat(33), plan(), later)).toThrow(
       "Seat label must be at most 32 characters",
     );
-    expect(() => labelSeat(table(), 0, "", later)).toThrow(
+    expect(() => labelSeat(table(), 0, "", plan(), later)).toThrow(
       "The seat already has that label",
     );
   });
@@ -663,11 +715,7 @@ describe("undo twins", () => {
   });
 
   it("restores a recorded form with the exact seats it had", () => {
-    const original = removeSeat(
-      labelSeat(table({ size: 3 }), 1, "Grace", later),
-      4,
-      later,
-    );
+    const original = labelSeat(table({ size: 3 }), 1, "Grace", plan(), later);
     const reshaped = reshapeSeatingTable(
       original,
       { kind: "round", size: 2, endSeats: false },
@@ -688,39 +736,31 @@ describe("undo twins", () => {
     expect(back.kind).toBe("rectangle");
     expect(back.seats).toEqual(original.seats);
     expect(findSeat(back, 1)?.label).toBe("Grace");
-    expect(findSeat(back, 4)?.present).toBe(false);
   });
 
   it("restores a previous seat label without the no-op rule", () => {
-    expect(findSeat(restoreSeatLabel(table(), 0, "", later), 0)?.label).toBe(
-      "",
-    );
+    expect(
+      findSeat(restoreSeatLabel(table(), 0, "", plan(), later), 0)?.label,
+    ).toBe("");
   });
 
-  it("restores a chair, and refuses when its cell has been taken", () => {
-    const trimmed = removeSeat(table(), 2, later);
-    expect(
-      findSeat(restoreSeatPresence(trimmed, 2, true, plan(), later), 2)
-        ?.present,
-    ).toBe(true);
-
-    const cell = layoutOf(trimmed).seats[2]!;
-    const squatter = table({
+  it("refuses to restore a name into a chair a neighbour is now standing in", () => {
+    const left = table({ size: 3, endSeats: true, gridX: 0, gridY: 0 });
+    const right = table({
       id: "tbl_2",
-      size: 1,
-      gridX: trimmed.gridX + cell.x,
-      gridY: trimmed.gridY + cell.y,
+      size: 3,
+      endSeats: true,
+      gridX: 3,
+      gridY: 0,
     });
     expect(() =>
-      restoreSeatPresence(trimmed, 2, true, plan([squatter]), later),
-    ).toThrow("Tables may not overlap");
-    // Taking one away never needs space, so it is never refused.
+      restoreSeatLabel(left, 3, "Ada Lovelace", plan([right]), later),
+    ).toThrow("There is no chair there");
+    // Restoring an *empty* label gives space up rather than asking for it, so
+    // it is always allowed.
     expect(
-      findSeat(
-        restoreSeatPresence(table(), 2, false, plan([squatter]), later),
-        2,
-      )?.present,
-    ).toBe(false);
+      findSeat(restoreSeatLabel(left, 3, "", plan([right]), later), 3)?.label,
+    ).toBe("");
   });
 
   it("puts a removed table back only while its space is free", () => {
