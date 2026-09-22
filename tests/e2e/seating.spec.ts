@@ -11,6 +11,7 @@ import {
   EVENT_GALA_ID,
   EVENT_GALA_NAME,
   SEAT_LABEL_ADA,
+  SEAT_LABEL_GRACE,
   TABLE_HEAD_ID,
   TABLE_HEAD_NAME,
   TABLE_SIDE_ID,
@@ -409,4 +410,137 @@ test("an empty plan offers a layout, and a filled one does not", async ({
   ).toBeVisible();
   // The gala already has tables on it.
   await expect(main.getByTestId("lay-out-event")).toHaveCount(0);
+});
+
+/** The centre of one seat chip, which is both a drag handle and a control. */
+async function seatCentre(
+  page: import("@playwright/test").Page,
+  tableId: string,
+  seat: number,
+) {
+  const box = await page.getByTestId(`seat-${tableId}-${seat}`).boundingBox();
+  if (!box) throw new Error(`no bounding box for seat ${seat} of ${tableId}`);
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+/** A real pointer drag from one seat to another, with an intermediate move so
+ * `pointermove` actually fires. */
+async function dragSeat(
+  page: import("@playwright/test").Page,
+  from: { x: number; y: number },
+  to: { x: number; y: number },
+) {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2);
+  await page.mouse.move(to.x, to.y);
+  await page.mouse.up();
+}
+
+test("dragging a name onto a taken seat swaps the two", async ({
+  memberPage,
+}) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  // Seat 0 is Ada's and seat 1 is Grace's, both on the head table.
+  const ada = memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`);
+  const grace = memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-1`);
+  await expect(ada).toHaveText(SEAT_LABEL_ADA);
+  await expect(grace).toHaveText(SEAT_LABEL_GRACE);
+
+  await dragSeat(
+    memberPage,
+    await seatCentre(memberPage, TABLE_HEAD_ID, 0),
+    await seatCentre(memberPage, TABLE_HEAD_ID, 1),
+  );
+
+  await expect(memberPage.getByText("Seat moved")).toBeVisible();
+  await expect(ada).toHaveText(SEAT_LABEL_GRACE);
+  await expect(grace).toHaveText(SEAT_LABEL_ADA);
+
+  await memberPage.reload();
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-1`)).toHaveText(
+    SEAT_LABEL_ADA,
+  );
+});
+
+test("a name can be dragged to a seat at another table, and undone from the toast", async ({
+  memberPage,
+}) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  await dragSeat(
+    memberPage,
+    await seatCentre(memberPage, TABLE_HEAD_ID, 0),
+    await seatCentre(memberPage, TABLE_SIDE_ID, 0),
+  );
+
+  await expect(memberPage.getByText("Seat moved")).toBeVisible();
+  await expect(memberPage.getByTestId(`seat-${TABLE_SIDE_ID}-0`)).toHaveText(
+    SEAT_LABEL_ADA,
+  );
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`)).toHaveText(
+    "+",
+  );
+
+  // One operation and one Undo, for a change that touched two tables.
+  await memberPage.getByRole("button", { name: "Undo" }).click();
+  await expect(memberPage.getByText("Change undone")).toBeVisible();
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`)).toHaveText(
+    SEAT_LABEL_ADA,
+  );
+  await expect(memberPage.getByTestId(`seat-${TABLE_SIDE_ID}-0`)).toHaveText(
+    "+",
+  );
+});
+
+test("a name can be moved with the keyboard alone", async ({ memberPage }) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  // Space picks a name up; Enter is still "select this seat", which is how a
+  // name is written in the first place.
+  await memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`).focus();
+  await memberPage.keyboard.press(" ");
+  await expect(
+    memberPage.locator("main").getByText(/Escape to cancel/),
+  ).toBeVisible();
+
+  await memberPage.getByTestId(`seat-${TABLE_SIDE_ID}-2`).focus();
+  await memberPage.keyboard.press("Enter");
+
+  await expect(memberPage.getByText("Seat moved")).toBeVisible();
+  await expect(memberPage.getByTestId(`seat-${TABLE_SIDE_ID}-2`)).toHaveText(
+    SEAT_LABEL_ADA,
+  );
+});
+
+test("a keyboard pick-up can be cancelled with Escape", async ({
+  memberPage,
+}) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  await memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`).focus();
+  await memberPage.keyboard.press(" ");
+  await memberPage.keyboard.press("Escape");
+  await expect(
+    memberPage.locator("main").getByText("Move cancelled."),
+  ).toBeVisible();
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`)).toHaveText(
+    SEAT_LABEL_ADA,
+  );
+});
+
+test("Enter on a seat still opens the panel, so a name can be typed without a mouse", async ({
+  memberPage,
+}) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  // An empty chair of the side table: nothing to carry, so Enter selects it.
+  await memberPage.getByTestId(`seat-${TABLE_SIDE_ID}-0`).focus();
+  await memberPage.keyboard.press("Enter");
+
+  const field = memberPage.getByRole("textbox", { name: /^Seat 1, / });
+  await expect(field).toBeVisible();
+  await field.fill("Katherine Johnson");
+  await field.press("Enter");
+
+  await expect(memberPage.getByText("Seat updated")).toBeVisible();
+  await expect(memberPage.getByTestId(`seat-${TABLE_SIDE_ID}-0`)).toHaveText(
+    "Katherine Johnson",
+  );
 });

@@ -34,6 +34,7 @@ import {
   resizeRoom,
   archiveSeatingTable,
   labelSeat,
+  moveSeatLabel,
   moveSeatingTable,
   reshapeSeatingTable,
   rotateSeatingTable,
@@ -46,6 +47,7 @@ import { mayRedo, requireHistoryPermission } from "../history-policy";
 import type { Dependencies } from "../ports";
 import { applyDomain, isCompensated, type UndoRedoResult } from "./command";
 import { loadFloorPlan } from "./floor-plan";
+import { otherTableGuard, seatMoveTargets } from "./move-seat";
 
 const ACTION = "redo-operation";
 
@@ -235,6 +237,17 @@ function reapplySeatingTableForward(
         plan,
         now,
       );
+    case "move-seat": {
+      // Only a move within one table gets here; one across two is routed to
+      // `redoSeatMove`, which has the second table to hand.
+      const targets = seatMoveTargets(forward.payload);
+      return moveSeatLabel(
+        { table, seat: targets.fromSeat },
+        { table, seat: targets.toSeat },
+        plan,
+        now,
+      ).target;
+    }
     case "rotate-seating-table":
       return rotateSeatingTable(table, plan, now);
     case "archive-seating-table":
@@ -259,6 +272,9 @@ function redoOperationRow(input: {
   resourceId: string;
   versionBefore: number;
   versionAfter: number;
+  /** Usually nothing; see `undoOperationRow`. A cross-table seat move carries
+   * the second table's guard forward so a further undo can check it. */
+  payload?: Record<string, unknown>;
   now: string;
 }): Operation {
   return {
@@ -273,7 +289,7 @@ function redoOperationRow(input: {
     versionAfter: input.versionAfter,
     // Nothing to replay from here: the arguments a further redo would need
     // stay on the forward operation, the same way an undo row's do.
-    payload: {},
+    payload: input.payload ?? {},
     inverse: input.forward.inverse,
     relatedOperationId: input.undoOp.id,
     undoneByOperationId: null,
@@ -341,6 +357,11 @@ export async function redoOperation(
     assertUnchanged(undoOp, table.version);
     const forward = await loadForwardOperation(deps, actor, undoOp);
 
+    // `loadForwardOperation` has already checked the permission.
+    if (forward.action === "move-seat" && otherTableGuard(forward.payload)) {
+      return redoSeatMove(deps, actor, undoOp, forward, table);
+    }
+
     const { plan } = await loadFloorPlan(deps, actor.orgId, table.eventId);
     const now = deps.clock.now();
     const next = applyDomain(() =>
@@ -371,4 +392,101 @@ export async function redoOperation(
       resourceType: "seating_table",
     };
   }
+}
+
+/**
+ * Redoing a seat move that crossed two tables.
+ *
+ * `reapplySeatingTableForward` cannot do this one: it is a pure function over
+ * one table, and this needs a second read and a two-row write. Which is the
+ * same reason `undoSeatMove` exists, and it is the mirror of it.
+ *
+ * The second table's guard is read from the **undo** row rather than the
+ * forward one. The undo is the write that put that table where it now stands,
+ * so its `versionAfter` is what "unchanged since" means here — the forward
+ * row's is one version out of date by definition.
+ *
+ * The forward domain function is re-run rather than a restore twin, which is
+ * the stance every other redo takes: after the undo the name is back on the
+ * seat it started from, so none of the forward refusals are in the way.
+ */
+async function redoSeatMove(
+  deps: Dependencies,
+  actor: Actor,
+  undoOp: Operation,
+  forward: Operation,
+  resourceTable: SeatingTable,
+): Promise<UndoRedoResult> {
+  const guard = otherTableGuard(undoOp.payload);
+  const targets = seatMoveTargets(forward.payload);
+  const otherId =
+    targets.fromTableId === resourceTable.id
+      ? targets.toTableId
+      : targets.fromTableId;
+  if (!guard || guard.tableId !== otherId) {
+    throw new AppError("INTERNAL", "Unexpected error");
+  }
+
+  const other = await deps.seatingTables.getById(actor.orgId, otherId);
+  if (!other) throw new AppError("NOT_FOUND", "Table not found");
+  if (other.version !== guard.versionAfter) {
+    throw new AppError("CONFLICT", "Newer changes exist; redo refused");
+  }
+
+  const byId = new Map([
+    [resourceTable.id, resourceTable],
+    [other.id, other],
+  ]);
+  const { plan } = await loadFloorPlan(
+    deps,
+    actor.orgId,
+    resourceTable.eventId,
+  );
+  const now = deps.clock.now();
+  const next = applyDomain(() =>
+    moveSeatLabel(
+      { table: byId.get(targets.fromTableId)!, seat: targets.fromSeat },
+      { table: byId.get(targets.toTableId)!, seat: targets.toSeat },
+      plan,
+      now,
+    ),
+  );
+  const nextResource =
+    targets.fromTableId === resourceTable.id ? next.source : next.target;
+  const nextOther =
+    targets.fromTableId === resourceTable.id ? next.target : next.source;
+
+  const redoOp = redoOperationRow({
+    id: deps.ids.next(),
+    actor,
+    undoOp,
+    forward,
+    resourceType: "seating_table",
+    resourceId: resourceTable.id,
+    versionBefore: resourceTable.version,
+    versionAfter: nextResource.version,
+    payload: {
+      other: {
+        tableId: other.id,
+        versionBefore: other.version,
+        versionAfter: nextOther.version,
+      },
+    },
+    now,
+  });
+
+  await deps.seatingTables.commitSeatMove({
+    tables: [
+      { table: nextResource, expectedVersion: resourceTable.version },
+      { table: nextOther, expectedVersion: other.version },
+    ],
+    operation: redoOp,
+    markUndone: undoOp.id,
+  });
+
+  return {
+    resource: nextResource,
+    operationId: redoOp.id,
+    resourceType: "seating_table",
+  };
 }

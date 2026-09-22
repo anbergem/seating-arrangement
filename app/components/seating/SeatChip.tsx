@@ -20,20 +20,35 @@
  * native tooltip is positioned by the browser and cannot be clipped.
  *
  * Colour never carries meaning alone: an empty seat is dashed as well as
- * muted. Every colour is a theme token, so both themes are covered by
- * construction.
+ * muted, the name being carried in a drag is faded as well as ringed, and a
+ * seat it cannot land on is outlined as well as tinted. Every colour is a
+ * theme token, so both themes are covered by construction.
+ *
+ * The chip has no `onClick`. A seat is both a drag handle and a control, and
+ * the drag calls `preventDefault` on pointerdown, after which a click may
+ * never arrive — so selecting a seat is a press that did not turn into a drag,
+ * which only `use-seat-drag` is in a position to know.
  */
 
 import { cn } from "@/lib/utils";
 
 export interface SeatChipProps {
+  tableId: string;
+  index: number;
   label: string;
   accessibleName: string;
   column: number;
   row: number;
   selected: boolean;
+  /** This is the name being carried right now. */
+  lifted: boolean;
+  /** The pointer is over this chip while a name is being carried. */
+  dropTarget: boolean;
+  /** …and it could not land here. */
+  invalid: boolean;
   emptyText: string;
-  onSelect: () => void;
+  onPointerDown: (event: React.PointerEvent) => void;
+  onKeyDown: (event: React.KeyboardEvent) => void;
 }
 
 export function SeatChip(props: SeatChipProps) {
@@ -45,18 +60,37 @@ export function SeatChip(props: SeatChipProps) {
     >
       <button
         type="button"
+        // How the pointer finds what it is over: `elementFromPoint` returns a
+        // node, and these turn it back into a seat. A chair that is not drawn
+        // has no element and so cannot be dropped on, which is the answer we
+        // want anyway.
+        data-seat={props.index}
+        data-table-id={props.tableId}
+        data-testid={`seat-${props.tableId}-${props.index}`}
         aria-label={props.accessibleName}
-        aria-pressed={props.selected}
+        aria-pressed={props.selected || props.lifted}
         title={filled ? props.label : props.emptyText}
-        onClick={props.onSelect}
+        // Not `onClick`: the drag calls `preventDefault` on pointerdown, so a
+        // click may never follow. Selecting a seat is a press that did not
+        // become a drag, and the hook decides which it was.
+        onPointerDown={props.onPointerDown}
+        onKeyDown={props.onKeyDown}
         className={cn(
-          "flex h-full w-full min-w-0 items-center justify-center rounded-md border px-1 text-center text-xs font-medium leading-tight transition-colors",
+          "flex h-full w-full min-w-0 touch-none items-center justify-center rounded-md border px-1 text-center text-xs font-medium leading-tight transition-colors",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
           filled
             ? "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80"
             : "border-dashed border-border bg-muted text-muted-foreground hover:bg-muted/70",
-          props.selected &&
+          filled && "cursor-grab",
+          (props.selected || props.lifted) &&
             "ring-2 ring-ring ring-offset-1 ring-offset-background",
+          // Never colour alone: the name being carried is also faded, and a
+          // refused target is outlined as well as tinted.
+          props.lifted && "cursor-grabbing opacity-50",
+          props.dropTarget &&
+            (props.invalid
+              ? "border-destructive bg-destructive/15 text-destructive"
+              : "ring-2 ring-ring ring-offset-1 ring-offset-background"),
         )}
       >
         <span className="line-clamp-2 break-words">

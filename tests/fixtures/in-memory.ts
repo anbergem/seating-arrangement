@@ -305,6 +305,45 @@ function createSeatingTableRepository(
       state.operations.set(operation.id, operation);
       applyMarkUndone(state, markUndone, operation.id);
     },
+    /**
+     * Mirrors `commitSeatMove`: two tables, all or nothing.
+     *
+     * Both tables go into the scratch map *before* either is checked, which is
+     * this file's equivalent of the real batch putting both cell deletes ahead
+     * of either insert. Checking them one at a time against the live map would
+     * refuse a name moving across the seam where two tables meet — the
+     * arriving chair would collide with the leaving chair that is, in the
+     * scratch, already gone. Getting this wrong is how a use-case test and its
+     * integration twin come to disagree about when a move is legal.
+     */
+    commitSeatMove: async ({ tables, operation, markUndone }) => {
+      const hook = state.beforeSeatingTableCommit;
+      state.beforeSeatingTableCommit = undefined;
+      await hook?.();
+      const scratch = new Map(state.seatingTables);
+      for (const { table, expectedVersion } of tables) {
+        const existing = state.seatingTables.get(table.id);
+        if (
+          !existing ||
+          existing.orgId !== table.orgId ||
+          existing.version !== expectedVersion
+        ) {
+          throw new AppError(
+            "CONFLICT",
+            "The record was changed by someone else",
+          );
+        }
+        scratch.set(table.id, table);
+      }
+      for (const { table } of tables) {
+        if (spaceIsTaken({ ...state, seatingTables: scratch }, table)) {
+          throw new AppError("CONFLICT", "That space is already occupied");
+        }
+      }
+      state.seatingTables = scratch;
+      state.operations.set(operation.id, operation);
+      applyMarkUndone(state, markUndone, operation.id);
+    },
     commit: async ({ table, expectedVersion, operation, markUndone }) => {
       const hook = state.beforeSeatingTableCommit;
       state.beforeSeatingTableCommit = undefined;

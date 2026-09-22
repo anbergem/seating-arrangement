@@ -49,6 +49,12 @@ export interface EventRepository {
   }): Promise<void>;
 }
 
+/** A table to write, and the version the caller read it at. */
+export interface VersionedTableWrite {
+  table: SeatingTable;
+  expectedVersion: number;
+}
+
 export interface SeatingTableRepository {
   getById(orgId: string, id: string): Promise<SeatingTable | null>;
   list(
@@ -92,6 +98,26 @@ export interface SeatingTableRepository {
     event: Event;
     expectedVersion: number;
     tables: readonly { table: SeatingTable; expectedVersion: number }[];
+    operation: Operation;
+    markUndone?: string;
+  }): Promise<void>;
+  /**
+   * Both halves of a seat move: two tables, their two cell sets, one audit
+   * row, one batch.
+   *
+   * Spanning two rows is the point. A name that has left one chair and not
+   * arrived at the other is not a state the floor plan has, and `commit`
+   * writes one table — two calls would be two chances to stop halfway.
+   *
+   * Each table carries its own version guard; the audit row hangs off
+   * whichever of the two `operation.resourceId` names. A move within one table
+   * does not come here at all: it is one row, so it is an ordinary `commit`.
+   *
+   * Throws `AppError("CONFLICT", …)` when either version moved on, and the
+   * same when a cell was taken between the caller's read and this write.
+   */
+  commitSeatMove(input: {
+    tables: readonly [VersionedTableWrite, VersionedTableWrite];
     operation: Operation;
     markUndone?: string;
   }): Promise<void>;

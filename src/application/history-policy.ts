@@ -9,6 +9,7 @@ const FORWARD_CAPABILITIES: Readonly<Record<string, Capability>> = {
   "move-seating-table": "seating:write",
   "reshape-seating-table": "seating:write",
   "label-seat": "seating:write",
+  "move-seat": "seating:write",
   "archive-seating-table": "seating:write",
 };
 
@@ -38,6 +39,7 @@ export function mayUndo(actor: Actor, operation: Operation): boolean {
     case "restore-seating-table-rotation":
     case "restore-seating-table-shape":
     case "restore-seat-label":
+    case "restore-seat-placement":
     case "restore-seating-table":
     case "archive-seating-table":
       // Everyone who may change a floor plan may reverse a change to it:

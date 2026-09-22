@@ -25,6 +25,7 @@ const INITIAL_TOOL_NAMES = [
   "rotate-seating-table",
   "reshape-seating-table",
   "label-seat",
+  "move-seat",
   "archive-seating-table",
   "archive-event",
   "undo-operation",

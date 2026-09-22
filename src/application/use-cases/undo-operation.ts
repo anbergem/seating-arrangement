@@ -45,6 +45,7 @@ import {
   restoreSeatingTableRotation,
   restoreSeatingTableShape,
   restoreSeatLabel,
+  restoreSeatPlacement,
 } from "../../domain";
 import type { Actor } from "../actor";
 import { requireCapability } from "../authorization";
@@ -53,6 +54,7 @@ import { mayUndo, requireHistoryPermission } from "../history-policy";
 import type { Dependencies } from "../ports";
 import { applyDomain, type UndoRedoResult } from "./command";
 import { loadFloorPlan } from "./floor-plan";
+import { otherTableGuard } from "./move-seat";
 
 const ACTION = "undo-operation";
 
@@ -143,6 +145,17 @@ function applySeatingTableInverse(
         plan,
         now,
       );
+    case "restore-seat-placement":
+      // Only a move within one table gets here; one across two is routed to
+      // `undoSeatMove` before this, because it needs a second read and a
+      // two-row write. Two table ids arriving here is a corrupt row.
+      if (inverse.from.tableId !== inverse.to.tableId) throw inverseMismatch();
+      return restoreSeatPlacement(
+        { table, seat: inverse.from.seat, label: inverse.from.label },
+        { table, seat: inverse.to.seat, label: inverse.to.label },
+        plan,
+        now,
+      ).target;
     case "restore-seating-table":
       return restoreSeatingTable(table, plan, now);
     case "archive-seating-table":
@@ -164,6 +177,11 @@ function undoOperationRow(input: {
   resourceId: string;
   versionBefore: number;
   versionAfter: number;
+  /** Usually nothing — an undo is never undone and redo reads what to replay
+   * from the forward row. A cross-table seat move is the exception: its second
+   * row's version guard has to survive to the redo, and the redo reads it from
+   * *this* row, since this is the write that left that table where it is. */
+  payload?: Record<string, unknown>;
   now: string;
 }): Operation {
   return {
@@ -176,7 +194,7 @@ function undoOperationRow(input: {
     classification: "reversible",
     versionBefore: input.versionBefore,
     versionAfter: input.versionAfter,
-    payload: {},
+    payload: input.payload ?? {},
     inverse: null,
     relatedOperationId: input.undone.id,
     undoneByOperationId: null,
@@ -248,6 +266,13 @@ export async function undoOperation(
     if (!table) throw new AppError("NOT_FOUND", "Table not found");
     assertUndoable(op, table.version);
     requireHistoryPermission(mayUndo(actor, op));
+
+    if (
+      op.inverse?.type === "restore-seat-placement" &&
+      op.inverse.from.tableId !== op.inverse.to.tableId
+    ) {
+      return undoSeatMove(deps, actor, op, table, op.inverse);
+    }
 
     const { plan } = await loadFloorPlan(deps, actor.orgId, table.eventId);
     const now = deps.clock.now();
@@ -345,4 +370,105 @@ async function undoBootstrap(
   });
 
   return { resource: restored, operationId: undoOp.id, resourceType: "event" };
+}
+
+/**
+ * Undoing a seat move that crossed two tables.
+ *
+ * Its own function for the same reason `undoBootstrap` is: the write is not
+ * one record changing state. Two rows change, so it needs the repository
+ * method that writes both at once, and a second read to have something to
+ * write.
+ *
+ * It also needs a **second version guard**. `canUndo` compared the resource
+ * table against `versionAfter`, which is the whole protection an ordinary undo
+ * has — but the other table is equally part of what this operation did, and
+ * nothing has checked it. `payload.other` is where the forward command left
+ * that table's version, and refusing here is what stops an undo from quietly
+ * discarding a change somebody made to the source table in the meantime.
+ */
+async function undoSeatMove(
+  deps: Dependencies,
+  actor: Actor,
+  op: Operation,
+  resourceTable: SeatingTable,
+  inverse: Extract<InverseCommand, { type: "restore-seat-placement" }>,
+): Promise<UndoRedoResult> {
+  const guard = otherTableGuard(op.payload);
+  const otherId =
+    inverse.from.tableId === resourceTable.id
+      ? inverse.to.tableId
+      : inverse.from.tableId;
+  // A cross-table inverse with no recorded guard, or one naming a third
+  // table, is a corrupt row rather than anything a caller did.
+  if (!guard || guard.tableId !== otherId) throw inverseMismatch();
+
+  const other = await deps.seatingTables.getById(actor.orgId, otherId);
+  if (!other) throw new AppError("NOT_FOUND", "Table not found");
+  if (other.version !== guard.versionAfter) {
+    throw new AppError("CONFLICT", "Newer changes exist; undo refused");
+  }
+
+  const byId = new Map([
+    [resourceTable.id, resourceTable],
+    [other.id, other],
+  ]);
+  const at = (side: { tableId: string; seat: number; label: string }) => ({
+    table: byId.get(side.tableId)!,
+    seat: side.seat,
+    label: side.label,
+  });
+
+  const { plan } = await loadFloorPlan(
+    deps,
+    actor.orgId,
+    resourceTable.eventId,
+  );
+  const now = deps.clock.now();
+  const restored = applyDomain(() =>
+    restoreSeatPlacement(at(inverse.from), at(inverse.to), plan, now),
+  );
+  // `restoreSeatPlacement` returns the pair in the inverse's own from/to
+  // order, which need not be the order of this row's resource.
+  const restoredResource =
+    inverse.from.tableId === resourceTable.id
+      ? restored.source
+      : restored.target;
+  const restoredOther =
+    inverse.from.tableId === resourceTable.id
+      ? restored.target
+      : restored.source;
+
+  const undoOp = undoOperationRow({
+    id: deps.ids.next(),
+    actor,
+    undone: op,
+    resourceType: "seating_table",
+    resourceId: resourceTable.id,
+    versionBefore: resourceTable.version,
+    versionAfter: restoredResource.version,
+    payload: {
+      other: {
+        tableId: other.id,
+        versionBefore: other.version,
+        versionAfter: restoredOther.version,
+      },
+    },
+    now,
+  });
+
+  await deps.seatingTables.commitSeatMove({
+    tables: [
+      { table: restoredResource, expectedVersion: resourceTable.version },
+      { table: restoredOther, expectedVersion: other.version },
+    ],
+    operation: undoOp,
+    markUndone: op.id,
+  });
+
+  return {
+    resource: restoredResource,
+    operationId: undoOp.id,
+    resourceType: "seating_table",
+  };
 }

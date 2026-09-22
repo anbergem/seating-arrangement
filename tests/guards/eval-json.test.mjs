@@ -61,7 +61,7 @@ test("a model-backed --json run writes only JSON to stdout", () => {
     `stdout is not a single JSON document:\n${result.stdout.slice(0, 400)}`,
   );
 
-  assert.equal(report.report.total, 5, "all five evals ran");
+  assert.equal(report.report.total, 6, "all six evals ran");
   assert.equal(report.report.skipped, 0, "RUN_MODEL_EVALS=1 skips nothing");
 
   // The preparation output still has to be visible, just on the other stream.
@@ -91,7 +91,7 @@ test("--out writes the report itself, past any wrapper's epilogue", async (t) =>
   const result = runModelEvals(["--", `--out=${target}`]);
 
   const report = JSON.parse(readFileSync(target, "utf8"));
-  assert.equal(report.report.total, 5);
+  assert.equal(report.report.total, 6);
   assert.notEqual(result.status, 0, "a failing run still gates the caller");
   assert.match(result.stderr, /eval report written to/);
   // The separator `pnpm eval --` passes through must not be read as a filename

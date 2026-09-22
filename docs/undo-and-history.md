@@ -87,6 +87,7 @@ Full inverse table:
 | `resize-room` | `{ type: "restore-room-size", previous: { width, height } }` | The floor's previous size, if nothing has been put in the space since |
 | `bootstrap-event-layout` | `{ type: "undo-bootstrap", tableIds, previousRoom }` | Archives every table the layout placed **and** puts the room back — one compensation for a write that spanned both |
 | `label-seat` | `{ type: "restore-seat-label", seat, previousLabel }` | The name that was on that seat |
+| `move-seat` | `{ type: "restore-seat-placement", from: { tableId, seat, label }, to: { tableId, seat, label } }` | The name each of the two seats had. Recorded labels rather than "swap it back": somebody may have written a different name on one of them since, and swapping again would carry *theirs* to the other seat |
 | `archive-seating-table` | `{ type: "restore-seating-table" }` | Puts the table back where it stood |
 
 `restore-seating-table-shape` records the whole `seats` array, not just the `kind` and `size`
@@ -100,8 +101,10 @@ who were sitting in them.
 put a table back into *space*, and the space may have been taken while it was away. Those
 restores re-run the placement rules in `src/domain/seating-table.ts` and their writes carry the
 same free-space predicate a forward move does, so an undo that would produce an overlapping plan
-is refused with `INVARIANT: Tables may not overlap`. `restore-seat-label` has no such problem: a
-name is not a place, and nobody else can be holding it.
+is refused with `INVARIANT: Tables may not overlap`. `restore-seat-label` and
+`restore-seat-placement` can fail for the same reason, less obviously: a name is what makes a
+chair claim its cell, so a chair standing empty since the name left it may have had a table
+pushed into it.
 
 ## The `operations` row
 
@@ -124,9 +127,17 @@ operations (
 ```
 
 An undo is itself a row (`kind: "undo"`), which is what makes it visible in `/activity` and
-what makes redo possible. It carries `inverse: null` and `payload: {}`: an undo is never
-undone — `canUndo` refuses it — and redo reads what to replay from the forward operation it
-points at through `related_operation_id`.
+what makes redo possible. It carries `inverse: null` and, with one exception, `payload: {}`: an
+undo is never undone — `canUndo` refuses it — and redo reads what to replay from the forward
+operation it points at through `related_operation_id`.
+
+The exception is `move-seat` across two tables, and it is the one place `payload` carries
+something other than arguments. `version_before` and `version_after` speak for the one resource
+the row names, and a move across tables changed a second one; that table's versions therefore
+ride in `payload.other` as `{ tableId, versionBefore, versionAfter }`. Undo reads it off the
+forward row before it writes, and redo off the undo row — each time from the write that left
+that table where it now stands. Without it, undoing a move would write over the second table
+blind, and a change somebody else made to it would vanish without a word.
 
 A redo row (`kind: "redo"`) *does* carry an inverse: the forward operation's own. That is
 deliberate, because a redo may be undone again, and that is the inverse such an undo must
@@ -148,17 +159,26 @@ apply.
    - `resource.version === op.version_after`.
 4. Check the caller's permission for the effect the inverse has
    (`src/application/history-policy.ts`, below).
-5. For a seating inverse, load the event's other active tables too: three of the five put the
-   table back into space, and the placement rules need to see what is standing there now.
+5. For a seating inverse, load the event's other active tables too: most of them put something
+   back into space, and the placement rules need to see what is standing there now. A
+   `restore-seat-placement` across two tables loads the second table as well, and refuses with
+   `CONFLICT` unless it is still at the version in `payload.other` — step 3 can only check the
+   one table the row names.
 6. Apply `op.inverse` through the domain: `restore-seating-table-position` →
    `restoreSeatingTablePosition`; `restore-seating-table-shape` → `restoreSeatingTableShape`;
    `restore-seat-label` → `restoreSeatLabel` (which skips the "already has that label" rule,
-   because restoring a recorded fact is not a new decision); `restore-seating-table` →
+   because restoring a recorded fact is not a new decision); `restore-seat-placement` →
+   `restoreSeatPlacement`, which skips the forward rules for the same reason;
+   `restore-seating-table` →
    `restoreSeatingTable`; `archive-seating-table` → `archiveSeatingTable`; and, for an event,
    `restore-event` → `restoreEvent`; `archive-event` → `archiveEvent`.
 7. Commit **one atomic batch** containing three statements, all guarded: insert the undo
    operation, update the resource, and set `undone_by_operation_id` on the operation being
-   undone. Any guard failing makes the whole batch a no-op.
+   undone. Any guard failing makes the whole batch a no-op. Undoing a two-table seat move
+   writes both tables and both cell sets in that same batch, through `commitSeatMove` — there,
+   the audit row is the only statement that checks a version, and everything else asks whether
+   it landed, because two independent version guards in one batch is a partial write waiting to
+   happen.
 8. Return `{ resource, operationId: <the undo row>, resourceType }`.
 
 Step 7 is where the safety actually lives. The version is checked twice — in step 3 against

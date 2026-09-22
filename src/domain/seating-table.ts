@@ -183,6 +183,23 @@ export interface FloorPlan {
   tables: readonly SeatingTable[];
 }
 
+/** One seat of one table: the pair every seat-to-seat move is written in
+ * terms of. */
+export interface SeatRef {
+  table: SeatingTable;
+  seat: number;
+}
+
+/** The two tables a seat move leaves behind.
+ *
+ * When both seats are on one table these are the **same object**: one table
+ * changed, so there is one new version and one row to write. A caller that
+ * wrote both would write it twice. */
+export interface MovedSeats {
+  source: SeatingTable;
+  target: SeatingTable;
+}
+
 export interface NewSeatingTableInput {
   id: string;
   orgId: string;
@@ -471,6 +488,84 @@ export function availableSeatCount(
   return table.seats.length - blockedSeats(table, plan).size;
 }
 
+/**
+ * The plan with each of `changed` standing in for the table of the same id.
+ *
+ * In place, never appended: `blockedSeats` resolves two empty chairs
+ * contending for one cell by creation order, so moving a table to the end of
+ * the list would quietly hand its chair to a neighbour. A table the plan does
+ * not have is appended, which treats it as the newest — the same courtesy
+ * `blockedSeats` extends to a table that is not on the plan at all.
+ */
+export function planWith(
+  plan: FloorPlan,
+  changed: readonly SeatingTable[],
+): FloorPlan {
+  const byId = new Map(changed.map((table) => [table.id, table]));
+  const tables = plan.tables.map((table) => byId.get(table.id) ?? table);
+  const known = new Set(plan.tables.map((table) => table.id));
+  return {
+    room: plan.room,
+    tables: [...tables, ...changed.filter((table) => !known.has(table.id))],
+  };
+}
+
+/**
+ * Whether both seats would have a chair once the two names had been exchanged.
+ *
+ * Checked against the plan **as it will be**, not as it is, and that is the
+ * whole of the subtlety. A filled chair claims its cell and an empty one
+ * claims nothing, so emptying the seat a name is leaving can free the very
+ * cell the seat it is going to needs: two tables pushed together share the
+ * cells where they meet, and `blockedSeats(target, plan)` will report the
+ * target's chair blocked by the *source's own* filled chair. Asking the
+ * current plan — or, which comes to the same thing, writing the move as two
+ * `labelSeat` calls — refuses a move that is perfectly legal.
+ *
+ * Only the two seats in the move are checked, and only when they end up with a
+ * name on them. Clearing a seat can newly block *another* table's empty chair,
+ * but never a chair with somebody in it: two filled chairs can never share a
+ * cell, because `seating_cells` would not have them.
+ *
+ * A swap claims exactly the cells it releases — both seats are filled before
+ * and after — so it is refused only where one of the two chairs was already
+ * standing in space it did not have.
+ */
+export function seatMoveFits(
+  from: SeatRef,
+  to: SeatRef,
+  plan: FloorPlan,
+): boolean {
+  return placementFits(
+    from,
+    to,
+    {
+      from: to.table.seats[to.seat]?.label ?? "",
+      to: from.table.seats[from.seat]?.label ?? "",
+    },
+    plan,
+  );
+}
+
+/** The shared half of the check: would these two seats still have chairs, once
+ * `labels` were on them? An undo writes labels that are not simply the two
+ * current ones swapped, so what is checked has to be the labels actually being
+ * written. */
+function placementFits(
+  from: SeatRef,
+  to: SeatRef,
+  labels: { from: string; to: string },
+  plan: FloorPlan,
+): boolean {
+  const next = exchanged(from, to, labels);
+  const changed =
+    next.source === next.target ? [next.source] : [next.source, next.target];
+  const after = planWith(plan, changed);
+  const has = (table: SeatingTable, index: number) =>
+    !table.seats[index]?.label || !blockedSeats(table, after).has(index);
+  return has(next.target, to.seat) && has(next.source, from.seat);
+}
+
 export function isWithinRoom(
   shape: TableShape,
   gridX: number,
@@ -627,6 +722,61 @@ function withSeat(
   return seats.map((seat, at) =>
     at === index ? { ...seat, ...change } : seat,
   );
+}
+
+/**
+ * The two tables with `labels` written on the two seats: no rules, no version
+ * bump, no `updatedAt`. The one place an exchange is written, so the check
+ * (`seatMoveFits`), the move and the undo can never disagree about what the
+ * result would be.
+ *
+ * Both labels are read by the caller *before* either is written, which is what
+ * makes a same-table swap a swap rather than one name twice.
+ *
+ * Tables are matched by id, not by reference: a caller may legitimately hold
+ * two copies of one table.
+ */
+function exchanged(
+  from: SeatRef,
+  to: SeatRef,
+  labels: { from: string; to: string },
+): MovedSeats {
+  if (from.table.id === to.table.id) {
+    // One array, so one object — and so one version bump and one row.
+    const seats = withSeat(
+      withSeat(from.table.seats, from.seat, { label: labels.from }),
+      to.seat,
+      { label: labels.to },
+    );
+    const table = { ...from.table, seats };
+    return { source: table, target: table };
+  }
+  return {
+    source: {
+      ...from.table,
+      seats: withSeat(from.table.seats, from.seat, { label: labels.from }),
+    },
+    target: {
+      ...to.table,
+      seats: withSeat(to.table.seats, to.seat, { label: labels.to }),
+    },
+  };
+}
+
+/** Stamps whichever tables actually changed. `exchanged` is the only producer
+ * of a `MovedSeats`, so reference equality is the reliable test for "these are
+ * one table". */
+function stamped(next: MovedSeats, now: string): MovedSeats {
+  const bump = (table: SeatingTable): SeatingTable => ({
+    ...table,
+    version: table.version + 1,
+    updatedAt: now,
+  });
+  const source = bump(next.source);
+  return {
+    source,
+    target: next.source === next.target ? source : bump(next.target),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +962,70 @@ export function labelSeat(
   };
 }
 
+/**
+ * Moves the name on one seat to another seat, at the same table or another
+ * table at the same event.
+ *
+ * A seat that already has a name **swaps** with it: nothing is ever
+ * overwritten, only relocated. Moving onto an empty seat is the same operation
+ * with an empty label coming back the other way, which is why there is one
+ * function here and not two.
+ *
+ * It is the label that moves, never the seat — a seat is derived from its
+ * table's shape and has nowhere to go.
+ *
+ * Both seats must be at the same event, because a floor plan is an event's and
+ * the two cells are only comparable within one.
+ */
+export function moveSeatLabel(
+  from: SeatRef,
+  to: SeatRef,
+  plan: FloorPlan,
+  now: string,
+): MovedSeats {
+  const sameTable = from.table.id === to.table.id;
+  if (from.table.orgId !== to.table.orgId) {
+    throw new DomainError(
+      "VALIDATION",
+      "Both seats must belong to the same organization",
+    );
+  }
+  if (from.table.eventId !== to.table.eventId) {
+    throw new DomainError("VALIDATION", "Both seats must be at the same event");
+  }
+  assertActive(from.table, "move a name from");
+  if (!sameTable) assertActive(to.table, "move a name to");
+
+  const source = requireSeat(from.table, from.seat);
+  const target = requireSeat(to.table, to.seat);
+
+  if (sameTable && from.seat === to.seat) {
+    throw new DomainError("INVARIANT", "The name is already on that seat");
+  }
+  if (source.label === "") {
+    throw new DomainError("INVARIANT", "There is nobody on that seat");
+  }
+  // Two seats with the same name on them would exchange nothing, and a write
+  // that changes nothing still costs a version, an audit row and an entry in
+  // somebody's undo history. `labelSeat` refuses the same thing.
+  if (source.label === target.label) {
+    throw new DomainError("INVARIANT", "Both seats already have that name");
+  }
+  if (!seatMoveFits(from, to, plan)) {
+    throw new DomainError(
+      "INVARIANT",
+      "There is no chair there: another table is standing in that space",
+    );
+  }
+
+  // Labels are normalized when they are written, so the stored ones need no
+  // second pass.
+  return stamped(
+    exchanged(from, to, { from: target.label, to: source.label }),
+    now,
+  );
+}
+
 export function archiveSeatingTable(
   table: SeatingTable,
   now: string,
@@ -932,6 +1146,46 @@ export function restoreSeatLabel(
     version: table.version + 1,
     updatedAt: now,
   };
+}
+
+/**
+ * Undoing a `move-seat`: puts the recorded name back on each of the two seats.
+ *
+ * It skips the forward rules that are about *wanting* the move — an empty
+ * source, the same seat, the same name — because restoring a recorded fact is
+ * not a new decision. It cannot skip the space rule: a name is what claims a
+ * cell, and the chair may have been taken while the name was elsewhere.
+ *
+ * Deliberately not "run the swap again in the other direction", even though a
+ * swap is its own inverse. If somebody wrote a different name on the target
+ * seat in the meantime, a swap back would carry *their* name to the source
+ * seat and delete the one that moved. Recorded labels plus the version guards
+ * the caller holds are the only safe form.
+ */
+export function restoreSeatPlacement(
+  from: { table: SeatingTable; seat: number; label: string },
+  to: { table: SeatingTable; seat: number; label: string },
+  plan: FloorPlan,
+  now: string,
+): MovedSeats {
+  requireSeatForRestore(from.table, from.seat);
+  requireSeatForRestore(to.table, to.seat);
+  const refs = {
+    from: { table: from.table, seat: from.seat },
+    to: { table: to.table, seat: to.seat },
+  };
+  if (
+    !placementFits(refs.from, refs.to, { from: from.label, to: to.label }, plan)
+  ) {
+    throw new DomainError(
+      "INVARIANT",
+      "There is no chair there: another table is standing in that space",
+    );
+  }
+  return stamped(
+    exchanged(refs.from, refs.to, { from: from.label, to: to.label }),
+    now,
+  );
 }
 
 /** A recorded inverse naming a seat the table no longer has is a corrupt row,

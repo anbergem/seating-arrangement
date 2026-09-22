@@ -36,6 +36,7 @@ const messages = {
       "create-event": "Opprettet arrangement",
       "create-seating-table": "La til bord",
       "label-seat": "Merket plass",
+      "move-seat": "Flyttet en gjest",
       "move-seating-table": "Flyttet bord",
       "redo-operation": "Gjorde om endring",
       "resize-room": "Endret romstørrelsen",
@@ -60,6 +61,10 @@ const messages = {
   seating: {
     addTable: "Legg til bord",
     announceCancelled: "Flyttingen er avbrutt.",
+    announceSeatMoved: "{{label}} er flyttet til {{place}}.",
+    announceSeatPickedUp:
+      "Bærer {{label}} fra {{place}}. Gå til en annen plass og trykk Enter for å sette dem der, eller Escape for å avbryte.",
+    announceSeatSwapped: "{{label}} og {{other}} har byttet plass.",
     announceMoveStarted:
       "Flytter {{name}}. Bruk piltastene, og trykk Enter for å plassere eller Escape for å avbryte.",
     announceMoved: "{{name}} er plassert i kolonne {{x}}, rad {{y}}.",
@@ -68,7 +73,7 @@ const messages = {
     diameter: "Diameter",
     emptySeat: "Ledig plass",
     endSeats: "Plass i hver ende",
-    hint: "Dra et bord for å flytte det, eller sett markøren på det og trykk Enter for å flytte med piltastene. Velg en plass for å skrive et navn på den.",
+    hint: "Dra et bord for å flytte det, eller sett markøren på det og trykk Enter for å flytte med piltastene. Velg en plass for å skrive et navn på den, og dra et navn til en annen plass for å flytte det — slipper du det på en opptatt plass, bytter de to. Med tastaturet trykker du mellomrom på en plass for å ta opp navnet.",
     labelled: "Plassen er oppdatert",
     layout: "Oppsett",
     layoutApplied: "Bordene er satt opp",
@@ -95,6 +100,7 @@ const messages = {
     rotate: "Snu 90°",
     rotated: "Bordet er snudd",
     seatBlocked: "Ingen stol her: et nabobord står i veien.",
+    seatMoved: "Plassen er flyttet",
     seatEmpty: "{{place}}, ledig",
     seatFilled: "{{place}}, {{label}}",
     seatPlace: "Plass {{number}}, {{table}}",

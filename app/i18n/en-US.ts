@@ -35,6 +35,7 @@ const messages = {
       "create-event": "Created event",
       "create-seating-table": "Added table",
       "label-seat": "Labelled seat",
+      "move-seat": "Moved a guest",
       "move-seating-table": "Moved table",
       "redo-operation": "Redid change",
       "resize-room": "Resized the room",
@@ -59,6 +60,10 @@ const messages = {
   seating: {
     addTable: "Add table",
     announceCancelled: "Move cancelled.",
+    announceSeatMoved: "{{label}} moved to {{place}}.",
+    announceSeatPickedUp:
+      "Carrying {{label}} from {{place}}. Move to another seat and press Enter to place them, or Escape to cancel.",
+    announceSeatSwapped: "{{label}} and {{other}} swapped places.",
     announceMoveStarted:
       "Moving {{name}}. Use the arrow keys, then Enter to place it or Escape to cancel.",
     announceMoved: "{{name}} placed at column {{x}}, row {{y}}.",
@@ -67,7 +72,7 @@ const messages = {
     diameter: "Diameter",
     emptySeat: "Empty seat",
     endSeats: "Seat at each end",
-    hint: "Drag a table to move it, or focus one and press Enter to move it with the arrow keys. Choose a seat to write a name on it.",
+    hint: "Drag a table to move it, or focus one and press Enter to move it with the arrow keys. Choose a seat to write a name on it, and drag a name onto another seat to move it — drop it on a taken seat and the two swap. With the keyboard, press Space on a seat to pick the name up.",
     labelled: "Seat updated",
     layout: "Layout",
     layoutApplied: "Tables laid out",
@@ -94,6 +99,7 @@ const messages = {
     rotate: "Turn 90°",
     rotated: "Table turned",
     seatBlocked: "No chair here: a neighbouring table is in the way.",
+    seatMoved: "Seat moved",
     seatEmpty: "{{place}}, empty",
     seatFilled: "{{place}}, {{label}}",
     seatPlace: "Seat {{number}}, {{table}}",

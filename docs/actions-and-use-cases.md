@@ -231,6 +231,7 @@ Commands:
 | `rotate-seating-table` | `seating:write` | `reversible` | turn it back, and return it to where it stood |
 | `reshape-seating-table` | `seating:write` | `reversible` | restore the recorded form and seat list, labels included |
 | `label-seat` | `seating:write` | `reversible` | restore the name that was there |
+| `move-seat` | `seating:write` | `reversible` | restore the name each of the two seats had |
 | `archive-seating-table` | `seating:write` | `reversible` | put the table back, if its space is still free |
 | `undo-operation` | `history:undo` + the effect's own capability | `reversible` | re-apply, via `redo-operation` |
 | `redo-operation` | `history:undo` + the original command's capability | `reversible` | the forward operation's inverse |

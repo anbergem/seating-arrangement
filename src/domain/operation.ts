@@ -65,6 +65,17 @@ export type InverseCommand =
       previousRoom: Room;
     }
   | { type: "restore-seat-label"; seat: number; previousLabel: string }
+  // Undoing a `move-seat`: the name each of the two seats had before it. The
+  // two seats may be on one table or on two, and `from.tableId !==
+  // to.tableId` is what says which — a move across tables is written to two
+  // rows and needs a second version guard, which rides in the operation's
+  // payload rather than here, because an inverse says what to restore and not
+  // what the writer may assume.
+  | {
+      type: "restore-seat-placement";
+      from: { tableId: string; seat: number; label: string };
+      to: { tableId: string; seat: number; label: string };
+    }
   | { type: "restore-seating-table" }
   | { type: "archive-seating-table" }; // compensation for create-seating-table
 
@@ -82,6 +93,7 @@ export const OPERATION_CLASSIFICATION: Readonly<
   "rotate-seating-table": "reversible",
   "reshape-seating-table": "reversible",
   "label-seat": "reversible",
+  "move-seat": "reversible",
   "archive-seating-table": "reversible",
   "undo-operation": "reversible",
   "redo-operation": "reversible",

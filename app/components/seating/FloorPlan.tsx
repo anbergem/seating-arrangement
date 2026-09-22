@@ -35,6 +35,7 @@ import { useEffect, useRef, useState } from "react";
 
 import type { Room, SeatingTable } from "./geometry";
 import { TableShape } from "./TableShape";
+import type { SeatDrag } from "./use-seat-drag";
 import type { TableDrag } from "./use-table-drag";
 
 const EMPTY: ReadonlySet<number> = new Set<number>();
@@ -98,15 +99,15 @@ export interface FloorPlanProps {
   /** Blocked seats by table id; see `blockedSeats`. */
   blocked: ReadonlyMap<string, ReadonlySet<number>>;
   drag: TableDrag;
+  seatDrag: SeatDrag;
   selectedTableId: string | null;
   selectedSeat: number | null;
   canvasRef: React.RefObject<HTMLDivElement | null>;
-  onSelectSeat: (tableId: string, seat: number) => void;
 }
 
 export function FloorPlan(props: FloorPlanProps) {
   const t = useT();
-  const { drag } = props;
+  const { drag, seatDrag } = props;
   const [wrapper, space] = useAvailableSpace();
   // Before the first measurement there is nothing to fit to; the largest cell
   // is the closest guess and the observer corrects it on the next frame.
@@ -123,9 +124,22 @@ export function FloorPlan(props: FloorPlanProps) {
         data-testid="floor-plan"
         role="group"
         aria-label={t("seating.planLabel")}
-        onPointerMove={drag.onPointerMove}
-        onPointerUp={drag.onPointerUp}
-        onPointerCancel={drag.onPointerUp}
+        // Both gestures are offered every pointer event, and each ignores a
+        // pointer that is not its own — a press is either on a table body or
+        // on a seat chip, never both, so only one of them ever has a session
+        // open for it.
+        onPointerMove={(event) => {
+          drag.onPointerMove(event);
+          seatDrag.onPointerMove(event);
+        }}
+        onPointerUp={(event) => {
+          drag.onPointerUp(event);
+          seatDrag.onPointerUp(event);
+        }}
+        onPointerCancel={(event) => {
+          drag.onPointerUp(event);
+          seatDrag.onPointerUp(event);
+        }}
         // `m-auto` rather than centring on the wrapper: it centres a plan
         // smaller than the space and still scrolls to the top-left corner of
         // one that is bigger, where `place-content: center` would clip it.
@@ -147,6 +161,8 @@ export function FloorPlan(props: FloorPlanProps) {
         {props.tables.map((table) => {
           const at = drag.positionOf(table);
           const active = drag.candidate?.tableId === table.id;
+          const carried = seatDrag.candidate?.from ?? seatDrag.keyboardMoveFor;
+          const over = seatDrag.candidate?.to ?? null;
           return (
             <TableShape
               key={table.id}
@@ -161,9 +177,17 @@ export function FloorPlan(props: FloorPlanProps) {
               selectedSeat={
                 props.selectedTableId === table.id ? props.selectedSeat : null
               }
+              liftedSeat={carried?.tableId === table.id ? carried.seat : null}
+              dropSeat={over?.tableId === table.id ? over.seat : null}
+              dropValid={seatDrag.candidate?.valid ?? false}
               onPointerDown={(event) => drag.onPointerDown(event, table)}
               onKeyDown={(event) => drag.onKeyDown(event, table)}
-              onSelectSeat={(seat) => props.onSelectSeat(table.id, seat)}
+              onSeatPointerDown={(seat, event) =>
+                seatDrag.onPointerDown(event, table, seat)
+              }
+              onSeatKeyDown={(seat, event) =>
+                seatDrag.onKeyDown(event, table, seat)
+              }
             />
           );
         })}

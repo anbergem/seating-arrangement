@@ -28,6 +28,7 @@ import {
   createEvent,
   createSeatingTable,
   labelSeat,
+  moveSeatLabel,
   moveSeatingTable,
   rotateSeatingTable,
   roomOf,
@@ -138,6 +139,17 @@ const runEvent: Event = createEvent({
   now: CREATED_AT,
 });
 
+/** And one more, for the seat moves below: they need two tables standing
+ * chair to chair, which no plan above has the room for. */
+const seamEvent: Event = createEvent({
+  id: "repo_evt_seam",
+  orgId: ORG_ACME_ID,
+  name: "Integration seam",
+  startsAt: STARTS_AT,
+  createdBy: OWNER_EMAIL,
+  now: CREATED_AT,
+});
+
 const otherEvent: Event = createEvent({
   id: "repo_evt_other",
   orgId: ORG_OTHER_ID,
@@ -212,7 +224,13 @@ async function insert(row: SeatingTable): Promise<void> {
 }
 
 beforeAll(async () => {
-  for (const event of [acmeEvent, lShapeEvent, runEvent, otherEvent]) {
+  for (const event of [
+    acmeEvent,
+    lShapeEvent,
+    runEvent,
+    seamEvent,
+    otherEvent,
+  ]) {
     await events.create({
       event,
       operation: operationFor({
@@ -634,5 +652,230 @@ describe("a continuous run", () => {
         }),
       ),
     ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+});
+
+/**
+ * Seat moves, which are the one write that spans two table rows.
+ *
+ * Two length-2 tables standing chair to chair: `upper` at (0,0) has chairs
+ * along y=2 and `lower` at (0,2) has chairs along the same y=2, so (0,2) and
+ * (1,2) are each a chair of either of them. That overlap is the point — it is
+ * what makes the statement ordering inside `commitSeatMove` observable, and a
+ * plan where the two tables never touch would prove nothing.
+ */
+describe("a seat move", () => {
+  // Each test gets its own column of the plan; they all share one event, and
+  // a table left standing by one would be in the next one's way.
+  const seam = (id: string, gridX: number, gridY: number): SeatingTable =>
+    createSeatingTable(
+      {
+        id,
+        orgId: ORG_ACME_ID,
+        eventId: seamEvent.id,
+        name: id,
+        size: 2,
+        endSeats: false,
+        gridX,
+        gridY,
+        createdBy: OWNER_EMAIL,
+        now: CREATED_AT,
+      },
+      { room: roomOf(seamEvent), tables: [] },
+    );
+
+  /** The same table with one name written on it, and the version the write
+   * that put it there would have left. */
+  const named = (
+    row: SeatingTable,
+    index: number,
+    label: string,
+  ): SeatingTable => ({
+    ...row,
+    seats: row.seats.map((seat, at) => (at === index ? { label } : seat)),
+    version: row.version + 1,
+    updatedAt: LATER,
+  });
+
+  async function move(
+    from: { table: SeatingTable; seat: number },
+    to: { table: SeatingTable; seat: number },
+    standing: readonly SeatingTable[],
+  ): Promise<{ source: SeatingTable; target: SeatingTable }> {
+    const moved = moveSeatLabel(
+      from,
+      to,
+      { room: roomOf(seamEvent), tables: standing },
+      LATER,
+    );
+    await tables.commitSeatMove({
+      tables: [
+        { table: moved.source, expectedVersion: from.table.version },
+        { table: moved.target, expectedVersion: to.table.version },
+      ],
+      operation: operationFor({
+        action: "move-seat",
+        resourceType: "seating_table",
+        resourceId: moved.target.id,
+        orgId: ORG_ACME_ID,
+        versionBefore: to.table.version,
+        versionAfter: moved.target.version,
+      }),
+    });
+    return moved;
+  }
+
+  it("writes both rows and both cell ledgers in one batch", async () => {
+    const upper = named(seam("seam_a_up", 0, 0), 0, "Ada");
+    const lower = seam("seam_a_low", 0, 4);
+    await insert(upper);
+    await insert(lower);
+
+    const moved = await move(
+      { table: upper, seat: 0 },
+      { table: lower, seat: 0 },
+      [upper, lower],
+    );
+
+    const storedUpper = await tables.getById(ORG_ACME_ID, upper.id);
+    const storedLower = await tables.getById(ORG_ACME_ID, lower.id);
+    expect(storedUpper?.seats[0]?.label).toBe("");
+    expect(storedLower?.seats[0]?.label).toBe("Ada");
+    expect(await storedCells(upper.id)).toEqual(expectedCells(moved.source));
+    expect(await storedCells(lower.id)).toEqual(expectedCells(moved.target));
+  });
+
+  it("leaves both cell ledgers exactly as they were when two names swap", async () => {
+    const upper = named(seam("seam_b_up", 3, 0), 0, "Ada");
+    const lower = named(seam("seam_b_low", 3, 4), 0, "Grace");
+    await insert(upper);
+    await insert(lower);
+    const before = {
+      upper: await storedCells(upper.id),
+      lower: await storedCells(lower.id),
+    };
+
+    await move({ table: upper, seat: 0 }, { table: lower, seat: 0 }, [
+      upper,
+      lower,
+    ]);
+
+    // Both chairs are filled before and after, so the ledger is rewritten to
+    // itself — four statements that change nothing, and the price of never
+    // working out per seat what moved.
+    expect(await storedCells(upper.id)).toEqual(before.upper);
+    expect(await storedCells(lower.id)).toEqual(before.lower);
+  });
+
+  /**
+   * The ordering test. The name is moving to the very cell it is vacating —
+   * one table's chair becoming the other's — so the arriving insert collides
+   * with the leaving row unless both deletes have already run. Interleave the
+   * statements per table and this fails with "That space is already
+   * occupied".
+   */
+  it("lets one table hand a cell straight to the other", async () => {
+    const upper = seam("seam_c_up", 6, 0);
+    const lower = named(seam("seam_c_low", 6, 2), 0, "Ada");
+    await insert(upper);
+    await insert(lower);
+    // The two chairs are one cell, and while Ada is in it the upper table has
+    // no chair there at all.
+    expect(await storedCells(lower.id)).toContain(cellKey(6, 2));
+
+    await move({ table: lower, seat: 0 }, { table: upper, seat: 3 }, [
+      upper,
+      lower,
+    ]);
+
+    expect((await tables.getById(ORG_ACME_ID, upper.id))?.seats[3]?.label).toBe(
+      "Ada",
+    );
+    expect(await storedCells(upper.id)).toContain(cellKey(6, 2));
+    expect(await storedCells(lower.id)).not.toContain(cellKey(6, 2));
+  });
+
+  it("writes nothing at all when either table's version has moved on", async () => {
+    const upper = named(seam("seam_d_up", 9, 0), 0, "Ada");
+    const lower = seam("seam_d_low", 9, 4);
+    await insert(upper);
+    await insert(lower);
+    const before = {
+      upper: await storedCells(upper.id),
+      lower: await storedCells(lower.id),
+    };
+
+    for (const stale of [
+      { source: upper.version + 1, target: lower.version },
+      { source: upper.version, target: lower.version + 1 },
+    ]) {
+      const moved = moveSeatLabel(
+        { table: upper, seat: 0 },
+        { table: lower, seat: 0 },
+        { room: roomOf(seamEvent), tables: [upper, lower] },
+        LATER,
+      );
+      await expect(
+        tables.commitSeatMove({
+          tables: [
+            { table: moved.source, expectedVersion: stale.source },
+            { table: moved.target, expectedVersion: stale.target },
+          ],
+          operation: operationFor({
+            action: "move-seat",
+            resourceType: "seating_table",
+            resourceId: moved.target.id,
+            orgId: ORG_ACME_ID,
+            versionBefore: stale.target,
+            versionAfter: moved.target.version,
+          }),
+        }),
+      ).rejects.toBeInstanceOf(AppError);
+    }
+
+    // Not one half of it landed, and not the cells either.
+    expect((await tables.getById(ORG_ACME_ID, upper.id))?.seats[0]?.label).toBe(
+      "Ada",
+    );
+    expect((await tables.getById(ORG_ACME_ID, lower.id))?.version).toBe(
+      lower.version,
+    );
+    expect(await storedCells(upper.id)).toEqual(before.upper);
+    expect(await storedCells(lower.id)).toEqual(before.lower);
+  });
+
+  it("refuses a destination cell a third table claimed in between", async () => {
+    const upper = named(seam("seam_e_up", 12, 0), 0, "Ada");
+    const lower = seam("seam_e_low", 12, 2);
+    await insert(upper);
+    await insert(lower);
+    // Computed against a plan in which seat 3 of the lower table is free…
+    const moved = moveSeatLabel(
+      { table: upper, seat: 0 },
+      { table: lower, seat: 3 },
+      { room: roomOf(seamEvent), tables: [upper, lower] },
+      LATER,
+    );
+    // …and committed after somebody has put a table on that very cell.
+    const squatter = seam("seam_e_squat", 12, 3);
+    await insert(squatter);
+    expect(await storedCells(squatter.id)).toContain(cellKey(12, 4));
+
+    await expect(
+      tables.commitSeatMove({
+        tables: [
+          { table: moved.source, expectedVersion: upper.version },
+          { table: moved.target, expectedVersion: lower.version },
+        ],
+        operation: operationFor({
+          action: "move-seat",
+          resourceType: "seating_table",
+          resourceId: moved.target.id,
+          orgId: ORG_ACME_ID,
+          versionBefore: lower.version,
+          versionAfter: moved.target.version,
+        }),
+      }),
+    ).rejects.toMatchObject({ message: "That space is already occupied" });
   });
 });

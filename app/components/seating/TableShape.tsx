@@ -39,9 +39,17 @@ export interface TableShapeProps {
   /** Seats with no chair right now, because a neighbour is standing in the
    * cell. They are not drawn at all — there is nothing there to draw. */
   blocked: ReadonlySet<number>;
+  /** The seat whose name is being carried right now, if it is one of this
+   * table's. */
+  liftedSeat: number | null;
+  /** The seat a carried name is hovering over, if it is one of this
+   * table's. */
+  dropSeat: number | null;
+  dropValid: boolean;
   onPointerDown: (event: React.PointerEvent) => void;
   onKeyDown: (event: React.KeyboardEvent) => void;
-  onSelectSeat: (seat: number) => void;
+  onSeatPointerDown: (seat: number, event: React.PointerEvent) => void;
+  onSeatKeyDown: (seat: number, event: React.KeyboardEvent) => void;
 }
 
 export function TableShape(props: TableShapeProps) {
@@ -124,6 +132,8 @@ export function TableShape(props: TableShapeProps) {
         return (
           <SeatChip
             key={cellKey(cell.x, cell.y)}
+            tableId={table.id}
+            index={index}
             label={seat.label}
             accessibleName={
               seat.label
@@ -134,7 +144,11 @@ export function TableShape(props: TableShapeProps) {
             column={cell.x}
             row={cell.y}
             selected={props.selectedSeat === index}
-            onSelect={() => props.onSelectSeat(index)}
+            lifted={props.liftedSeat === index}
+            dropTarget={props.dropSeat === index}
+            invalid={props.dropSeat === index && !props.dropValid}
+            onPointerDown={(event) => props.onSeatPointerDown(index, event)}
+            onKeyDown={(event) => props.onSeatKeyDown(index, event)}
           />
         );
       })}

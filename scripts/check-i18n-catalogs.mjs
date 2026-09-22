@@ -97,6 +97,7 @@ const dynamicFamilies = {
     "create-event",
     "create-seating-table",
     "label-seat",
+    "move-seat",
     "move-seating-table",
     "redo-operation",
     "reshape-seating-table",

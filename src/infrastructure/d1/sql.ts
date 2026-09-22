@@ -227,3 +227,47 @@ WHERE EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND versi
 export const INSERT_SEATING_CELL_IF_TABLE_EXISTS = `INSERT INTO seating_cells (org_id, event_id, x, y, table_id)
 SELECT ?, ?, ?, ?, ?
 WHERE EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ?)`;
+
+// ---------------------------------------------------------------------------
+// A write across two tables (a seat move, B11)
+//
+// One version guard cannot cover two rows, and two different guards in one
+// batch is exactly the partial write the rule above exists to prevent: a
+// stale version on one table would no-op its half and leave the other half
+// applied.
+//
+// So the **audit row is the interlock**. It goes first and is the one
+// statement that checks the versions — both of them — and every statement
+// after it asks only whether that row is there. A stale writer's audit insert
+// matches nothing, and the rest of the batch matches nothing either.
+//
+// It has to be the audit row rather than "both versions" repeated on every
+// statement, because a version is not stable across a batch: the first update
+// bumps its own table, and the second statement's guard would then be reading
+// a version the batch itself had just changed.
+// ---------------------------------------------------------------------------
+
+/** The two `EXISTS` clauses that make a two-table write all-or-nothing. */
+const BOTH_SEATING_TABLE_VERSIONS = `EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND version = ?)
+  AND EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND version = ?)`;
+
+/** Whether the batch's own audit row landed — which it did only if both
+ * versions matched. */
+const OPERATION_WRITTEN = `EXISTS (SELECT 1 FROM operations WHERE org_id = ? AND id = ?)`;
+
+export const INSERT_OPERATION_IF_BOTH_SEATING_TABLE_VERSIONS = `INSERT INTO operations (${OPERATION_COLUMNS})
+SELECT ${OPERATION_INSERT_VALUES}
+WHERE ${BOTH_SEATING_TABLE_VERSIONS}`;
+
+export const DELETE_SEATING_CELLS_IF_OPERATION = `DELETE FROM seating_cells
+WHERE org_id = ? AND table_id = ?
+  AND ${OPERATION_WRITTEN}`;
+
+export const INSERT_SEATING_CELL_IF_OPERATION = `INSERT INTO seating_cells (org_id, event_id, x, y, table_id)
+SELECT ?, ?, ?, ?, ?
+WHERE ${OPERATION_WRITTEN}`;
+
+export const UPDATE_SEATING_TABLE_IF_OPERATION = `UPDATE seating_tables
+SET name = ?, kind = ?, size = ?, end_seats = ?, rotation = ?, grid_x = ?, grid_y = ?, seats = ?, status = ?, version = ?, updated_at = ?
+WHERE org_id = ? AND id = ?
+  AND ${OPERATION_WRITTEN}`;

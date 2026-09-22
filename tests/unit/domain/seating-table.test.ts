@@ -15,6 +15,7 @@ import {
   isWithinRoom,
   labelSeat,
   layoutOf,
+  moveSeatLabel,
   moveSeatingTable,
   blockedSeats,
   occupiedCellKeys,
@@ -24,9 +25,11 @@ import {
   restoreSeatingTableRotation,
   restoreSeatingTableShape,
   restoreSeatLabel,
+  restoreSeatPlacement,
   rotatedPlacement,
   rotateSeatingTable,
   seatCount,
+  seatMoveFits,
   seatOffset,
   DEFAULT_ROOM_HEIGHT,
   DEFAULT_ROOM_WIDTH,
@@ -788,5 +791,334 @@ describe("archiveSeatingTable", () => {
     expect(() =>
       createSeatingTable(baseInput({ id: "tbl_2" }), plan([removed])),
     ).not.toThrow();
+  });
+});
+
+/** The same table with one name written on it, without going through
+ * `labelSeat` — these tests are about what a move does, not about how the
+ * seats came to be filled. */
+function withName(
+  subject: SeatingTable,
+  index: number,
+  label: string,
+): SeatingTable {
+  return {
+    ...subject,
+    seats: subject.seats.map((seat, at) => (at === index ? { label } : seat)),
+  };
+}
+
+describe("moveSeatLabel", () => {
+  it("moves a name to an empty seat of the same table, as one object", () => {
+    const subject = withName(table(), 0, "Ada");
+    const moved = moveSeatLabel(
+      { table: subject, seat: 0 },
+      { table: subject, seat: 2 },
+      plan([subject]),
+      later,
+    );
+    // One table changed, so one object and one version: a caller that wrote
+    // `source` and `target` separately would write the same row twice.
+    expect(moved.source).toBe(moved.target);
+    expect(findSeat(moved.target, 0)?.label).toBe("");
+    expect(findSeat(moved.target, 2)?.label).toBe("Ada");
+    expect(moved.target.version).toBe(2);
+    expect(moved.target.updatedAt).toBe(later);
+    // The input is untouched.
+    expect(findSeat(subject, 0)?.label).toBe("Ada");
+  });
+
+  it("swaps two names at the same table without losing either", () => {
+    const subject = withName(withName(table(), 0, "Ada"), 1, "Grace");
+    const moved = moveSeatLabel(
+      { table: subject, seat: 0 },
+      { table: subject, seat: 1 },
+      plan([subject]),
+      later,
+    );
+    expect(findSeat(moved.target, 0)?.label).toBe("Grace");
+    expect(findSeat(moved.target, 1)?.label).toBe("Ada");
+    expect(moved.target.version).toBe(2);
+  });
+
+  it("moves a name across tables, bumping each of them once", () => {
+    const head = withName(table({ id: "tbl_head" }), 0, "Ada");
+    const side = table({ id: "tbl_side", gridX: 6 });
+    const moved = moveSeatLabel(
+      { table: head, seat: 0 },
+      { table: side, seat: 1 },
+      plan([head, side]),
+      later,
+    );
+    expect(moved.source).not.toBe(moved.target);
+    expect(findSeat(moved.source, 0)?.label).toBe("");
+    expect(findSeat(moved.target, 1)?.label).toBe("Ada");
+    expect(moved.source.version).toBe(2);
+    expect(moved.target.version).toBe(2);
+  });
+
+  it("leaves occupancy exactly as it found it when two names swap", () => {
+    const head = withName(table({ id: "tbl_head" }), 0, "Ada");
+    const side = withName(table({ id: "tbl_side", gridX: 6 }), 1, "Grace");
+    const before = [...cells(head), ...cells(side)].sort();
+    const moved = moveSeatLabel(
+      { table: head, seat: 0 },
+      { table: side, seat: 1 },
+      plan([head, side]),
+      later,
+    );
+    // Both chairs are filled before and after, so the cells they claim are the
+    // same cells. A swap is the one move that can never be refused for space.
+    expect([...cells(moved.source), ...cells(moved.target)].sort()).toEqual(
+      before,
+    );
+  });
+
+  /**
+   * The case the whole design turns on.
+   *
+   * Two length-2 tables with no end seats, one standing on the other's chairs:
+   * `Q` at (0,0) has chairs along y=2, and `P` at (0,2) has chairs along the
+   * same y=2. One grid cell, (0,2), is a chair of either of them — and while
+   * somebody is sitting in it on `P`, `Q` has no chair there at all.
+   *
+   * Moving that person from `P` to the very cell they are vacating is legal,
+   * and only a check against the plan **as it will be** can see that.
+   *
+   * The order of `plan.tables` decides it, and that is the documented
+   * first-come rule rather than an accident: two *empty* chairs contending for
+   * one cell belong to whichever table was there first. With `[Q, P]` the
+   * emptied chair belongs to the later table and blocks nothing; with
+   * `[P, Q]` it keeps the cell and `Q` goes without.
+   */
+  it("sees the cell the name is vacating as free for the seat it is moving to", () => {
+    const upper = table({ id: "tbl_q", gridX: 0, gridY: 0 });
+    const lower = withName(
+      table({ id: "tbl_p", gridX: 0, gridY: 2 }),
+      0,
+      "Ada",
+    );
+    // Seat 3 of the upper table and seat 0 of the lower are the same cell.
+    // `layoutOf` is relative to the bounding box, so the grid position is what
+    // makes them comparable.
+    const at = (subject: SeatingTable, index: number) =>
+      cellKey(
+        subject.gridX + (layoutOf(subject).seats[index]?.x ?? 0),
+        subject.gridY + (layoutOf(subject).seats[index]?.y ?? 0),
+      );
+    expect(at(upper, 3)).toBe(cellKey(0, 2));
+    expect(at(lower, 0)).toBe(cellKey(0, 2));
+    // While Ada sits there on the lower table, the upper one has no chair.
+    expect(blockedSeats(upper, plan([upper, lower])).has(3)).toBe(true);
+
+    const moved = moveSeatLabel(
+      { table: lower, seat: 0 },
+      { table: upper, seat: 3 },
+      plan([upper, lower]),
+      later,
+    );
+    expect(findSeat(moved.target, 3)?.label).toBe("Ada");
+    expect(findSeat(moved.source, 0)?.label).toBe("");
+
+    expect(() =>
+      moveSeatLabel(
+        { table: lower, seat: 0 },
+        { table: upper, seat: 3 },
+        plan([lower, upper]),
+        later,
+      ),
+    ).toThrow("There is no chair there");
+  });
+
+  it("refuses a seat a neighbouring table's body is standing on", () => {
+    const head = withName(table({ id: "tbl_head" }), 0, "Ada");
+    // A table whose body covers the cell seat 2 of the head table would need.
+    const squatter = table({ id: "tbl_squat", gridX: 0, gridY: 1 });
+    expect(() =>
+      moveSeatLabel(
+        { table: head, seat: 0 },
+        { table: head, seat: 2 },
+        plan([head, squatter]),
+        later,
+      ),
+    ).toThrow("There is no chair there");
+  });
+
+  it("refuses the moves that are not moves", () => {
+    const subject = withName(table(), 0, "Ada");
+    expect(() =>
+      moveSeatLabel(
+        { table: subject, seat: 0 },
+        { table: subject, seat: 0 },
+        plan([subject]),
+        later,
+      ),
+    ).toThrow("The name is already on that seat");
+    expect(() =>
+      moveSeatLabel(
+        { table: subject, seat: 1 },
+        { table: subject, seat: 2 },
+        plan([subject]),
+        later,
+      ),
+    ).toThrow("There is nobody on that seat");
+    const twice = withName(subject, 1, "Ada");
+    expect(() =>
+      moveSeatLabel(
+        { table: twice, seat: 0 },
+        { table: twice, seat: 1 },
+        plan([twice]),
+        later,
+      ),
+    ).toThrow("Both seats already have that name");
+  });
+
+  it("refuses a seat the table does not have", () => {
+    const subject = withName(table(), 0, "Ada");
+    expect(() =>
+      moveSeatLabel(
+        { table: subject, seat: 0 },
+        { table: subject, seat: 9 },
+        plan([subject]),
+        later,
+      ),
+    ).toThrow("This table has no seat 10; it has 4");
+  });
+
+  it("refuses a pair from two different events, or two organizations", () => {
+    const head = withName(table({ id: "tbl_head" }), 0, "Ada");
+    expect(() =>
+      moveSeatLabel(
+        { table: head, seat: 0 },
+        {
+          table: table({ id: "tbl_other", eventId: "evt_2", gridX: 6 }),
+          seat: 1,
+        },
+        plan([head]),
+        later,
+      ),
+    ).toThrow("Both seats must be at the same event");
+    expect(() =>
+      moveSeatLabel(
+        { table: head, seat: 0 },
+        {
+          table: table({ id: "tbl_other", orgId: "org_2", gridX: 6 }),
+          seat: 1,
+        },
+        plan([head]),
+        later,
+      ),
+    ).toThrow("Both seats must belong to the same organization");
+  });
+
+  it("refuses a removed table on either side", () => {
+    const head = withName(table({ id: "tbl_head" }), 0, "Ada");
+    const gone = archiveSeatingTable(
+      table({ id: "tbl_gone", gridX: 6 }),
+      later,
+    );
+    expect(() =>
+      moveSeatLabel(
+        { table: head, seat: 0 },
+        { table: gone, seat: 1 },
+        plan([head]),
+        later,
+      ),
+    ).toThrow("Cannot move a name to a table that has been removed");
+    expect(() =>
+      moveSeatLabel(
+        { table: archiveSeatingTable(head, later), seat: 0 },
+        { table: table({ id: "tbl_side", gridX: 6 }), seat: 1 },
+        plan([]),
+        later,
+      ),
+    ).toThrow("Cannot move a name from a table that has been removed");
+  });
+});
+
+describe("seatMoveFits", () => {
+  it("passes a swap between two tables standing on one another's chairs", () => {
+    // The upper table's chair at (0,2) is also where the lower table's chair
+    // would be; the upper one came first, so it is the upper one that has it.
+    // Neither name is on a contended cell, so exchanging them changes nothing
+    // about who claims what.
+    const upper = withName(table({ id: "tbl_q" }), 3, "Grace");
+    const lower = withName(table({ id: "tbl_p", gridY: 2 }), 2, "Ada");
+    expect(
+      seatMoveFits(
+        { table: lower, seat: 2 },
+        { table: upper, seat: 3 },
+        plan([upper, lower]),
+      ),
+    ).toBe(true);
+  });
+
+  it("fails a move onto a chair a neighbouring table is standing in", () => {
+    const head = withName(table({ id: "tbl_head" }), 0, "Ada");
+    const squatter = table({ id: "tbl_squat", gridX: 0, gridY: 1 });
+    expect(
+      seatMoveFits(
+        { table: head, seat: 0 },
+        { table: head, seat: 2 },
+        plan([head, squatter]),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("restoreSeatPlacement", () => {
+  it("puts both recorded names back", () => {
+    const head = withName(table({ id: "tbl_head" }), 0, "");
+    const side = withName(table({ id: "tbl_side", gridX: 6 }), 1, "Ada");
+    const restored = restoreSeatPlacement(
+      { table: head, seat: 0, label: "Ada" },
+      { table: side, seat: 1, label: "" },
+      plan([head, side]),
+      later,
+    );
+    expect(findSeat(restored.source, 0)?.label).toBe("Ada");
+    expect(findSeat(restored.target, 1)?.label).toBe("");
+    expect(restored.source.version).toBe(2);
+    expect(restored.target.version).toBe(2);
+  });
+
+  it("is one object when both seats are on one table", () => {
+    const subject = withName(table(), 2, "Ada");
+    const restored = restoreSeatPlacement(
+      { table: subject, seat: 0, label: "Ada" },
+      { table: subject, seat: 2, label: "" },
+      plan([subject]),
+      later,
+    );
+    expect(restored.source).toBe(restored.target);
+    expect(restored.target.version).toBe(2);
+  });
+
+  it("refuses to put a name back where a table now stands", () => {
+    // Ada left seat 2 of the head table; a table has moved into that chair's
+    // cell since, so there is nowhere to put her back.
+    const head = table({ id: "tbl_head" });
+    const side = withName(table({ id: "tbl_side", gridX: 6 }), 1, "Ada");
+    const squatter = table({ id: "tbl_squat", gridX: 0, gridY: 1 });
+    expect(() =>
+      restoreSeatPlacement(
+        { table: head, seat: 2, label: "Ada" },
+        { table: side, seat: 1, label: "" },
+        plan([head, side, squatter]),
+        later,
+      ),
+    ).toThrow("There is no chair there");
+  });
+
+  it("treats a seat the table no longer has as a corrupt row", () => {
+    const subject = table();
+    expect(() =>
+      restoreSeatPlacement(
+        { table: subject, seat: 9, label: "Ada" },
+        { table: subject, seat: 0, label: "" },
+        plan([subject]),
+        later,
+      ),
+    ).toThrow("This table has no seat 10");
   });
 });

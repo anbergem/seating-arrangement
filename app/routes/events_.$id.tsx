@@ -31,6 +31,10 @@ import {
 } from "@/components/seating/LayoutPicker";
 import { SeatPanel, type ReshapeInput } from "@/components/seating/SeatPanel";
 import type { EventDetail } from "@/components/seating/types";
+import {
+  useSeatDrag,
+  type SeatRefId,
+} from "@/components/seating/use-seat-drag";
 import { useTableDrag } from "@/components/seating/use-table-drag";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,7 +70,7 @@ export default function EventSeatingRoute() {
   });
 
   const detail = useActionQuery<EventDetail>("get-event", { eventId: id });
-  const tables = detail.data?.tables ?? [];
+  const stored = detail.data?.tables ?? [];
   // Rooms belong to events, so the floor the drag preview is bounded by comes
   // from the record rather than from a constant. Falls back to the default for
   // the render before the query lands.
@@ -103,6 +107,10 @@ export default function EventSeatingRoute() {
     "label-seat",
     options("seating.labelled"),
   );
+  const moveSeat = useActionMutation<TableResult, TableArgs>(
+    "move-seat",
+    options("seating.seatMoved"),
+  );
   const remove = useActionMutation<TableResult, TableArgs>(
     "archive-seating-table",
     options("seating.removed"),
@@ -125,6 +133,7 @@ export default function EventSeatingRoute() {
     rotate.isPending ||
     bootstrap.isPending ||
     label.isPending ||
+    moveSeat.isPending ||
     remove.isPending;
 
   /**
@@ -149,6 +158,72 @@ export default function EventSeatingRoute() {
       return false;
     }
   }
+
+  /**
+   * The seat drag's half of the same bargain. Both tables' versions go with
+   * it: a move across tables writes two rows, and either of them changing
+   * under the drag is a conflict.
+   */
+  async function commitSeatMove(
+    from: SeatRefId,
+    to: SeatRefId,
+  ): Promise<boolean> {
+    const fromTable = stored.find((table) => table.id === from.tableId);
+    const toTable = stored.find((table) => table.id === to.tableId);
+    if (!fromTable || !toTable) return false;
+    try {
+      await moveSeat.mutateAsync({
+        fromTableId: from.tableId,
+        fromSeat: from.seat,
+        toTableId: to.tableId,
+        toSeat: to.seat,
+        fromExpectedVersion: fromTable.version,
+        toExpectedVersion: toTable.version,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** "Seat 3, Head table" — the same phrase the seat's own accessible name is
+   * built from, so what is spoken during a move matches what is spoken when
+   * the seat is reached with Tab. */
+  const placeOf = (ref: SeatRefId) =>
+    t("seating.seatPlace", {
+      number: ref.seat + 1,
+      table: stored.find((table) => table.id === ref.tableId)?.name ?? "",
+    });
+
+  // Declared before `useTableDrag`, and the order matters: a name dropped on a
+  // seat claims that seat's cell the moment it is drawn there, so the
+  // optimistic labels change both which chairs are blocked and where a table
+  // may legally be dragged. Everything below this line works from `tables`,
+  // the plan as the screen is actually showing it.
+  const seatDrag = useSeatDrag({
+    room,
+    tables: stored,
+    onMove: commitSeatMove,
+    onTap: (ref) => {
+      setSelectedTableId(ref.tableId);
+      setSelectedSeat(ref.seat);
+    },
+    announce: setAnnouncement,
+    messages: {
+      pickedUp: (label, from) =>
+        t("seating.announceSeatPickedUp", {
+          label,
+          place: placeOf(from),
+        }),
+      moved: (label, to) =>
+        t("seating.announceSeatMoved", { label, place: placeOf(to) }),
+      swapped: (label, other) =>
+        t("seating.announceSeatSwapped", { label, other }),
+      blocked: t("seating.seatBlocked"),
+      cancelled: t("seating.announceCancelled"),
+    },
+  });
+  const tables = seatDrag.apply(stored);
 
   // Which chairs have no room right now, per table. Derived from the plan the
   // same way the server derives it, so the page and the write agree.
@@ -232,13 +307,10 @@ export default function EventSeatingRoute() {
           tables={tables}
           blocked={blocked}
           drag={drag}
+          seatDrag={seatDrag}
           selectedTableId={selectedTableId}
           selectedSeat={selectedSeat}
           canvasRef={canvasRef}
-          onSelectSeat={(tableId, seat) => {
-            setSelectedTableId(tableId);
-            setSelectedSeat(seat);
-          }}
         />
 
         {/* A bootstrap is for an empty plan, so it doubles as the empty state

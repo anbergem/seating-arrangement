@@ -21,6 +21,7 @@ import { createSeatingTable } from "../../../src/application/use-cases/create-se
 import { getEvent } from "../../../src/application/use-cases/get-event";
 import { labelSeat } from "../../../src/application/use-cases/label-seat";
 import { listEvents } from "../../../src/application/use-cases/list-events";
+import { moveSeat } from "../../../src/application/use-cases/move-seat";
 import { moveSeatingTable } from "../../../src/application/use-cases/move-seating-table";
 import { reshapeSeatingTable } from "../../../src/application/use-cases/reshape-seating-table";
 import {
@@ -42,6 +43,7 @@ import {
   ORG_ACME_ID,
   OWNER_EMAIL,
   SEAT_LABEL_ADA,
+  SEAT_LABEL_GRACE,
   TABLE_HEAD_ID,
   TABLE_OTHER_ID,
   TABLE_SIDE_ID,
@@ -399,6 +401,201 @@ describe("labelSeat", () => {
         label: "Nobody",
       }),
     ).rejects.toMatchObject({ code: "VALIDATION" });
+  });
+});
+
+describe("moveSeat", () => {
+  it("moves a name to another table, writing both rows under one operation", async () => {
+    const d = deps(["op_move_seat"]);
+    const head = d.state.seatingTables.get(TABLE_HEAD_ID)!;
+    const side = d.state.seatingTables.get(TABLE_SIDE_ID)!;
+    const result = await moveSeat(d, actor(), {
+      fromTableId: TABLE_HEAD_ID,
+      fromSeat: 0,
+      toTableId: TABLE_SIDE_ID,
+      toSeat: 0,
+      fromExpectedVersion: head.version,
+      toExpectedVersion: side.version,
+    });
+
+    expect(findSeat(result.resource, 0)?.label).toBe(SEAT_LABEL_ADA);
+    expect(findSeat(d.state.seatingTables.get(TABLE_HEAD_ID)!, 0)?.label).toBe(
+      "",
+    );
+    expect(findSeat(d.state.seatingTables.get(TABLE_SIDE_ID)!, 0)?.label).toBe(
+      SEAT_LABEL_ADA,
+    );
+    // One intent, one row — and the second table's guard rides in the
+    // payload, because `versionBefore`/`versionAfter` can only speak for the
+    // resource.
+    expect(d.state.operations.get("op_move_seat")).toMatchObject({
+      action: "move-seat",
+      classification: "reversible",
+      resourceId: TABLE_SIDE_ID,
+      versionBefore: side.version,
+      versionAfter: side.version + 1,
+      payload: {
+        fromTableId: TABLE_HEAD_ID,
+        fromSeat: 0,
+        toTableId: TABLE_SIDE_ID,
+        toSeat: 0,
+        label: SEAT_LABEL_ADA,
+        other: {
+          tableId: TABLE_HEAD_ID,
+          versionBefore: head.version,
+          versionAfter: head.version + 1,
+        },
+      },
+      inverse: {
+        type: "restore-seat-placement",
+        from: { tableId: TABLE_HEAD_ID, seat: 0, label: SEAT_LABEL_ADA },
+        to: { tableId: TABLE_SIDE_ID, seat: 0, label: "" },
+      },
+    });
+  });
+
+  it("swaps two names rather than overwriting either", async () => {
+    const d = deps(["op_move_seat"]);
+    await moveSeat(d, actor(), {
+      fromTableId: TABLE_HEAD_ID,
+      fromSeat: 0,
+      toTableId: TABLE_HEAD_ID,
+      toSeat: 1,
+    });
+    const head = d.state.seatingTables.get(TABLE_HEAD_ID)!;
+    expect(findSeat(head, 0)?.label).toBe(SEAT_LABEL_GRACE);
+    expect(findSeat(head, 1)?.label).toBe(SEAT_LABEL_ADA);
+  });
+
+  it("writes one row and one version for a move within one table", async () => {
+    const d = deps(["op_move_seat"]);
+    const before = d.state.seatingTables.get(TABLE_HEAD_ID)!;
+    await moveSeat(d, actor(), {
+      fromTableId: TABLE_HEAD_ID,
+      fromSeat: 0,
+      toTableId: TABLE_HEAD_ID,
+      toSeat: 2,
+    });
+    // Both halves landed on one object, so the version moved by one and not
+    // by two — the arithmetic is the assertion that it was a single write.
+    expect(d.state.seatingTables.get(TABLE_HEAD_ID)!.version).toBe(
+      before.version + 1,
+    );
+    expect(d.state.operations.get("op_move_seat")?.payload).not.toHaveProperty(
+      "other",
+    );
+  });
+
+  it("refuses a pair of tables at two different events", async () => {
+    // A floor plan belongs to an event, so two tables at different events have
+    // no common floor for the two cells to be compared on.
+    const d = deps(["evt_two", "op_event", "tbl_elsewhere", "op_table"]);
+    const other = await createEvent(d, actor({ role: "admin" }), {
+      name: "Another evening",
+      startsAt: "2026-12-01T18:00:00.000Z",
+    });
+    await createSeatingTable(d, actor(), {
+      eventId: other.resource.id,
+      name: "Table A",
+      size: 2,
+      gridX: 0,
+      gridY: 0,
+    });
+    await expect(
+      moveSeat(d, actor(), {
+        fromTableId: TABLE_HEAD_ID,
+        fromSeat: 0,
+        toTableId: "tbl_elsewhere",
+        toSeat: 0,
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION" });
+  });
+
+  it("reports a table from another organization as missing, on either side", async () => {
+    const d = deps(["op_move_seat"]);
+    await expect(
+      moveSeat(d, actor(), {
+        fromTableId: TABLE_OTHER_ID,
+        fromSeat: 0,
+        toTableId: TABLE_HEAD_ID,
+        toSeat: 2,
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await expect(
+      moveSeat(d, actor(), {
+        fromTableId: TABLE_HEAD_ID,
+        fromSeat: 0,
+        toTableId: TABLE_OTHER_ID,
+        toSeat: 0,
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("refuses a stale version on either table", async () => {
+    const d = deps(["op_move_seat"]);
+    const head = d.state.seatingTables.get(TABLE_HEAD_ID)!;
+    const side = d.state.seatingTables.get(TABLE_SIDE_ID)!;
+    const args = {
+      fromTableId: TABLE_HEAD_ID,
+      fromSeat: 0,
+      toTableId: TABLE_SIDE_ID,
+      toSeat: 0,
+    };
+    await expect(
+      moveSeat(d, actor(), {
+        ...args,
+        fromExpectedVersion: head.version + 1,
+        toExpectedVersion: side.version,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(
+      moveSeat(d, actor(), {
+        ...args,
+        fromExpectedVersion: head.version,
+        toExpectedVersion: side.version + 1,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
+  /**
+   * The same window `moveSeatingTable` has, reached the other way round. The
+   * destination chair is empty, so it claims nothing and another table may
+   * legally stand in it — right up until somebody is seated there, which is
+   * the moment the cell is claimed. Both writers read a plan in which that is
+   * fine; the second has to lose.
+   */
+  it("refuses when a table takes the destination's cell in between", async () => {
+    const d = deps(["tbl_third", "op_create", "op_move_seat"]);
+    await createSeatingTable(d, actor(), {
+      eventId: EVENT_GALA_ID,
+      name: "Table 3",
+      size: 2,
+      endSeats: false,
+      gridX: 10,
+      gridY: 5,
+    });
+    d.state.beforeSeatingTableCommit = () => {
+      const third = d.state.seatingTables.get("tbl_third")!;
+      // Its body now covers the cell seat 7 of the side table sits in.
+      d.state.seatingTables.set("tbl_third", {
+        ...third,
+        gridX: 4,
+        gridY: 1,
+        version: third.version + 1,
+      });
+    };
+    await expect(
+      moveSeat(d, actor(), {
+        fromTableId: TABLE_HEAD_ID,
+        fromSeat: 0,
+        toTableId: TABLE_SIDE_ID,
+        toSeat: 7,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    // Nothing of the move landed: not the half that was leaving either.
+    expect(findSeat(d.state.seatingTables.get(TABLE_HEAD_ID)!, 0)?.label).toBe(
+      SEAT_LABEL_ADA,
+    );
   });
 });
 
