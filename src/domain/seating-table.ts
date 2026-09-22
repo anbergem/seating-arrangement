@@ -59,6 +59,15 @@
  * plan every time it is asked, never stored — put the neighbour somewhere else
  * and the chair is simply back.
  *
+ * A chair somebody is sitting in is never blocked, and that is a guarantee
+ * rather than a coincidence: a name claims its cell, one cell holds one claim
+ * (`seating_cells`), and the tie-break that decides between two chairs
+ * contending for one cell is only ever reached when both of them are empty. So
+ * **a name on the plan is always drawn.** It is worth stating, because the
+ * failure it rules out is silent: a blocked seat is not rendered at all, so a
+ * guest whose chair was wrongly blocked disappeared off the plan while their
+ * name sat untouched in `seats`.
+ *
  * The room those cells live in belongs to the **event**, not to this module, so
  * every placement rule takes a `FloorPlan` — the room's size and the other
  * tables standing in it. Overlap is checked here so the caller gets a precise
@@ -441,12 +450,16 @@ export function occupiedCellKeys(
  *
  *   * **A claimed cell** — another table's body, or a chair with somebody in
  *     it. There is no room for this chair while that is there.
- *   * **Another table's empty chair, if that table came first.** Two empty
- *     chairs contending for one cell are not two chairs: they are one piece of
- *     furniture that both tables could use, and drawing it twice would be a
- *     lie. `plan.tables` is in creation order, so the table that was there
- *     first keeps it and the newcomer goes without — the same first-come rule
- *     the rest of the floor plan runs on.
+ *   * **Another table's empty chair, if that table came first — and only when
+ *     this chair is empty too.** Two empty chairs contending for one cell are
+ *     not two chairs: they are one piece of furniture that both tables could
+ *     use, and drawing it twice would be a lie. `plan.tables` is in creation
+ *     order, so the table that was there first keeps it and the newcomer goes
+ *     without — the same first-come rule the rest of the floor plan runs on.
+ *
+ *     It is a tie-break between two *empty* chairs, and nothing else. A chair
+ *     with somebody in it is not in the running: it holds its cell against any
+ *     empty chair, however long that chair's table has been standing there.
  *
  * A table's own cells never block its own chairs.
  */
@@ -454,28 +467,37 @@ export function blockedSeats(
   table: SeatingTable,
   plan: FloorPlan,
 ): Set<number> {
-  const taken = occupiedCellKeys(plan.tables, table.id);
+  const claimed = occupiedCellKeys(plan.tables, table.id);
   // A table not on the plan — a drag preview, a table being built — is treated
   // as the newest, so it yields rather than taking a chair off something real.
   const position = plan.tables.findIndex((other) => other.id === table.id);
   const earlier =
     position === -1 ? plan.tables : plan.tables.slice(0, position);
+  const spokenFor = new Set<string>();
   for (const other of earlier) {
     if (other.status !== "active" || other.id === table.id) continue;
     const layout = layoutOf(other);
     layout.seats.forEach((cell, index) => {
-      // A filled chair is already in `taken`; this is only about empty ones.
+      // A filled chair is already in `claimed`; this is only about empty ones.
       if (other.seats[index]?.label) return;
-      taken.add(cellKey(other.gridX + cell.x, other.gridY + cell.y));
+      spokenFor.add(cellKey(other.gridX + cell.x, other.gridY + cell.y));
     });
   }
 
   const blocked = new Set<number>();
-  if (taken.size === 0) return blocked;
+  if (claimed.size === 0 && spokenFor.size === 0) return blocked;
   layoutOf(table).seats.forEach((cell, index) => {
-    if (taken.has(cellKey(table.gridX + cell.x, table.gridY + cell.y))) {
+    const key = cellKey(table.gridX + cell.x, table.gridY + cell.y);
+    if (claimed.has(key)) {
       blocked.add(index);
+      return;
     }
+    // A chair with somebody in it yields to nobody. The first-come rule
+    // settles a tie between two *empty* chairs, and this is not one: treating
+    // it as one would take the chair out from under somebody who is sitting
+    // in it, and their name would stop being drawn while staying in the data.
+    if (table.seats[index]?.label) return;
+    if (spokenFor.has(key)) blocked.add(index);
   });
   return blocked;
 }
@@ -528,8 +550,8 @@ export function planWith(
  * cell, because `seating_cells` would not have them.
  *
  * A swap claims exactly the cells it releases — both seats are filled before
- * and after — so it is refused only where one of the two chairs was already
- * standing in space it did not have.
+ * and after — so it always fits: a chair somebody is already sitting in is a
+ * chair that is there.
  */
 export function seatMoveFits(
   from: SeatRef,
@@ -547,10 +569,22 @@ export function seatMoveFits(
   );
 }
 
-/** The shared half of the check: would these two seats still have chairs, once
+/**
+ * The shared half of the check: would these two seats still have chairs, once
  * `labels` were on them? An undo writes labels that are not simply the two
  * current ones swapped, so what is checked has to be the labels actually being
- * written. */
+ * written.
+ *
+ * Note which table each half is asked of. The **plan** is the one the move
+ * will leave behind, because moving a name out of a chair gives that chair's
+ * cell up — that is the whole point of checking an exchange rather than two
+ * separate writes. But the **seats** are asked of the tables as they stand,
+ * because a move may free a cell and must not take a chair off a neighbour: a
+ * chair shared by two tables belongs to whichever of them had it first, and
+ * seating somebody is not a way to win that tie. Ask the question of the
+ * moved table instead and `move-seat` would quietly accept a chair
+ * `label-seat` refuses to write a name on.
+ */
 function placementFits(
   from: SeatRef,
   to: SeatRef,
@@ -561,9 +595,17 @@ function placementFits(
   const changed =
     next.source === next.target ? [next.source] : [next.source, next.target];
   const after = planWith(plan, changed);
-  const has = (table: SeatingTable, index: number) =>
-    !table.seats[index]?.label || !blockedSeats(table, after).has(index);
-  return has(next.target, to.seat) && has(next.source, from.seat);
+  const has = (
+    standing: SeatingTable,
+    moved: SeatingTable,
+    index: number,
+  ): boolean =>
+    // A seat left empty needs no chair at all.
+    !moved.seats[index]?.label || !blockedSeats(standing, after).has(index);
+  return (
+    has(to.table, next.target, to.seat) &&
+    has(from.table, next.source, from.seat)
+  );
 }
 
 export function isWithinRoom(

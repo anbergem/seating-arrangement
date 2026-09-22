@@ -99,6 +99,20 @@ function fullySeated(subject: SeatingTable): SeatingTable {
   );
 }
 
+/** The same table with one name written on it, without going through
+ * `labelSeat` — these tests are about what a move does, not about how the
+ * seats came to be filled. */
+function withName(
+  subject: SeatingTable,
+  index: number,
+  label: string,
+): SeatingTable {
+  return {
+    ...subject,
+    seats: subject.seats.map((seat, at) => (at === index ? { label } : seat)),
+  };
+}
+
 /** The cells a table holds, as a sorted, comparable list. */
 function cells(subject: SeatingTable): string[] {
   return cellsOf(subject)
@@ -588,6 +602,88 @@ describe("empty chairs and blocked seats", () => {
   });
 });
 
+/**
+ * A chair with somebody in it holds its cell against any empty chair, however
+ * long that chair's table has been standing there.
+ *
+ * The first-come rule is a tie-break between two *empty* chairs. Applied to a
+ * chair somebody is sitting in it took the chair out from under them: the seat
+ * was reported blocked, `TableShape` drew nothing for a blocked seat, and the
+ * guest disappeared off the plan while their name stayed in `seats`.
+ *
+ * The state is reached without breaking any rule. An empty chair claims
+ * nothing, so a table may legitimately be pushed up until one of its empty
+ * chairs is standing where somebody else is already sitting — `fitsAt` checks
+ * the mover's body and filled chairs, and has no reason to refuse.
+ */
+describe("a chair somebody is sitting in", () => {
+  /** Two length-2 tables, one pushed up against the other so that their
+   * chairs meet along y=2. `first` is earlier in `plan.tables`, so every
+   * tie between two empty chairs goes to it. */
+  function pushedTogether() {
+    const first = table({ id: "tbl_first", gridX: 0, gridY: 2 });
+    const second = table({ id: "tbl_second", gridX: 0, gridY: 0 });
+    // Seat 3 of the second table and seat 0 of the first are one cell.
+    return { first, second, contested: cellKey(0, 2) };
+  }
+
+  it("is not taken away by an earlier table's empty chair", () => {
+    const { first, second } = pushedTogether();
+    const seated = withName(second, 3, "Ada");
+    const standing = plan([first, seated]);
+
+    // The chair is the later table's, and it stays the later table's.
+    expect(blockedSeats(seated, standing).has(3)).toBe(false);
+    // Its neighbour's empty chair is the one that goes without, so the cell is
+    // drawn exactly once.
+    expect(blockedSeats(first, standing).has(0)).toBe(true);
+  });
+
+  it("still loses the tie-break while it is empty", () => {
+    const { first, second } = pushedTogether();
+    const standing = plan([first, second]);
+    // Two empty chairs, one cell: the table that was there first keeps it.
+    expect(blockedSeats(second, standing).has(3)).toBe(true);
+    expect(blockedSeats(first, standing).has(0)).toBe(false);
+  });
+
+  it("is still blocked by a cell another table actually claims", () => {
+    const { first, second } = pushedTogether();
+    // Somebody is sitting in the first table's chair, so the cell is claimed
+    // and there is genuinely no room for a second chair in it.
+    const taken = withName(first, 0, "Grace");
+    const seated = withName(second, 3, "Ada");
+    expect(blockedSeats(seated, plan([taken, seated])).has(3)).toBe(true);
+  });
+
+  /**
+   * The two writes that seat somebody have to agree. `labelSeat` asks whether
+   * the chair is there; `moveSeatLabel` asks whether both seats would still
+   * have chairs after the exchange — and if that second question were asked of
+   * the *moved* table, a name landing on a contested chair would win the
+   * tie-break just by arriving, and a move would be accepted where a label is
+   * refused.
+   */
+  it("cannot be won by moving a name onto a contested chair", () => {
+    const { first, second } = pushedTogether();
+    const subject = withName(second, 0, "Ada");
+    const standing = plan([first, subject]);
+    // Seat 3 is the contested chair, and it belongs to the earlier table.
+    expect(blockedSeats(subject, standing).has(3)).toBe(true);
+    expect(() => labelSeat(subject, 3, "Grace", standing, later)).toThrow(
+      "There is no chair there",
+    );
+    expect(() =>
+      moveSeatLabel(
+        { table: subject, seat: 0 },
+        { table: subject, seat: 3 },
+        standing,
+        later,
+      ),
+    ).toThrow("There is no chair there");
+  });
+});
+
 describe("reshapeSeatingTable", () => {
   it("turns a rectangle into a round table, renumbering the seats", () => {
     const subject = table({ size: 4, endSeats: true, gridX: 0, gridY: 0 });
@@ -793,20 +889,6 @@ describe("archiveSeatingTable", () => {
     ).not.toThrow();
   });
 });
-
-/** The same table with one name written on it, without going through
- * `labelSeat` — these tests are about what a move does, not about how the
- * seats came to be filled. */
-function withName(
-  subject: SeatingTable,
-  index: number,
-  label: string,
-): SeatingTable {
-  return {
-    ...subject,
-    seats: subject.seats.map((seat, at) => (at === index ? { label } : seat)),
-  };
-}
 
 describe("moveSeatLabel", () => {
   it("moves a name to an empty seat of the same table, as one object", () => {

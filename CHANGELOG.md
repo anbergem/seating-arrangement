@@ -12,6 +12,13 @@ All notable user-facing changes to this app are documented here.
   to another seat and press Enter to place it. A move is one change in the activity feed with
   one Undo, even when it crosses two tables.
 
+### Fixed
+
+- A seated guest no longer disappears from the floor plan when a neighbouring table is pushed
+  up against their chair. The rule that decides which of two tables gets a chair they share is
+  a tie-break between two _empty_ chairs; it was also being applied to a chair somebody was
+  sitting in, which took the chair away and hid the name while leaving it in the data.
+
 ## 2026-08-27
 
 ### Fixed
