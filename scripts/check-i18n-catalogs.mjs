@@ -101,6 +101,7 @@ const dynamicFamilies = {
     "move-seating-table",
     "redo-operation",
     "reshape-seating-table",
+    "shift-seats",
     "resize-room",
     "rotate-seating-table",
     "undo-operation",

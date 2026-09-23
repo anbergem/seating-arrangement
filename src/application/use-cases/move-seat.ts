@@ -115,16 +115,16 @@ export async function moveSeat(
       toTableId: to.id,
       toSeat: input.toSeat,
       label: findSeat(moved.target, input.toSeat)?.label ?? "",
-      // The second row's guard. Absent when there is no second row.
-      ...(sameTable
-        ? {}
-        : {
-            other: {
+      // The other rows' guards. Empty when the move stayed on one table.
+      others: sameTable
+        ? []
+        : [
+            {
               tableId: from.id,
               versionBefore: from.version,
               versionAfter: moved.source.version,
             },
-          }),
+          ],
     },
     inverse: {
       type: "restore-seat-placement",
@@ -156,7 +156,7 @@ export async function moveSeat(
       operation,
     });
   } else {
-    await deps.seatingTables.commitSeatMove({
+    await deps.seatingTables.commitTables({
       tables: [
         { table: moved.source, expectedVersion: from.version },
         { table: moved.target, expectedVersion: to.version },
@@ -169,14 +169,14 @@ export async function moveSeat(
 }
 
 /**
- * The second table's version guard, as a `move-seat` row carries it.
+ * Another table's version guard, as a multi-row seat write carries it.
  *
- * It lives in `payload` rather than in `inverse` because an inverse says what
- * to restore, and this says what the writer may assume is still true. An
+ * These live in `payload` rather than in `inverse` because an inverse says
+ * what to restore, and this says what the writer may assume is still true. An
  * `Operation` has one `versionBefore`/`versionAfter` pair, which guards the
- * one table it names as its resource; without this, undoing a move across
- * tables would write the second one blind and could silently discard somebody
- * else's change to it.
+ * one table it names as its resource; without these, undoing a write that
+ * spanned several tables would write the rest of them blind and could
+ * silently discard somebody else's change.
  */
 export interface OtherTableGuard {
   tableId: string;
@@ -184,23 +184,27 @@ export interface OtherTableGuard {
   versionAfter: number;
 }
 
-/** The guard off a `move-seat`, `undo` or `redo` row, or `null` when the move
- * was within one table and there is no second row. A malformed one is a
- * corrupt row rather than a caller's mistake, so it is `INTERNAL` (B5). */
-export function otherTableGuard(
+/** The guards off a `move-seat`, `shift-seats`, `undo` or `redo` row — empty
+ * when the write stayed on the one table the row names as its resource. A
+ * malformed one is a corrupt row rather than a caller's mistake, so it is
+ * `INTERNAL` (B5). */
+export function otherTableGuards(
   payload: Record<string, unknown> | null,
-): OtherTableGuard | null {
-  const value = payload?.other;
-  if (value === undefined || value === null) return null;
-  const other = value as Partial<OtherTableGuard>;
-  if (
-    typeof other.tableId !== "string" ||
-    !Number.isInteger(other.versionBefore) ||
-    !Number.isInteger(other.versionAfter)
-  ) {
-    throw new AppError("INTERNAL", "Unexpected error");
-  }
-  return other as OtherTableGuard;
+): OtherTableGuard[] {
+  const value = payload?.others;
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new AppError("INTERNAL", "Unexpected error");
+  return value.map((entry) => {
+    const other = entry as Partial<OtherTableGuard>;
+    if (
+      typeof other.tableId !== "string" ||
+      !Number.isInteger(other.versionBefore) ||
+      !Number.isInteger(other.versionAfter)
+    ) {
+      throw new AppError("INTERNAL", "Unexpected error");
+    }
+    return other as OtherTableGuard;
+  });
 }
 
 /** Which two seats a recorded `move-seat` named. Read by `redo-operation`,

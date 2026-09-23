@@ -47,6 +47,21 @@ export {
 } from "../../../src/domain/seating-table";
 
 export {
+  chainNeighbours,
+  chairCell,
+  chairKey,
+  mapChairs,
+  seatChain,
+  shiftTargets,
+} from "../../../src/domain/seat-chain";
+
+export type {
+  ChairMap,
+  ChairRef,
+  SeatChain,
+} from "../../../src/domain/seat-chain";
+
+export {
   LAYOUT_KINDS,
   MAX_SECTION_TABLES,
   SECTION_COUNT,

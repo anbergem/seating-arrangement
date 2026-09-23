@@ -7,5 +7,6 @@
 export * from "./errors";
 export * from "./event";
 export * from "./seating-table";
+export * from "./seat-chain";
 export * from "./venue-layout";
 export * from "./operation";

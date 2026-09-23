@@ -102,22 +102,19 @@ export interface SeatingTableRepository {
     markUndone?: string;
   }): Promise<void>;
   /**
-   * Both halves of a seat move: two tables, their two cell sets, one audit
-   * row, one batch.
+   * Several tables, their cell sets and one audit row, in a single batch.
    *
-   * Spanning two rows is the point. A name that has left one chair and not
-   * arrived at the other is not a state the floor plan has, and `commit`
-   * writes one table — two calls would be two chances to stop halfway.
+   * Spanning rows is the point. A name that has left one chair and not arrived
+   * at the other is not a state the floor plan has, and neither is half a
+   * bench shifted along; `commit` writes one table, so a call per table would
+   * be a chance to stop halfway for every table but the last.
    *
-   * Each table carries its own version guard; the audit row hangs off
-   * whichever of the two `operation.resourceId` names. A move within one table
-   * does not come here at all: it is one row, so it is an ordinary `commit`.
-   *
-   * Throws `AppError("CONFLICT", …)` when either version moved on, and the
-   * same when a cell was taken between the caller's read and this write.
+   * Each table carries the version its caller read. Throws
+   * `AppError("CONFLICT", …)` when any of them has moved on, and the same when
+   * a cell was taken between the caller's read and this write.
    */
-  commitSeatMove(input: {
-    tables: readonly [VersionedTableWrite, VersionedTableWrite];
+  commitTables(input: {
+    tables: readonly VersionedTableWrite[];
     operation: Operation;
     markUndone?: string;
   }): Promise<void>;

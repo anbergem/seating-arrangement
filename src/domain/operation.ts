@@ -76,6 +76,15 @@ export type InverseCommand =
       from: { tableId: string; seat: number; label: string };
       to: { tableId: string; seat: number; label: string };
     }
+  // Undoing a `shift-seats`: the name every chair the shift touched had
+  // before it. A list rather than a rule, because the same shape has to
+  // describe a bench that slid along and a table that turned right round —
+  // and because replaying a permutation backwards would carry along any name
+  // somebody has written on one of those chairs since.
+  | {
+      type: "restore-seat-labels";
+      seats: readonly { tableId: string; seat: number; label: string }[];
+    }
   | { type: "restore-seating-table" }
   | { type: "archive-seating-table" }; // compensation for create-seating-table
 
@@ -94,6 +103,7 @@ export const OPERATION_CLASSIFICATION: Readonly<
   "reshape-seating-table": "reversible",
   "label-seat": "reversible",
   "move-seat": "reversible",
+  "shift-seats": "reversible",
   "archive-seating-table": "reversible",
   "undo-operation": "reversible",
   "redo-operation": "reversible",

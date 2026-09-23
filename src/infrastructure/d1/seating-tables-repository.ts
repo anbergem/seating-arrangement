@@ -56,7 +56,7 @@ import {
 import {
   DELETE_SEATING_CELLS_IF_OPERATION,
   DELETE_SEATING_CELLS_IF_VERSION,
-  INSERT_OPERATION_IF_BOTH_SEATING_TABLE_VERSIONS,
+  insertOperationIfSeatingTableVersions,
   INSERT_OPERATION_IF_EVENT_VERSION,
   INSERT_OPERATION_IF_SEATING_TABLE_VERSION,
   INSERT_SEATING_CELL_IF_OPERATION,
@@ -325,81 +325,67 @@ export function createSeatingTablesRepository(
     },
 
     /**
-     * Both halves of a seat move, in one batch: two table rows, two cell sets,
-     * one audit row.
+     * Several tables in one batch: every row, every cell ledger, one audit row.
      *
-     * Two ordering rules, and each is load-bearing:
+     * Three ordering rules, and each is load-bearing:
      *
      *   * **The audit row comes first**, and it is the only statement that
-     *     checks a version — both of them. Everything after it asks merely
-     *     whether that row landed, which is what makes two version guards
-     *     into one all-or-nothing batch. `sql.ts` has the longer argument.
-     *   * **Both deletes come before either insert**, because a move can be
-     *     one table *handing a cell to the other*. Two tables pushed together
-     *     share the cells where they meet, and a name crossing that seam
-     *     leaves a cell on one table and claims the same cell on the other.
-     *     `seating_cells` is keyed on the cell, so the arriving insert
-     *     violates the primary key unless the leaving delete has already run.
-     *     Interleaving the statements per table would turn a legal move into
-     *     "That space is already occupied".
+     *     checks a version — every table's. Everything after it asks merely
+     *     whether that row landed, which is what turns a guard per table into
+     *     one all-or-nothing batch. `sql.ts` has the longer argument.
+     *   * **Every delete comes before any insert**, because a write can be one
+     *     table *handing a cell to another*. Tables pushed together share the
+     *     cells where they meet, and a name crossing that seam leaves a cell on
+     *     one table and claims the same cell on the next. `seating_cells` is
+     *     keyed on the cell, so the arriving insert violates the primary key
+     *     unless the leaving delete has already run. Interleaving per table
+     *     would turn a legal write into "That space is already occupied".
+     *   * **The updates come last**, after every cell statement.
      *
-     * For a swap the delete and re-insert are a no-op net: both seats are
-     * filled before and after, so the ledger is rewritten to itself. The
-     * alternative — working out per seat what actually changed — would put
-     * occupancy arithmetic back into this file, which is exactly what "every
-     * commit restates occupancy" exists to avoid.
+     * Where nothing about a table's occupancy changed — both of a swap's
+     * chairs are filled before and after, and most of a shifted bench is too —
+     * the delete and re-insert rewrite the ledger to itself. The alternative
+     * would be working out per seat what actually moved, which is exactly the
+     * occupancy arithmetic "every commit restates occupancy" exists to keep
+     * out of this file.
      */
-    commitSeatMove: async ({ tables, operation, markUndone }) => {
-      const [a, b] = tables;
-      const resource = tables.find(
-        (entry) => entry.table.id === operation.resourceId,
-      );
-      if (!resource) {
-        // The caller built the operation row; naming a third table in it is a
-        // programming error, not a race.
+    commitTables: async ({ tables, operation, markUndone }) => {
+      if (tables.length === 0) {
+        // The caller decides there is something to write before it builds an
+        // audit row; an empty batch is a bug rather than a race.
         throw new AppError("INTERNAL", "Unexpected error");
       }
-      // The interlock every statement below hangs off: written only if both
-      // tables are still at the versions the caller read.
+      // The interlock every statement below hangs off: written only if every
+      // table is still at the version the caller read.
       const written = [operation.orgId, operation.id];
-      // Both tables are active — the domain refuses a move touching an
-      // archived one — so each rewrites its cells unconditionally.
-      const cellsA = cellsOf(a.table);
-      const cellsB = cellsOf(b.table);
+      // Every table is active — nothing that writes through here archives one
+      // — so each restates its cells unconditionally.
+      const cells = tables.map(({ table }) => cellsOf(table));
       const statements: Statement[] = [
         {
-          sql: INSERT_OPERATION_IF_BOTH_SEATING_TABLE_VERSIONS,
+          sql: insertOperationIfSeatingTableVersions(tables.length),
           args: [
             ...operationInsertArgs(operation),
-            a.table.orgId,
-            a.table.id,
-            a.expectedVersion,
-            b.table.orgId,
-            b.table.id,
-            b.expectedVersion,
+            ...tables.flatMap(({ table, expectedVersion }) => [
+              table.orgId,
+              table.id,
+              expectedVersion,
+            ]),
           ],
         },
-        {
+        ...tables.map(({ table }) => ({
           sql: DELETE_SEATING_CELLS_IF_OPERATION,
-          args: [a.table.orgId, a.table.id, ...written],
-        },
-        {
-          sql: DELETE_SEATING_CELLS_IF_OPERATION,
-          args: [b.table.orgId, b.table.id, ...written],
-        },
-        ...cellInserts(
-          a.table,
-          cellsA,
-          INSERT_SEATING_CELL_IF_OPERATION,
-          written,
+          args: [table.orgId, table.id, ...written],
+        })),
+        ...tables.flatMap(({ table }, index) =>
+          cellInserts(
+            table,
+            cells[index] ?? [],
+            INSERT_SEATING_CELL_IF_OPERATION,
+            written,
+          ),
         ),
-        ...cellInserts(
-          b.table,
-          cellsB,
-          INSERT_SEATING_CELL_IF_OPERATION,
-          written,
-        ),
-        ...[a, b].map(({ table }) => ({
+        ...tables.map(({ table }) => ({
           sql: UPDATE_SEATING_TABLE_IF_OPERATION,
           args: [
             table.name,
@@ -440,17 +426,15 @@ export function createSeatingTablesRepository(
         }
         throw error;
       }
-      // One check is enough, and it has to be this one: the audit row is the
-      // only statement that looks at a version, and every other statement in
-      // the batch asked whether it landed. The two updates are checked as
-      // well because a row that is not there is not a conflict either caller
-      // would recognise otherwise.
-      const updateA = 3 + cellsA.length + cellsB.length;
-      if (
-        affected[0] !== 1 ||
-        affected[updateA] !== 1 ||
-        affected[updateA + 1] !== 1
-      ) {
+      // One check would do, and it has to be the audit row: it is the only
+      // statement that looks at a version, and every other statement in the
+      // batch asked whether it landed. The updates are checked too, because a
+      // row that is not there is not a conflict either caller would recognise
+      // otherwise.
+      const firstUpdate =
+        1 + tables.length + cells.reduce((total, one) => total + one.length, 0);
+      const updated = tables.map((_, index) => affected[firstUpdate + index]);
+      if (affected[0] !== 1 || updated.some((rows) => rows !== 1)) {
         throw new AppError("CONFLICT", CONFLICT_MESSAGE);
       }
     },

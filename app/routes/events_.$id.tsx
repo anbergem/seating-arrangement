@@ -35,6 +35,7 @@ import {
   useSeatDrag,
   type SeatRefId,
 } from "@/components/seating/use-seat-drag";
+import { useSeatShift } from "@/components/seating/use-seat-shift";
 import { useTableDrag } from "@/components/seating/use-table-drag";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -64,6 +65,7 @@ export default function EventSeatingRoute() {
   const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [shifting, setShifting] = useState(false);
   const [layout, setLayout] = useState<LayoutValues>({
     ...DEFAULT_LAYOUT_VALUES,
     layout: "L",
@@ -111,6 +113,10 @@ export default function EventSeatingRoute() {
     "move-seat",
     options("seating.seatMoved"),
   );
+  const shift = useActionMutation<TableResult, TableArgs>(
+    "shift-seats",
+    options("seating.shifted"),
+  );
   const remove = useActionMutation<TableResult, TableArgs>(
     "archive-seating-table",
     options("seating.removed"),
@@ -134,6 +140,7 @@ export default function EventSeatingRoute() {
     bootstrap.isPending ||
     label.isPending ||
     moveSeat.isPending ||
+    shift.isPending ||
     remove.isPending;
 
   /**
@@ -195,6 +202,28 @@ export default function EventSeatingRoute() {
       table: stored.find((table) => table.id === ref.tableId)?.name ?? "",
     });
 
+  /** Everybody along the row moves one place. Only the table the user acted
+   * on is version-guarded here; the batch guards every other row it writes. */
+  async function commitShift(
+    from: SeatRefId,
+    toward: SeatRefId,
+  ): Promise<boolean> {
+    const table = stored.find((candidate) => candidate.id === from.tableId);
+    if (!table) return false;
+    try {
+      await shift.mutateAsync({
+        tableId: from.tableId,
+        seat: from.seat,
+        towardTableId: toward.tableId,
+        towardSeat: toward.seat,
+        expectedVersion: table.version,
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   // Declared before `useTableDrag`, and the order matters: a name dropped on a
   // seat claims that seat's cell the moment it is drawn there, so the
   // optimistic labels change both which chairs are blocked and where a table
@@ -224,6 +253,19 @@ export default function EventSeatingRoute() {
     },
   });
   const tables = seatDrag.apply(stored);
+
+  const seatShift = useSeatShift({
+    room,
+    tables,
+    enabled: shifting,
+    onShift: commitShift,
+    announce: setAnnouncement,
+    messages: {
+      armed: (label) => t("seating.announceShiftArmed", { label }),
+      shifted: (label) => t("seating.announceShifted", { label }),
+      cancelled: t("seating.announceCancelled"),
+    },
+  });
 
   // Which chairs have no room right now, per table. Derived from the plan the
   // same way the server derives it, so the page and the write agree.
@@ -291,6 +333,21 @@ export default function EventSeatingRoute() {
         >
           {announcement || t("seating.hint")}
         </p>
+        <Button
+          type="button"
+          variant={shifting ? "default" : "outline"}
+          data-testid="shift-mode"
+          aria-pressed={shifting}
+          onClick={() => {
+            const next = !shifting;
+            setShifting(next);
+            setAnnouncement(
+              next ? t("seating.shiftModeOn") : t("seating.shiftModeOff"),
+            );
+          }}
+        >
+          {t("seating.shiftMode")}
+        </Button>
         {canManageOrg ? (
           <ArchiveEventButton eventId={event.id} version={event.version} />
         ) : null}
@@ -308,6 +365,8 @@ export default function EventSeatingRoute() {
           blocked={blocked}
           drag={drag}
           seatDrag={seatDrag}
+          shift={seatShift}
+          shifting={shifting}
           selectedTableId={selectedTableId}
           selectedSeat={selectedSeat}
           canvasRef={canvasRef}

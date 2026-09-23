@@ -47,8 +47,14 @@ export interface SeatChipProps {
   /** …and it could not land here. */
   invalid: boolean;
   emptyText: string;
-  onPointerDown: (event: React.PointerEvent) => void;
+  /** Shift mode: somebody on this chair could be moved along. */
+  shiftable: boolean;
+  /** Shift mode: the arrow pointing the way people would move, drawn on the
+   * chairs a shift could go to. */
+  arrow: string | null;
+  onPointerDown?: (event: React.PointerEvent) => void;
   onKeyDown: (event: React.KeyboardEvent) => void;
+  onClick?: () => void;
 }
 
 export function SeatChip(props: SeatChipProps) {
@@ -75,8 +81,9 @@ export function SeatChip(props: SeatChipProps) {
         // become a drag, and the hook decides which it was.
         onPointerDown={props.onPointerDown}
         onKeyDown={props.onKeyDown}
+        onClick={props.onClick}
         className={cn(
-          "flex h-full w-full min-w-0 touch-none items-center justify-center rounded-md border px-1 text-center text-xs font-medium leading-tight transition-colors",
+          "relative flex h-full w-full min-w-0 touch-none items-center justify-center rounded-md border px-1 text-center text-xs font-medium leading-tight transition-colors",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
           filled
             ? "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80"
@@ -91,11 +98,25 @@ export function SeatChip(props: SeatChipProps) {
             (props.invalid
               ? "border-destructive bg-destructive/15 text-destructive"
               : "ring-2 ring-ring ring-offset-1 ring-offset-background"),
+          props.arrow &&
+            "ring-2 ring-ring ring-offset-1 ring-offset-background",
         )}
       >
         <span className="line-clamp-2 break-words">
           {filled ? props.label : "+"}
         </span>
+        {/* A glyph rather than a tint, so the mode reads the same to anybody
+            who cannot tell the two colours apart. The arrow wins when both
+            apply: once a chair is aimed from, where people would go matters
+            more than where else they could have gone. */}
+        {(props.arrow ?? (props.shiftable ? "⇥" : null)) ? (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute right-0.5 top-0 text-[10px] leading-none"
+          >
+            {props.arrow ?? "⇥"}
+          </span>
+        ) : null}
       </button>
     </div>
   );

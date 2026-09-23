@@ -150,6 +150,17 @@ const seamEvent: Event = createEvent({
   now: CREATED_AT,
 });
 
+/** And one more: the several-table batch below wants three tables standing
+ * clear of everything the seam tests leave behind. */
+const manyEvent: Event = createEvent({
+  id: "repo_evt_many",
+  orgId: ORG_ACME_ID,
+  name: "Integration many",
+  startsAt: STARTS_AT,
+  createdBy: OWNER_EMAIL,
+  now: CREATED_AT,
+});
+
 const otherEvent: Event = createEvent({
   id: "repo_evt_other",
   orgId: ORG_OTHER_ID,
@@ -229,6 +240,7 @@ beforeAll(async () => {
     lShapeEvent,
     runEvent,
     seamEvent,
+    manyEvent,
     otherEvent,
   ]) {
     await events.create({
@@ -708,7 +720,7 @@ describe("a seat move", () => {
       { room: roomOf(seamEvent), tables: standing },
       LATER,
     );
-    await tables.commitSeatMove({
+    await tables.commitTables({
       tables: [
         { table: moved.source, expectedVersion: from.table.version },
         { table: moved.target, expectedVersion: to.table.version },
@@ -816,7 +828,7 @@ describe("a seat move", () => {
         LATER,
       );
       await expect(
-        tables.commitSeatMove({
+        tables.commitTables({
           tables: [
             { table: moved.source, expectedVersion: stale.source },
             { table: moved.target, expectedVersion: stale.target },
@@ -862,7 +874,7 @@ describe("a seat move", () => {
     expect(await storedCells(squatter.id)).toContain(cellKey(12, 4));
 
     await expect(
-      tables.commitSeatMove({
+      tables.commitTables({
         tables: [
           { table: moved.source, expectedVersion: upper.version },
           { table: moved.target, expectedVersion: lower.version },
@@ -877,5 +889,103 @@ describe("a seat move", () => {
         }),
       }),
     ).rejects.toMatchObject({ message: "That space is already occupied" });
+  });
+});
+
+/**
+ * A write across more than two tables, which is what a shift along a run of
+ * chairs comes to. The two-table case above proves the ordering; this proves
+ * the batch is still all-or-nothing when the guard has to cover several rows.
+ */
+describe("a write across several tables", () => {
+  const stacked = (id: string, gridX: number, gridY: number): SeatingTable =>
+    createSeatingTable(
+      {
+        id,
+        orgId: ORG_ACME_ID,
+        eventId: manyEvent.id,
+        name: id,
+        size: 2,
+        endSeats: false,
+        gridX,
+        gridY,
+        createdBy: OWNER_EMAIL,
+        now: CREATED_AT,
+      },
+      { room: roomOf(manyEvent), tables: [] },
+    );
+
+  /** The same table with a name on seat 0 and the version that write leaves. */
+  const filled = (row: SeatingTable, label: string): SeatingTable => ({
+    ...row,
+    seats: row.seats.map((seat, index) => (index === 0 ? { label } : seat)),
+    version: row.version + 1,
+    updatedAt: LATER,
+  });
+
+  const operationFor3 = (resource: SeatingTable, after: number) =>
+    operationFor({
+      action: "shift-seats",
+      resourceType: "seating_table",
+      resourceId: resource.id,
+      orgId: ORG_ACME_ID,
+      versionBefore: resource.version,
+      versionAfter: after,
+    });
+
+  it("writes every row and every cell ledger in one batch", async () => {
+    const rows = [
+      stacked("many_a_0", 0, 0),
+      stacked("many_a_1", 0, 3),
+      stacked("many_a_2", 0, 6),
+    ];
+    for (const row of rows) await insert(row);
+
+    const next = rows.map((row, index) => filled(row, `Guest ${index}`));
+    await tables.commitTables({
+      tables: next.map((row, index) => ({
+        table: row,
+        expectedVersion: rows[index]!.version,
+      })),
+      operation: operationFor3(rows[0]!, next[0]!.version),
+    });
+
+    for (const [index, row] of next.entries()) {
+      const stored = await tables.getById(ORG_ACME_ID, row.id);
+      expect(stored?.seats[0]?.label).toBe(`Guest ${index}`);
+      expect(await storedCells(row.id)).toEqual(expectedCells(row));
+    }
+  });
+
+  it("writes nothing at all when any one version has moved on", async () => {
+    const rows = [
+      stacked("many_b_0", 4, 0),
+      stacked("many_b_1", 4, 3),
+      stacked("many_b_2", 4, 6),
+    ];
+    for (const row of rows) await insert(row);
+    const before = await Promise.all(rows.map((row) => storedCells(row.id)));
+
+    // The third row is stale; the other two are exactly as they were read.
+    const next = rows.map((row, index) => filled(row, `Guest ${index}`));
+    await expect(
+      tables.commitTables({
+        tables: next.map((row, index) => ({
+          table: row,
+          expectedVersion:
+            index === 2 ? rows[index]!.version + 1 : rows[index]!.version,
+        })),
+        operation: operationFor3(rows[0]!, next[0]!.version),
+      }),
+    ).rejects.toBeInstanceOf(AppError);
+
+    // Not one of them landed — the audit row guards them all, so a single
+    // stale version takes the whole batch down rather than its own share.
+    for (const [index, row] of rows.entries()) {
+      const stored = await tables.getById(ORG_ACME_ID, row.id);
+      expect(stored?.version).toBe(row.version);
+      expect(stored?.seats[0]?.label).toBe("");
+      expect(await storedCells(row.id)).toEqual(before[index]);
+    }
   });
 });

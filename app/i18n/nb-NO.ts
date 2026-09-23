@@ -37,6 +37,7 @@ const messages = {
       "create-seating-table": "La til bord",
       "label-seat": "Merket plass",
       "move-seat": "Flyttet en gjest",
+      "shift-seats": "Flyttet plassene videre",
       "move-seating-table": "Flyttet bord",
       "redo-operation": "Gjorde om endring",
       "resize-room": "Endret romstørrelsen",
@@ -65,6 +66,9 @@ const messages = {
     announceSeatPickedUp:
       "Bærer {{label}} fra {{place}}. Gå til en annen plass og trykk Enter for å sette dem der, eller Escape for å avbryte.",
     announceSeatSwapped: "{{label}} og {{other}} har byttet plass.",
+    announceShiftArmed:
+      "Lager plass ved stolen til {{label}}. Velg pilen som peker dit folk skal flytte seg, eller trykk Escape for å avbryte.",
+    announceShifted: "Alle har flyttet seg én plass fra stolen til {{label}}.",
     announceMoveStarted:
       "Flytter {{name}}. Bruk piltastene, og trykk Enter for å plassere eller Escape for å avbryte.",
     announceMoved: "{{name}} er plassert i kolonne {{x}}, rad {{y}}.",
@@ -101,6 +105,13 @@ const messages = {
     rotated: "Bordet er snudd",
     seatBlocked: "Ingen stol her: et nabobord står i veien.",
     seatMoved: "Plassen er flyttet",
+    seatShiftable: "{{seat}} — alle herfra kan flytte seg én plass",
+    seatShiftToward: "{{seat}} — flytt alle denne veien",
+    shifted: "Plassene er flyttet videre",
+    shiftMode: "Lag plass",
+    shiftModeOff: "Ferdig med å lage plass.",
+    shiftModeOn:
+      "Velg en merket stol å lage plass ved, og velg deretter hvilken vei alle skal flytte seg.",
     seatEmpty: "{{place}}, ledig",
     seatFilled: "{{place}}, {{label}}",
     seatPlace: "Plass {{number}}, {{table}}",

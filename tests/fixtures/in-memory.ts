@@ -306,17 +306,17 @@ function createSeatingTableRepository(
       applyMarkUndone(state, markUndone, operation.id);
     },
     /**
-     * Mirrors `commitSeatMove`: two tables, all or nothing.
+     * Mirrors `commitTables`: every table, all or nothing.
      *
-     * Both tables go into the scratch map *before* either is checked, which is
-     * this file's equivalent of the real batch putting both cell deletes ahead
-     * of either insert. Checking them one at a time against the live map would
-     * refuse a name moving across the seam where two tables meet — the
+     * They all go into the scratch map *before* any of them is checked, which
+     * is this file's equivalent of the real batch putting every cell delete
+     * ahead of every insert. Checking them one at a time against the live map
+     * would refuse a name crossing the seam where two tables meet — the
      * arriving chair would collide with the leaving chair that is, in the
      * scratch, already gone. Getting this wrong is how a use-case test and its
-     * integration twin come to disagree about when a move is legal.
+     * integration twin come to disagree about when a write is legal.
      */
-    commitSeatMove: async ({ tables, operation, markUndone }) => {
+    commitTables: async ({ tables, operation, markUndone }) => {
       const hook = state.beforeSeatingTableCommit;
       state.beforeSeatingTableCommit = undefined;
       await hook?.();

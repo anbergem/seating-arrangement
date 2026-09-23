@@ -544,3 +544,80 @@ test("Enter on a seat still opens the panel, so a name can be typed without a mo
     "Katherine Johnson",
   );
 });
+
+test("shift mode marks the chairs people can move along from", async ({
+  memberPage,
+}) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  const main = memberPage.locator("main");
+  // Nothing is marked until the mode is on.
+  await expect(
+    main.getByRole("button", { name: /can move along one/ }),
+  ).toHaveCount(0);
+
+  await memberPage.getByTestId("shift-mode").click();
+  // Ada and Grace are the only two seated, so only their chairs are offered.
+  await expect(
+    main.getByRole("button", { name: /can move along one/ }),
+  ).toHaveCount(2);
+});
+
+test("shifting makes room at a chair and can be undone from the toast", async ({
+  memberPage,
+}) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  await memberPage.getByTestId("shift-mode").click();
+
+  // Aim from Ada's chair, then send everybody toward Grace's.
+  await memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`).click();
+  await expect(
+    memberPage.locator("main").getByText(/Making room/),
+  ).toBeVisible();
+  await memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-1`).click();
+
+  await expect(memberPage.getByText("Seats shifted along")).toBeVisible();
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`)).toHaveText(
+    "+",
+  );
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-1`)).toContainText(
+    SEAT_LABEL_ADA,
+  );
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-2`)).toContainText(
+    SEAT_LABEL_GRACE,
+  );
+
+  await memberPage.getByRole("button", { name: "Undo" }).click();
+  await expect(memberPage.getByText("Change undone")).toBeVisible();
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`)).toContainText(
+    SEAT_LABEL_ADA,
+  );
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-2`)).toHaveText(
+    "+",
+  );
+});
+
+test("a shift can be aimed and cancelled with the keyboard alone", async ({
+  memberPage,
+}) => {
+  await memberPage.goto(`/events/${EVENT_GALA_ID}`);
+  await memberPage.getByTestId("shift-mode").click();
+
+  await memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-0`).focus();
+  await memberPage.keyboard.press("Enter");
+  await expect(
+    memberPage.locator("main").getByText(/Making room/),
+  ).toBeVisible();
+  await memberPage.keyboard.press("Escape");
+  await expect(
+    memberPage.locator("main").getByText("Move cancelled."),
+  ).toBeVisible();
+
+  // And again, this time placing it.
+  await memberPage.keyboard.press("Enter");
+  await memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-1`).focus();
+  await memberPage.keyboard.press("Enter");
+  await expect(memberPage.getByText("Seats shifted along")).toBeVisible();
+  await expect(memberPage.getByTestId(`seat-${TABLE_HEAD_ID}-1`)).toContainText(
+    SEAT_LABEL_ADA,
+  );
+});

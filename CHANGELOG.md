@@ -19,6 +19,19 @@ All notable user-facing changes to this app are documented here.
   a tie-break between two _empty_ chairs; it was also being applied to a chair somebody was
   sitting in, which took the chair away and hid the name while leaving it in the data.
 
+## 2026-09-23
+
+### Added
+
+- Make room for a guest without retyping anybody. "Make room" marks every chair somebody can
+  be moved along from; choose one, then choose which way, and everybody shifts up one place
+  into the next free chair. The row of chairs is followed as it actually stands, so a shift
+  runs round the end of a table and on to the next one where two are pushed together — which
+  is how it works along one side of an L or a U. Chairs past the first free one are left
+  alone. If a table's chairs go all the way round and every one of them is taken there is
+  nowhere to leave a gap, so the table turns by one instead. It is one change in the activity
+  feed with one Undo, however many tables it ran through.
+
 ## 2026-08-27
 
 ### Fixed

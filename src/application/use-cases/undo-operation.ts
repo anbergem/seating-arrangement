@@ -45,6 +45,7 @@ import {
   restoreSeatingTableRotation,
   restoreSeatingTableShape,
   restoreSeatLabel,
+  restoreSeatLabels,
   restoreSeatPlacement,
 } from "../../domain";
 import type { Actor } from "../actor";
@@ -54,7 +55,7 @@ import { mayUndo, requireHistoryPermission } from "../history-policy";
 import type { Dependencies } from "../ports";
 import { applyDomain, type UndoRedoResult } from "./command";
 import { loadFloorPlan } from "./floor-plan";
-import { otherTableGuard } from "./move-seat";
+import { otherTableGuards } from "./move-seat";
 
 const ACTION = "undo-operation";
 
@@ -273,6 +274,9 @@ export async function undoOperation(
     ) {
       return undoSeatMove(deps, actor, op, table, op.inverse);
     }
+    if (op.inverse?.type === "restore-seat-labels") {
+      return undoSeatShift(deps, actor, op, table, op.inverse);
+    }
 
     const { plan } = await loadFloorPlan(deps, actor.orgId, table.eventId);
     const now = deps.clock.now();
@@ -394,7 +398,7 @@ async function undoSeatMove(
   resourceTable: SeatingTable,
   inverse: Extract<InverseCommand, { type: "restore-seat-placement" }>,
 ): Promise<UndoRedoResult> {
-  const guard = otherTableGuard(op.payload);
+  const [guard] = otherTableGuards(op.payload);
   const otherId =
     inverse.from.tableId === resourceTable.id
       ? inverse.to.tableId
@@ -448,16 +452,18 @@ async function undoSeatMove(
     versionBefore: resourceTable.version,
     versionAfter: restoredResource.version,
     payload: {
-      other: {
-        tableId: other.id,
-        versionBefore: other.version,
-        versionAfter: restoredOther.version,
-      },
+      others: [
+        {
+          tableId: other.id,
+          versionBefore: other.version,
+          versionAfter: restoredOther.version,
+        },
+      ],
     },
     now,
   });
 
-  await deps.seatingTables.commitSeatMove({
+  await deps.seatingTables.commitTables({
     tables: [
       { table: restoredResource, expectedVersion: resourceTable.version },
       { table: restoredOther, expectedVersion: other.version },
@@ -468,6 +474,97 @@ async function undoSeatMove(
 
   return {
     resource: restoredResource,
+    operationId: undoOp.id,
+    resourceType: "seating_table",
+  };
+}
+
+/**
+ * Undoing a shift.
+ *
+ * Its own function for the reason `undoSeatMove` and `undoBootstrap` are: the
+ * write is not one record changing state. A shift writes as many rows as the
+ * chain of chairs ran through, so it needs the repository method that writes
+ * them together — and a version guard for each, since `canUndo` has checked
+ * only the one table the operation names.
+ */
+async function undoSeatShift(
+  deps: Dependencies,
+  actor: Actor,
+  op: Operation,
+  resourceTable: SeatingTable,
+  inverse: Extract<InverseCommand, { type: "restore-seat-labels" }>,
+): Promise<UndoRedoResult> {
+  const guards = otherTableGuards(op.payload);
+  const wanted = new Set(inverse.seats.map((seat) => seat.tableId));
+  wanted.delete(resourceTable.id);
+  // A recorded inverse whose tables and guards disagree is a corrupt row
+  // rather than anything a caller did.
+  if (guards.length !== wanted.size) throw inverseMismatch();
+
+  const others = await Promise.all(
+    guards.map(async (guard) => {
+      if (!wanted.has(guard.tableId)) throw inverseMismatch();
+      const found = await deps.seatingTables.getById(
+        actor.orgId,
+        guard.tableId,
+      );
+      if (!found) throw new AppError("NOT_FOUND", "Table not found");
+      if (found.version !== guard.versionAfter) {
+        throw new AppError("CONFLICT", "Newer changes exist; undo refused");
+      }
+      return found;
+    }),
+  );
+
+  const { plan } = await loadFloorPlan(
+    deps,
+    actor.orgId,
+    resourceTable.eventId,
+  );
+  const now = deps.clock.now();
+  const restored = applyDomain(() =>
+    restoreSeatLabels(plan, inverse.seats, now),
+  );
+  const subject = restored.find((table) => table.id === resourceTable.id);
+  // The chair the shift started from is the one whose name changed for
+  // certain, so its table is always among the restored ones.
+  if (!subject) throw inverseMismatch();
+
+  const before = new Map(
+    [resourceTable, ...others].map((table) => [table.id, table.version]),
+  );
+  const undoOp = undoOperationRow({
+    id: deps.ids.next(),
+    actor,
+    undone: op,
+    resourceType: "seating_table",
+    resourceId: resourceTable.id,
+    versionBefore: resourceTable.version,
+    versionAfter: subject.version,
+    payload: {
+      others: restored
+        .filter((table) => table.id !== resourceTable.id)
+        .map((table) => ({
+          tableId: table.id,
+          versionBefore: before.get(table.id) ?? 0,
+          versionAfter: table.version,
+        })),
+    },
+    now,
+  });
+
+  await deps.seatingTables.commitTables({
+    tables: restored.map((table) => ({
+      table,
+      expectedVersion: before.get(table.id) ?? 0,
+    })),
+    operation: undoOp,
+    markUndone: op.id,
+  });
+
+  return {
+    resource: subject,
     operationId: undoOp.id,
     resourceType: "seating_table",
   };

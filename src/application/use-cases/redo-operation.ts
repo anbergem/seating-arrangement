@@ -36,6 +36,7 @@ import {
   labelSeat,
   moveSeatLabel,
   moveSeatingTable,
+  shiftSeats,
   reshapeSeatingTable,
   rotateSeatingTable,
   TABLE_SHAPE_KINDS,
@@ -47,7 +48,7 @@ import { mayRedo, requireHistoryPermission } from "../history-policy";
 import type { Dependencies } from "../ports";
 import { applyDomain, isCompensated, type UndoRedoResult } from "./command";
 import { loadFloorPlan } from "./floor-plan";
-import { otherTableGuard, seatMoveTargets } from "./move-seat";
+import { otherTableGuards, seatMoveTargets } from "./move-seat";
 
 const ACTION = "redo-operation";
 
@@ -358,8 +359,14 @@ export async function redoOperation(
     const forward = await loadForwardOperation(deps, actor, undoOp);
 
     // `loadForwardOperation` has already checked the permission.
-    if (forward.action === "move-seat" && otherTableGuard(forward.payload)) {
+    if (
+      forward.action === "move-seat" &&
+      otherTableGuards(forward.payload).length > 0
+    ) {
       return redoSeatMove(deps, actor, undoOp, forward, table);
+    }
+    if (forward.action === "shift-seats") {
+      return redoSeatShift(deps, actor, undoOp, forward, table);
     }
 
     const { plan } = await loadFloorPlan(deps, actor.orgId, table.eventId);
@@ -417,7 +424,7 @@ async function redoSeatMove(
   forward: Operation,
   resourceTable: SeatingTable,
 ): Promise<UndoRedoResult> {
-  const guard = otherTableGuard(undoOp.payload);
+  const [guard] = otherTableGuards(undoOp.payload);
   const targets = seatMoveTargets(forward.payload);
   const otherId =
     targets.fromTableId === resourceTable.id
@@ -466,16 +473,18 @@ async function redoSeatMove(
     versionBefore: resourceTable.version,
     versionAfter: nextResource.version,
     payload: {
-      other: {
-        tableId: other.id,
-        versionBefore: other.version,
-        versionAfter: nextOther.version,
-      },
+      others: [
+        {
+          tableId: other.id,
+          versionBefore: other.version,
+          versionAfter: nextOther.version,
+        },
+      ],
     },
     now,
   });
 
-  await deps.seatingTables.commitSeatMove({
+  await deps.seatingTables.commitTables({
     tables: [
       { table: nextResource, expectedVersion: resourceTable.version },
       { table: nextOther, expectedVersion: other.version },
@@ -486,6 +495,96 @@ async function redoSeatMove(
 
   return {
     resource: nextResource,
+    operationId: redoOp.id,
+    resourceType: "seating_table",
+  };
+}
+
+/**
+ * Redoing a shift.
+ *
+ * Every other redo of a seating command is a pure re-run over one table, and
+ * this cannot be: a shift writes as many rows as the chain of chairs runs
+ * through, which is not known until the chain is walked again. The forward
+ * command is re-run rather than an inverse applied, which is the stance the
+ * rest of redo takes — after the undo everybody is back where they started, so
+ * the shift finds exactly what it found the first time.
+ *
+ * The guards come off the **undo** row: that was the write which left these
+ * tables where they now stand.
+ */
+async function redoSeatShift(
+  deps: Dependencies,
+  actor: Actor,
+  undoOp: Operation,
+  forward: Operation,
+  resourceTable: SeatingTable,
+): Promise<UndoRedoResult> {
+  for (const guard of otherTableGuards(undoOp.payload)) {
+    const other = await deps.seatingTables.getById(actor.orgId, guard.tableId);
+    if (!other) throw new AppError("NOT_FOUND", "Table not found");
+    if (other.version !== guard.versionAfter) {
+      throw new AppError("CONFLICT", "Newer changes exist; redo refused");
+    }
+  }
+
+  const { plan } = await loadFloorPlan(
+    deps,
+    actor.orgId,
+    resourceTable.eventId,
+  );
+  const now = deps.clock.now();
+  const shifted = applyDomain(() =>
+    shiftSeats(
+      plan,
+      {
+        tableId: payloadString(forward.payload, "tableId"),
+        seat: payloadNumber(forward.payload, "seat"),
+      },
+      {
+        tableId: payloadString(forward.payload, "towardTableId"),
+        seat: payloadNumber(forward.payload, "towardSeat"),
+      },
+      now,
+    ),
+  );
+  const subject = shifted.tables.find((table) => table.id === resourceTable.id);
+  if (!subject) throw new AppError("INTERNAL", "Unexpected error");
+
+  const versionOf = (id: string) =>
+    plan.tables.find((candidate) => candidate.id === id)?.version ?? 0;
+  const redoOp = redoOperationRow({
+    id: deps.ids.next(),
+    actor,
+    undoOp,
+    forward,
+    resourceType: "seating_table",
+    resourceId: resourceTable.id,
+    versionBefore: resourceTable.version,
+    versionAfter: subject.version,
+    payload: {
+      others: shifted.tables
+        .filter((table) => table.id !== resourceTable.id)
+        .map((table) => ({
+          tableId: table.id,
+          versionBefore: versionOf(table.id),
+          versionAfter: table.version,
+        })),
+    },
+    now,
+  });
+
+  await deps.seatingTables.commitTables({
+    tables: shifted.tables.map((table) => ({
+      table,
+      expectedVersion: versionOf(table.id),
+    })),
+    operation: redoOp,
+    markUndone: undoOp.id,
+  });
+
+  return {
+    resource: subject,
     operationId: redoOp.id,
     resourceType: "seating_table",
   };

@@ -46,10 +46,20 @@ export interface TableShapeProps {
    * table's. */
   dropSeat: number | null;
   dropValid: boolean;
+  /** Shift mode is on, so a press on a chair aims a shift rather than
+   * starting a drag. */
+  shifting: boolean;
+  /** The chair a shift is being aimed from, if it is one of this table's. */
+  armedSeat: number | null;
+  /** Whether anybody on this seat could be shifted along. */
+  canShift: (seat: number) => boolean;
+  /** The arrow to draw on this seat while a shift is aimed. */
+  arrowFor: (seat: number) => string | null;
   onPointerDown: (event: React.PointerEvent) => void;
   onKeyDown: (event: React.KeyboardEvent) => void;
   onSeatPointerDown: (seat: number, event: React.PointerEvent) => void;
   onSeatKeyDown: (seat: number, event: React.KeyboardEvent) => void;
+  onSeatSelect: (seat: number) => void;
 }
 
 export function TableShape(props: TableShapeProps) {
@@ -129,6 +139,11 @@ export function TableShape(props: TableShapeProps) {
           number: index + 1,
           table: table.name,
         });
+        const arrow = props.arrowFor(index);
+        const shiftable = props.canShift(index);
+        const seatName = seat.label
+          ? t("seating.seatFilled", { place, label: seat.label })
+          : t("seating.seatEmpty", { place });
         return (
           <SeatChip
             key={cellKey(cell.x, cell.y)}
@@ -136,19 +151,35 @@ export function TableShape(props: TableShapeProps) {
             index={index}
             label={seat.label}
             accessibleName={
-              seat.label
-                ? t("seating.seatFilled", { place, label: seat.label })
-                : t("seating.seatEmpty", { place })
+              // The mode is said out loud, not only drawn: a chair that can be
+              // shifted and a chair a shift could land on are different
+              // offers, and neither is obvious from the name alone.
+              arrow
+                ? t("seating.seatShiftToward", { seat: seatName })
+                : props.shifting && shiftable
+                  ? t("seating.seatShiftable", { seat: seatName })
+                  : seatName
             }
             emptyText={t("seating.emptySeat")}
             column={cell.x}
             row={cell.y}
             selected={props.selectedSeat === index}
-            lifted={props.liftedSeat === index}
+            lifted={props.liftedSeat === index || props.armedSeat === index}
             dropTarget={props.dropSeat === index}
             invalid={props.dropSeat === index && !props.dropValid}
-            onPointerDown={(event) => props.onSeatPointerDown(index, event)}
+            shiftable={props.shifting && shiftable}
+            arrow={arrow}
+            // While the mode is on the chip must stay an ordinary button: the
+            // drag's `preventDefault` is what would stop the click arriving.
+            onPointerDown={
+              props.shifting
+                ? undefined
+                : (event) => props.onSeatPointerDown(index, event)
+            }
             onKeyDown={(event) => props.onSeatKeyDown(index, event)}
+            onClick={
+              props.shifting ? () => props.onSeatSelect(index) : undefined
+            }
           />
         );
       })}

@@ -36,6 +36,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Room, SeatingTable } from "./geometry";
 import { TableShape } from "./TableShape";
 import type { SeatDrag } from "./use-seat-drag";
+import type { SeatShift } from "./use-seat-shift";
 import type { TableDrag } from "./use-table-drag";
 
 const EMPTY: ReadonlySet<number> = new Set<number>();
@@ -100,6 +101,9 @@ export interface FloorPlanProps {
   blocked: ReadonlyMap<string, ReadonlySet<number>>;
   drag: TableDrag;
   seatDrag: SeatDrag;
+  shift: SeatShift;
+  /** True while shift mode is on. */
+  shifting: boolean;
   selectedTableId: string | null;
   selectedSeat: number | null;
   canvasRef: React.RefObject<HTMLDivElement | null>;
@@ -107,7 +111,7 @@ export interface FloorPlanProps {
 
 export function FloorPlan(props: FloorPlanProps) {
   const t = useT();
-  const { drag, seatDrag } = props;
+  const { drag, seatDrag, shift } = props;
   const [wrapper, space] = useAvailableSpace();
   // Before the first measurement there is nothing to fit to; the largest cell
   // is the closest guess and the observer corrects it on the next frame.
@@ -130,15 +134,15 @@ export function FloorPlan(props: FloorPlanProps) {
         // open for it.
         onPointerMove={(event) => {
           drag.onPointerMove(event);
-          seatDrag.onPointerMove(event);
+          if (!props.shifting) seatDrag.onPointerMove(event);
         }}
         onPointerUp={(event) => {
           drag.onPointerUp(event);
-          seatDrag.onPointerUp(event);
+          if (!props.shifting) seatDrag.onPointerUp(event);
         }}
         onPointerCancel={(event) => {
           drag.onPointerUp(event);
-          seatDrag.onPointerUp(event);
+          if (!props.shifting) seatDrag.onPointerUp(event);
         }}
         // `m-auto` rather than centring on the wrapper: it centres a plan
         // smaller than the space and still scrolls to the top-left corner of
@@ -186,8 +190,17 @@ export function FloorPlan(props: FloorPlanProps) {
                 seatDrag.onPointerDown(event, table, seat)
               }
               onSeatKeyDown={(seat, event) =>
-                seatDrag.onKeyDown(event, table, seat)
+                props.shifting
+                  ? shift.onKeyDown(event, table, seat)
+                  : seatDrag.onKeyDown(event, table, seat)
               }
+              onSeatSelect={(seat) => shift.onSelect(table, seat)}
+              shifting={props.shifting}
+              armedSeat={
+                shift.armed?.tableId === table.id ? shift.armed.seat : null
+              }
+              canShift={(seat) => shift.canShift({ tableId: table.id, seat })}
+              arrowFor={(seat) => shift.arrowTo({ tableId: table.id, seat })}
             />
           );
         })}

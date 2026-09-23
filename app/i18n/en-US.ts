@@ -36,6 +36,7 @@ const messages = {
       "create-seating-table": "Added table",
       "label-seat": "Labelled seat",
       "move-seat": "Moved a guest",
+      "shift-seats": "Shifted the seats along",
       "move-seating-table": "Moved table",
       "redo-operation": "Redid change",
       "resize-room": "Resized the room",
@@ -64,6 +65,9 @@ const messages = {
     announceSeatPickedUp:
       "Carrying {{label}} from {{place}}. Move to another seat and press Enter to place them, or Escape to cancel.",
     announceSeatSwapped: "{{label}} and {{other}} swapped places.",
+    announceShiftArmed:
+      "Making room at {{label}}'s chair. Choose the arrow pointing the way people should move, or press Escape to cancel.",
+    announceShifted: "Everybody has moved along one from {{label}}'s chair.",
     announceMoveStarted:
       "Moving {{name}}. Use the arrow keys, then Enter to place it or Escape to cancel.",
     announceMoved: "{{name}} placed at column {{x}}, row {{y}}.",
@@ -100,6 +104,13 @@ const messages = {
     rotated: "Table turned",
     seatBlocked: "No chair here: a neighbouring table is in the way.",
     seatMoved: "Seat moved",
+    seatShiftable: "{{seat}} — everybody from here can move along one",
+    seatShiftToward: "{{seat}} — move everybody this way",
+    shifted: "Seats shifted along",
+    shiftMode: "Make room",
+    shiftModeOff: "Finished making room.",
+    shiftModeOn:
+      "Choose a marked chair to make room at, then choose which way everybody should move.",
     seatEmpty: "{{place}}, empty",
     seatFilled: "{{place}}, {{label}}",
     seatPlace: "Seat {{number}}, {{table}}",

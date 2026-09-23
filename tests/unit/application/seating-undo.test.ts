@@ -26,6 +26,7 @@ import { moveSeat } from "../../../src/application/use-cases/move-seat";
 import { moveSeatingTable } from "../../../src/application/use-cases/move-seating-table";
 import { redoOperation } from "../../../src/application/use-cases/redo-operation";
 import { reshapeSeatingTable } from "../../../src/application/use-cases/reshape-seating-table";
+import { shiftSeats } from "../../../src/application/use-cases/shift-seats";
 import { undoOperation } from "../../../src/application/use-cases/undo-operation";
 import { findSeat, type SeatingTable } from "../../../src/domain";
 import {
@@ -284,6 +285,115 @@ describe("seat move", () => {
     await expect(
       redoOperation(d, ACTOR, { operationId: undone.operationId }),
     ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+});
+
+describe("seat shift", () => {
+  it("round-trips a shift along one table", async () => {
+    const d = deps();
+    const shifted = await shiftSeats(d, ACTOR, {
+      tableId: TABLE_HEAD_ID,
+      seat: 0,
+      towardTableId: TABLE_HEAD_ID,
+      towardSeat: 1,
+    });
+    expect(findSeat(table(d, TABLE_HEAD_ID), 0)?.label).toBe("");
+    expect(findSeat(table(d, TABLE_HEAD_ID), 2)?.label).toBe(SEAT_LABEL_GRACE);
+
+    const undone = await undoOperation(d, ACTOR, {
+      operationId: shifted.operationId,
+    });
+    expect(findSeat(table(d, TABLE_HEAD_ID), 0)?.label).toBe(SEAT_LABEL_ADA);
+    expect(findSeat(table(d, TABLE_HEAD_ID), 1)?.label).toBe(SEAT_LABEL_GRACE);
+    expect(findSeat(table(d, TABLE_HEAD_ID), 2)?.label).toBe("");
+
+    await redoOperation(d, ACTOR, { operationId: undone.operationId });
+    expect(findSeat(table(d, TABLE_HEAD_ID), 0)?.label).toBe("");
+    expect(findSeat(table(d, TABLE_HEAD_ID), 2)?.label).toBe(SEAT_LABEL_GRACE);
+  });
+
+  it("round-trips a shift that ran on to the next table", async () => {
+    const d = deps();
+    await moveSeatingTable(d, ACTOR, {
+      tableId: TABLE_SIDE_ID,
+      gridX: 3,
+      gridY: 0,
+    });
+    const shifted = await shiftSeats(d, ACTOR, {
+      tableId: TABLE_HEAD_ID,
+      seat: 0,
+      towardTableId: TABLE_HEAD_ID,
+      towardSeat: 1,
+    });
+    expect(findSeat(table(d, TABLE_SIDE_ID), 0)?.label).toBe(SEAT_LABEL_GRACE);
+
+    const undone = await undoOperation(d, ACTOR, {
+      operationId: shifted.operationId,
+    });
+    expect(findSeat(table(d, TABLE_HEAD_ID), 0)?.label).toBe(SEAT_LABEL_ADA);
+    expect(findSeat(table(d, TABLE_HEAD_ID), 1)?.label).toBe(SEAT_LABEL_GRACE);
+    expect(findSeat(table(d, TABLE_SIDE_ID), 0)?.label).toBe("");
+
+    await redoOperation(d, ACTOR, { operationId: undone.operationId });
+    expect(findSeat(table(d, TABLE_SIDE_ID), 0)?.label).toBe(SEAT_LABEL_GRACE);
+  });
+
+  /** `canUndo` checks only the table the operation names, and a shift that ran
+   * on to another one changed that too. Without the guards in `payload.others`
+   * this undo would write over somebody else's change without a word. */
+  it("is refused when a table it ran on to has changed since", async () => {
+    const d = deps();
+    await moveSeatingTable(d, ACTOR, {
+      tableId: TABLE_SIDE_ID,
+      gridX: 3,
+      gridY: 0,
+    });
+    const shifted = await shiftSeats(d, ACTOR, {
+      tableId: TABLE_HEAD_ID,
+      seat: 0,
+      towardTableId: TABLE_HEAD_ID,
+      towardSeat: 1,
+    });
+    await labelSeat(d, ACTOR, {
+      tableId: TABLE_SIDE_ID,
+      seat: 4,
+      label: "Katherine Johnson",
+    });
+
+    await expect(
+      undoOperation(d, ACTOR, { operationId: shifted.operationId }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    expect(findSeat(table(d, TABLE_SIDE_ID), 4)?.label).toBe(
+      "Katherine Johnson",
+    );
+    expect(findSeat(table(d, TABLE_SIDE_ID), 0)?.label).toBe(SEAT_LABEL_GRACE);
+  });
+
+  it("round-trips a table turned right round", async () => {
+    const d = deps();
+    const head = table(d, TABLE_HEAD_ID);
+    d.state.seatingTables.set(TABLE_HEAD_ID, {
+      ...head,
+      seats: head.seats.map((seat, index) =>
+        seat.label ? seat : { label: `Guest ${index}` },
+      ),
+    });
+    const before = table(d, TABLE_HEAD_ID).seats.map((seat) => seat.label);
+
+    const shifted = await shiftSeats(d, ACTOR, {
+      tableId: TABLE_HEAD_ID,
+      seat: 0,
+      towardTableId: TABLE_HEAD_ID,
+      towardSeat: 1,
+    });
+    expect(table(d, TABLE_HEAD_ID).seats.map((seat) => seat.label)).not.toEqual(
+      before,
+    );
+
+    await undoOperation(d, ACTOR, { operationId: shifted.operationId });
+    expect(table(d, TABLE_HEAD_ID).seats.map((seat) => seat.label)).toEqual(
+      before,
+    );
   });
 });
 

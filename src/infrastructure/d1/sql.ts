@@ -229,11 +229,11 @@ SELECT ?, ?, ?, ?, ?
 WHERE EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ?)`;
 
 // ---------------------------------------------------------------------------
-// A write across two tables (a seat move, B11)
+// A write across several tables (a seat move, a shift, B11)
 //
-// One version guard cannot cover two rows, and two different guards in one
+// One version guard cannot cover several rows, and a guard per row in one
 // batch is exactly the partial write the rule above exists to prevent: a
-// stale version on one table would no-op its half and leave the other half
+// stale version on one of them would no-op its part and leave the rest
 // applied.
 //
 // So the **audit row is the interlock**. It goes first and is the one
@@ -241,23 +241,39 @@ WHERE EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ?)`;
 // after it asks only whether that row is there. A stale writer's audit insert
 // matches nothing, and the rest of the batch matches nothing either.
 //
-// It has to be the audit row rather than "both versions" repeated on every
+// It has to be the audit row rather than every version repeated on every
 // statement, because a version is not stable across a batch: the first update
-// bumps its own table, and the second statement's guard would then be reading
-// a version the batch itself had just changed.
+// bumps its own table, and a later statement's guard would then be reading a
+// version the batch itself had just changed.
 // ---------------------------------------------------------------------------
 
-/** The two `EXISTS` clauses that make a two-table write all-or-nothing. */
-const BOTH_SEATING_TABLE_VERSIONS = `EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND version = ?)
-  AND EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND version = ?)`;
+/** One table still standing at the version its writer read. */
+const SEATING_TABLE_AT_VERSION = `EXISTS (SELECT 1 FROM seating_tables WHERE org_id = ? AND id = ? AND version = ?)`;
 
 /** Whether the batch's own audit row landed — which it did only if both
  * versions matched. */
 const OPERATION_WRITTEN = `EXISTS (SELECT 1 FROM operations WHERE org_id = ? AND id = ?)`;
 
-export const INSERT_OPERATION_IF_BOTH_SEATING_TABLE_VERSIONS = `INSERT INTO operations (${OPERATION_COLUMNS})
+/**
+ * The audit row for a write spanning `count` tables, and the one statement in
+ * such a batch that looks at a version — all of them.
+ *
+ * Built rather than declared, because the number of tables is not known until
+ * the caller has one in hand: a seat move spans two, and a shift spans as many
+ * as the chain of chairs runs through. Every value is still an argument, and
+ * every clause still carries its own `org_id = ?`; `tests/unit/infrastructure/
+ * sql-scoping.test.ts` checks that at several arities, because a builder would
+ * otherwise slip past the tenancy guard that reads the exported strings.
+ */
+export function insertOperationIfSeatingTableVersions(count: number): string {
+  if (!Number.isInteger(count) || count < 1) {
+    throw new Error("A write has to name at least one table");
+  }
+  const guards = Array.from({ length: count }, () => SEATING_TABLE_AT_VERSION);
+  return `INSERT INTO operations (${OPERATION_COLUMNS})
 SELECT ${OPERATION_INSERT_VALUES}
-WHERE ${BOTH_SEATING_TABLE_VERSIONS}`;
+WHERE ${guards.join("\n  AND ")}`;
+}
 
 export const DELETE_SEATING_CELLS_IF_OPERATION = `DELETE FROM seating_cells
 WHERE org_id = ? AND table_id = ?

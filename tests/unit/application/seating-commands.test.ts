@@ -24,6 +24,7 @@ import { listEvents } from "../../../src/application/use-cases/list-events";
 import { moveSeat } from "../../../src/application/use-cases/move-seat";
 import { moveSeatingTable } from "../../../src/application/use-cases/move-seating-table";
 import { reshapeSeatingTable } from "../../../src/application/use-cases/reshape-seating-table";
+import { shiftSeats } from "../../../src/application/use-cases/shift-seats";
 import {
   archiveEvent as archiveEventDomain,
   findSeat,
@@ -440,11 +441,13 @@ describe("moveSeat", () => {
         toTableId: TABLE_SIDE_ID,
         toSeat: 0,
         label: SEAT_LABEL_ADA,
-        other: {
-          tableId: TABLE_HEAD_ID,
-          versionBefore: head.version,
-          versionAfter: head.version + 1,
-        },
+        others: [
+          {
+            tableId: TABLE_HEAD_ID,
+            versionBefore: head.version,
+            versionAfter: head.version + 1,
+          },
+        ],
       },
       inverse: {
         type: "restore-seat-placement",
@@ -481,9 +484,9 @@ describe("moveSeat", () => {
     expect(d.state.seatingTables.get(TABLE_HEAD_ID)!.version).toBe(
       before.version + 1,
     );
-    expect(d.state.operations.get("op_move_seat")?.payload).not.toHaveProperty(
-      "other",
-    );
+    expect(d.state.operations.get("op_move_seat")?.payload).toMatchObject({
+      others: [],
+    });
   });
 
   it("refuses a pair of tables at two different events", async () => {
@@ -596,6 +599,178 @@ describe("moveSeat", () => {
     expect(findSeat(d.state.seatingTables.get(TABLE_HEAD_ID)!, 0)?.label).toBe(
       SEAT_LABEL_ADA,
     );
+  });
+});
+
+describe("shiftSeats", () => {
+  it("moves everybody along and stops at the first empty chair", async () => {
+    const d = deps(["op_shift"]);
+    const before = d.state.seatingTables.get(TABLE_HEAD_ID)!;
+    // Ada is on seat 0 and Grace on seat 1; seat 2 is the first free chair.
+    const result = await shiftSeats(d, actor(), {
+      tableId: TABLE_HEAD_ID,
+      seat: 0,
+      towardTableId: TABLE_HEAD_ID,
+      towardSeat: 1,
+      expectedVersion: before.version,
+    });
+
+    expect(findSeat(result.resource, 0)?.label).toBe("");
+    expect(findSeat(result.resource, 1)?.label).toBe(SEAT_LABEL_ADA);
+    expect(findSeat(result.resource, 2)?.label).toBe(SEAT_LABEL_GRACE);
+    expect(d.state.operations.get("op_shift")).toMatchObject({
+      action: "shift-seats",
+      classification: "reversible",
+      resourceId: TABLE_HEAD_ID,
+      payload: {
+        tableId: TABLE_HEAD_ID,
+        seat: 0,
+        towardTableId: TABLE_HEAD_ID,
+        towardSeat: 1,
+        others: [],
+      },
+      inverse: {
+        type: "restore-seat-labels",
+        seats: [
+          { tableId: TABLE_HEAD_ID, seat: 0, label: SEAT_LABEL_ADA },
+          { tableId: TABLE_HEAD_ID, seat: 1, label: SEAT_LABEL_GRACE },
+          { tableId: TABLE_HEAD_ID, seat: 2, label: "" },
+        ],
+      },
+    });
+  });
+
+  it("shifts the other way round the same table", async () => {
+    const d = deps(["op_shift"]);
+    // Seat 5 is the chair on Ada's other side, round the end of the table.
+    const result = await shiftSeats(d, actor(), {
+      tableId: TABLE_HEAD_ID,
+      seat: 0,
+      towardTableId: TABLE_HEAD_ID,
+      towardSeat: 5,
+    });
+    expect(findSeat(result.resource, 0)?.label).toBe("");
+    expect(findSeat(result.resource, 5)?.label).toBe(SEAT_LABEL_ADA);
+    expect(findSeat(result.resource, 1)?.label).toBe(SEAT_LABEL_GRACE);
+  });
+
+  /** The chain follows the furniture, so once two tables are pushed together
+   * a shift runs straight off one and on to the next — and then there are two
+   * rows to write, under one operation. */
+  it("carries on to the next table when the two are pushed together", async () => {
+    const d = deps(["op_move", "op_shift"]);
+    await moveSeatingTable(d, actor(), {
+      tableId: TABLE_SIDE_ID,
+      gridX: 3,
+      gridY: 0,
+    });
+    const side = d.state.seatingTables.get(TABLE_SIDE_ID)!;
+
+    await shiftSeats(d, actor(), {
+      tableId: TABLE_HEAD_ID,
+      seat: 0,
+      towardTableId: TABLE_HEAD_ID,
+      towardSeat: 1,
+    });
+
+    const head = d.state.seatingTables.get(TABLE_HEAD_ID)!;
+    expect(findSeat(head, 0)?.label).toBe("");
+    expect(findSeat(head, 1)?.label).toBe(SEAT_LABEL_ADA);
+    // Grace has gone round on to the next table's first chair.
+    expect(findSeat(d.state.seatingTables.get(TABLE_SIDE_ID)!, 0)?.label).toBe(
+      SEAT_LABEL_GRACE,
+    );
+    // One operation, and the second table's guard recorded on it.
+    expect(d.state.operations.get("op_shift")).toMatchObject({
+      resourceId: TABLE_HEAD_ID,
+      payload: {
+        others: [
+          {
+            tableId: TABLE_SIDE_ID,
+            versionBefore: side.version,
+            versionAfter: side.version + 1,
+          },
+        ],
+      },
+    });
+  });
+
+  it("turns a full table by one, with nowhere to leave a gap", async () => {
+    const d = deps(["op_shift"]);
+    const head = d.state.seatingTables.get(TABLE_HEAD_ID)!;
+    d.state.seatingTables.set(TABLE_HEAD_ID, {
+      ...head,
+      seats: head.seats.map((seat, index) =>
+        seat.label ? seat : { label: `Guest ${index}` },
+      ),
+    });
+
+    const result = await shiftSeats(d, actor(), {
+      tableId: TABLE_HEAD_ID,
+      seat: 0,
+      towardTableId: TABLE_HEAD_ID,
+      towardSeat: 1,
+    });
+    // Nobody is dropped and nobody is duplicated, and the chair the shift
+    // started from is not freed: there is nowhere for a gap to go.
+    expect(result.resource.seats.map((seat) => seat.label).sort()).toEqual(
+      d.state.seatingTables
+        .get(TABLE_HEAD_ID)!
+        .seats.map((seat) => seat.label)
+        .sort(),
+    );
+    expect(findSeat(result.resource, 1)?.label).toBe(SEAT_LABEL_ADA);
+    expect(findSeat(result.resource, 0)?.label).not.toBe("");
+  });
+
+  it("refuses a chair nobody is sitting in", async () => {
+    const d = deps(["op_shift"]);
+    await expect(
+      shiftSeats(d, actor(), {
+        tableId: TABLE_HEAD_ID,
+        seat: 3,
+        towardTableId: TABLE_HEAD_ID,
+        towardSeat: 4,
+      }),
+    ).rejects.toMatchObject({ code: "INVARIANT" });
+  });
+
+  it("refuses a direction that is not the next chair along", async () => {
+    const d = deps(["op_shift"]);
+    await expect(
+      shiftSeats(d, actor(), {
+        tableId: TABLE_HEAD_ID,
+        seat: 0,
+        towardTableId: TABLE_HEAD_ID,
+        towardSeat: 3,
+      }),
+    ).rejects.toMatchObject({ code: "VALIDATION" });
+  });
+
+  it("refuses another organization's table as NOT_FOUND", async () => {
+    const d = deps(["op_shift"]);
+    await expect(
+      shiftSeats(d, actor(), {
+        tableId: TABLE_OTHER_ID,
+        seat: 0,
+        towardTableId: TABLE_OTHER_ID,
+        towardSeat: 1,
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("refuses a stale version", async () => {
+    const d = deps(["op_shift"]);
+    const head = d.state.seatingTables.get(TABLE_HEAD_ID)!;
+    await expect(
+      shiftSeats(d, actor(), {
+        tableId: TABLE_HEAD_ID,
+        seat: 0,
+        towardTableId: TABLE_HEAD_ID,
+        towardSeat: 1,
+        expectedVersion: head.version + 1,
+      }),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
   });
 });
 

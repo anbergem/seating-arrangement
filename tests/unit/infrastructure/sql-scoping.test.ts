@@ -30,6 +30,14 @@ const fragmentGroups = Object.entries(exported).filter(
     typeof entry[1] === "object" && entry[1] !== null,
 );
 
+/** A statement whose shape depends on how many rows it guards is exported as a
+ * builder rather than a constant, and would otherwise slip past both suites
+ * above — which is the whole of the tenancy guard. */
+const builders = Object.entries(exported).filter(
+  (entry): entry is [string, (count: number) => string] =>
+    typeof entry[1] === "function",
+);
+
 describe("SQL statements", () => {
   it("exports the statements the repositories use", () => {
     // A rename that silently drops a statement would leave the loops below
@@ -81,4 +89,41 @@ describe("SQL fragments", () => {
       expect(fragment.split("?").length - 1).toBeLessThanOrEqual(1);
     },
   );
+});
+
+describe("SQL builders", () => {
+  it("exports the statements that are built for a number of rows", () => {
+    // A builder that stopped being exported would leave the loops below
+    // asserting nothing at all, the same way a renamed constant would.
+    expect(builders.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it.each(builders)(
+    "%s is scoped by organization at every arity",
+    (_name, build) => {
+      for (const count of [1, 2, 5]) {
+        const statement = build(count);
+        expect(statement).toContain("org_id = ?");
+        // One scoped clause per row it guards: a builder that dropped the
+        // scope from all but the first would still contain the string.
+        expect(statement.split("org_id = ?").length - 1).toBe(count);
+      }
+    },
+  );
+
+  it.each(builders)("%s parameterises every value", (_name, build) => {
+    for (const count of [1, 2, 5]) {
+      const statement = build(count);
+      expect(statement).not.toContain("${");
+      const literals = statement.match(/'[^']*'/g) ?? [];
+      expect(literals).toEqual([]);
+    }
+  });
+
+  it.each(builders)("%s refuses an arity it cannot guard", (_name, build) => {
+    // Zero rows would produce a `WHERE` with nothing in it, which is an
+    // unguarded write rather than a small one.
+    expect(() => build(0)).toThrow();
+    expect(() => build(1.5)).toThrow();
+  });
 });
