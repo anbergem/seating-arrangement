@@ -1,5 +1,5 @@
 /**
- * `SeatingTableRepository` against D1 / SQLite (blueprint B7, B11).
+ * `SeatingTableRepository` against PostgreSQL / SQLite (blueprint B7, B11).
  *
  * The same shape as `events-repository.ts`, with the floor plan's own rule on
  * top: two tables of the same event may not stand on the same cell.
@@ -80,9 +80,9 @@ const EVENT_MISSING_MESSAGE = "Event not found or archived";
  * Whether a failed write looks like two tables reaching for the same cell.
  *
  * `@libsql/client` reports it as `SQLITE_CONSTRAINT_PRIMARYKEY: UNIQUE
- * constraint failed: seating_cells.org_id, seating_cells.event_id, …`; D1
- * words it differently, so the table name is what is matched rather than any
- * one driver's phrasing.
+ * constraint failed: seating_cells.org_id, seating_cells.event_id, …`;
+ * PostgreSQL words it differently, so the table name is what is matched rather
+ * than any one driver's phrasing.
  */
 function isCellCollision(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -187,9 +187,9 @@ export function createSeatingTablesRepository(
      *
      * This is the one method that touches the events table, and it does so
      * deliberately. A layout and the floor it needs are a single fact — half a
-     * bootstrap is a floor plan nobody asked for — and D1 has no interactive
-     * transaction to assemble one out of two repository calls. So the event's
-     * version guard and the table inserts go into the same atomic batch.
+     * bootstrap is a floor plan nobody asked for — so it is not assembled out
+     * of two repository calls. The event's version guard and the table inserts
+     * go into the same atomic write.
      *
      * Everything hangs off the event's `expectedVersion`: the audit row, which
      * goes first, and the event update, which goes last because it is what

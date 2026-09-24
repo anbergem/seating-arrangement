@@ -10,7 +10,7 @@
     ".agents",
     "dist",
     ".output",
-    ".wrangler",
+    ".e2e",
     "node_modules",
     ".react-router",
     ".generated",

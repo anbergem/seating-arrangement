@@ -3,7 +3,7 @@
 //
 // The starter ships as `example-jobs` / "Example Jobs" (D18) and a real application is not
 // called that. This replaces both strings everywhere they are load-bearing: the Worker and
-// database names in `wrangler.jsonc`, the framework's `app.id` and the agent-chat plugin's
+// the framework's `app.id`, package.json's name and the agent-chat plugin's
 // `appId` (which must agree with it), the sign-in page's app name, the browser bundle's app
 // slug, the PWA manifest, the deployment workflows, the scripts and the documents.
 //
@@ -16,7 +16,7 @@
 //     called `example-jobs`. Rewriting them would make the record say something that never
 //     happened. Task T26 deletes the directory once the plan is complete.
 //
-// Generated and vendored trees (`node_modules`, `dist`, `build`, `.wrangler`, `.generated`,
+// Generated and vendored trees (`node_modules`, `dist`, `.output`, `build`, `.e2e`, `.generated`,
 // `.react-router`, `data`, `pnpm-lock.yaml`) are excluded for the same reason a build output
 // is not source: the next build regenerates them from the renamed source.
 
@@ -45,7 +45,7 @@ const SKIP_DIRECTORIES = new Set([
   ".git",
   ".generated",
   ".react-router",
-  ".wrangler",
+  ".e2e",
   "build",
   "data",
   "dist",
@@ -226,7 +226,7 @@ function main() {
  * Runs the repository's own formatter over the rewritten files.
  *
  * A name of a different length changes where `oxfmt` breaks a line — replacing
- * `example-jobs-worker-smoke-` with something shorter lets a three-line call collapse onto
+ * `example-jobs-smoke-` with something shorter lets a three-line call collapse onto
  * one, and `oxfmt --check` (part of `pnpm lint`, part of `pnpm check`) then fails on a file
  * this script wrote. Formatting here rather than duplicating oxfmt's line-breaking rule is
  * the same choice `scripts/gen-migrations-manifest.mjs` made for the same reason.

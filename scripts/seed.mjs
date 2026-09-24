@@ -16,39 +16,30 @@
 // `tsx` import, so this file needs no loader hook and stays runnable by hand.
 //
 // Safety: `--env production` and any base URL containing "production" are refused outright, and
-// the `node` target refuses a `DATABASE_URL` that is not a local `file:` (B13, D16). No seed
+// it refuses any database or base URL whose name contains "production" (B13, D16). No seed
 // ever reaches a production resource (AGENTS.md).
 //
 // Idempotent: every scenario statement is `INSERT OR IGNORE`, and a user that already exists is
 // verified with a login instead of a second registration. A second run changes nothing.
 
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { createClient } from "@libsql/client";
+import { createDbExec } from "@agent-native/core/db";
+
+import { addonDatabaseUrl } from "./lib/addon-url.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
 
-/** Worker and database base name (decision D18). Local D1 is always
- * `seating-arrangement-local`; a remote environment's database is `seating-arrangement-<env>`. */
-const BASE_NAME = "seating-arrangement";
+const USAGE = `usage: node scripts/seed.mjs [--base-url <url>] [--reset] [--skip-users]
 
-const TARGETS = ["node", "d1-local", "d1-remote"];
-
-const DEFAULT_BASE_URL = {
-  node: "http://localhost:8080",
-  "d1-local": "http://127.0.0.1:8787",
-};
-
-const USAGE = `usage: node scripts/seed.mjs --target node|d1-local|d1-remote
-                          [--env <wrangler env>] [--base-url <url>] [--reset] [--skip-users]`;
+Writes the scenario to whatever DATABASE_URL names and registers the seed users over
+HTTP against --base-url. There is one target now: Wrangler owned D1 and is gone (T28).`;
 
 /**
  * @param {string} message
@@ -72,9 +63,8 @@ let parsed;
 try {
   parsed = parseArgs({
     options: {
-      target: { type: "string" },
-      env: { type: "string" },
       "base-url": { type: "string" },
+      addon: { type: "string" },
       reset: { type: "boolean", default: false },
       "skip-users": { type: "boolean", default: false },
     },
@@ -83,53 +73,39 @@ try {
   fail(`${error instanceof Error ? error.message : error}\n${USAGE}`);
 }
 
-const target = parsed.values.target;
-const wranglerEnv = parsed.values.env;
 const reset = parsed.values.reset === true;
 const skipUsers = parsed.values["skip-users"] === true;
 
-if (target === undefined || !TARGETS.includes(target)) {
-  fail(`--target must be one of ${TARGETS.join(", ")}\n${USAGE}`);
-}
+// `server/plugins/00-database-url.ts` performs this mapping for the application; a script
+// is not the application, so it repeats the two reads rather than importing a plugin.
+const databaseUrl = parsed.values.addon
+  ? addonDatabaseUrl(parsed.values.addon)
+  : process.env.DATABASE_URL || // guard:allow-env-credential — connection string, never logged
+    process.env.POSTGRESQL_ADDON_URI || // guard:allow-env-credential — platform-injected, never logged
+    "file:./data/app.db";
 
-// The two refusals come before anything else, so no argument combination can reach a write.
-// The base-url check is a substring match on purpose: it catches a host name that merely
-// contains "production" as well as the exact production host, and a false positive is a
-// renamed flag, not lost data.
-if (wranglerEnv === "production") {
-  fail(
-    "refusing to seed --env production. Production data is never seeded (AGENTS.md).",
-  );
-}
+const baseUrl = (parsed.values["base-url"] ?? "http://localhost:8080").replace(
+  /\/+$/,
+  "",
+);
 
-const baseUrl = (
-  parsed.values["base-url"] ??
-  DEFAULT_BASE_URL[target] ??
-  ""
-).replace(/\/+$/, "");
-
+// The refusals come before anything else, so no argument combination can reach a write.
+// Both checks are substring matches on purpose: they catch a host or a database name that
+// merely contains "production" as well as the exact one, and a false positive is a renamed
+// flag, not lost data.
 if (baseUrl.toLowerCase().includes("production")) {
   fail(
     'refusing a --base-url containing "production". Production data is never seeded (AGENTS.md).',
   );
 }
-
-if (target === "d1-remote") {
-  if (wranglerEnv === undefined) {
-    fail(`--env is required for --target d1-remote\n${USAGE}`);
-  }
-  if (baseUrl === "" && !skipUsers) {
-    fail(
-      `--base-url is required for --target d1-remote (or pass --skip-users to write rows only)\n${USAGE}`,
-    );
-  }
-} else if (wranglerEnv !== undefined) {
-  // Silently ignoring it would let someone believe they had seeded a remote environment.
-  fail(`--env applies to --target d1-remote only (got --target ${target})`);
+if (databaseUrl.toLowerCase().includes("production")) {
+  fail(
+    'refusing a DATABASE_URL containing "production". Production data is never seeded (AGENTS.md).',
+  );
 }
-
-const databaseName =
-  target === "d1-remote" ? `${BASE_NAME}-${wranglerEnv}` : `${BASE_NAME}-local`;
+if (baseUrl === "" && !skipUsers) {
+  fail(`--base-url is required unless --skip-users is passed\n${USAGE}`);
+}
 
 // ---------------------------------------------------------------------------
 // The scenario, from the TypeScript fixture
@@ -175,7 +151,7 @@ function loadScenario() {
 
 /**
  * `file:./data/app.db` (the framework's own default spelling) is not a valid file URL, so only
- * the `file://` form goes through `fileURLToPath`. Same helper as `scripts/migrate-local.mjs`.
+ * the `file://` form goes through `fileURLToPath`. Same helper as `scripts/migrate.mjs`.
  * @param {string} databaseUrl
  * @returns {string}
  */
@@ -199,94 +175,46 @@ function databaseFilePath(databaseUrl) {
  */
 function missingOrgTableHint(output) {
   if (!/no such table:\s*(organizations|org_members)/i.test(output)) return "";
-  return `\nThe framework creates \`organizations\` and \`org_members\` itself, during the first request that touches the database (F10). Start the server once and let it answer \`/_agent-native/ping\`, then seed:\n  --target node      \`pnpm dev\`, then \`pnpm db:seed\`\n  --target d1-local  \`pnpm dev:worker\`, then \`pnpm db:seed:worker\``;
+  return `\nThe framework creates \`organizations\` and \`org_members\` itself, during the first request that touches the database (F10). Start the server once and let it answer \`/_agent-native/ping\`, then seed: \`pnpm dev\` (or \`pnpm start\`), then \`pnpm db:seed\`.`;
 }
 
 /**
+ * Apply the scenario through the framework's own executor, whichever dialect
+ * `DATABASE_URL` names (T28). Wrangler owned D1 and is gone; there is one way to reach a
+ * database now, and it is the one the application itself uses.
+ *
  * @param {string[]} statements
  * @returns {Promise<string>} a description of what was written, for the step line
  */
-async function executeOnNodeDatabase(statements) {
-  const url = process.env.DATABASE_URL ?? "file:./data/app.db";
-  if (!url.startsWith("file:")) {
-    // The same guard `scripts/migrate-local.mjs` carries: this target is the local SQLite
-    // file, and a shared database is never seeded from a laptop.
-    fail(
-      `DATABASE_URL must start with "file:" for --target node (got "${url}")`,
-    );
-  }
-  const databasePath = databaseFilePath(url);
-  const client = createClient({ url: `file:${databasePath}` });
-  try {
-    // Foreign keys on, so the seating_tables → events reference is checked rather than silently
-    // producing orphans; the statement order below satisfies it.
-    await client.execute("PRAGMA foreign_keys = ON");
-    // One transaction: a half-seeded database is worse than an unseeded one, and a failure
-    // leaves the file exactly as it was.
-    const tx = await client.transaction("write");
-    try {
-      for (const statement of statements) await tx.execute(statement);
-      await tx.commit();
-    } catch (error) {
-      await tx.rollback();
-      const message = error instanceof Error ? error.message : `${error}`;
-      fail(
-        `${path.relative(repoRoot, databasePath)}: ${message}${missingOrgTableHint(message)}`,
-      );
-    }
-  } finally {
-    client.close();
-  }
-  return path.relative(repoRoot, databasePath);
-}
-
-// ---------------------------------------------------------------------------
-// Target: d1-local and d1-remote (through Wrangler)
-// ---------------------------------------------------------------------------
-
-/**
- * @param {string[]} statements
- * @returns {string} a description of what was written, for the step line
- */
-function executeOnD1(statements) {
-  // `wrangler d1 execute` takes a file or a --command string and nothing else, which is why
-  // the statements are rendered as literals rather than bound parameters (B12).
-  const directory = mkdtempSync(path.join(tmpdir(), "seed-scenario-"));
-  const file = path.join(directory, "scenario.sql");
-  writeFileSync(file, `${statements.join("\n")}\n`, "utf8");
-  try {
-    const args = ["exec", "wrangler", "d1", "execute", databaseName];
-    args.push(target === "d1-remote" ? "--remote" : "--local");
-    if (wranglerEnv !== undefined) args.push("--env", wranglerEnv);
-    // Never prompt: this runs from `pnpm db:seed:worker` and from CI.
-    args.push("--yes", "--file", file);
-
-    const result = spawnSync("pnpm", args, { cwd: repoRoot, encoding: "utf8" });
-    if (result.error) {
-      fail(`could not run wrangler: ${result.error.message}`);
-    }
-    if (result.status !== 0) {
-      // Wrangler's own output is only interesting when it fails, so it is captured rather
-      // than inherited and printed here, in full.
-      const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-      fail(
-        `wrangler d1 execute ${databaseName} exited with ${result.status ?? result.signal}\n${output}${missingOrgTableHint(output)}`,
-      );
-    }
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
-  return databaseName;
-}
-
-/**
- * @param {string[]} statements
- * @returns {Promise<string>}
- */
 async function execute(statements) {
-  return target === "node"
-    ? await executeOnNodeDatabase(statements)
-    : executeOnD1(statements);
+  const client = await createDbExec({ url: databaseUrl });
+  const label = databaseUrl.startsWith("file:")
+    ? path.relative(repoRoot, databaseFilePath(databaseUrl))
+    : `${new URL(databaseUrl).host.split(".")[0]} (postgres)`;
+  try {
+    // Foreign keys on, so the seats → tables reference is checked rather than silently
+    // producing orphans; the statement order below satisfies it. PostgreSQL enforces them
+    // always and has no such pragma, so this is SQLite-only housekeeping.
+    if (databaseUrl.startsWith("file:")) {
+      await client.execute("PRAGMA foreign_keys = ON");
+    }
+    if (!client.transaction) {
+      fail(
+        "the database exposes no interactive transaction; refusing a partial seed",
+      );
+    }
+    // One transaction: a half-seeded database is worse than an unseeded one, and a failure
+    // leaves it exactly as it was.
+    await client.transaction(async (tx) => {
+      for (const statement of statements) await tx.execute(statement);
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `${error}`;
+    fail(`${label}: ${message}${missingOrgTableHint(message)}`);
+  } finally {
+    await client.close?.();
+  }
+  return label;
 }
 
 // ---------------------------------------------------------------------------
@@ -317,7 +245,7 @@ async function postJson(url, credentials) {
     });
   } catch (error) {
     fail(
-      `${url} is unreachable (${error instanceof Error ? error.message : error}). Start the server first: \`pnpm dev\` for --target node, \`pnpm dev:worker\` for --target d1-local.`,
+      `${url} is unreachable (${error instanceof Error ? error.message : error}). Start the server first: \`pnpm dev\`, or \`pnpm start\` against a built output.`,
     );
   }
   // Capped, and never the request body: the password must not reach a log.
@@ -368,7 +296,7 @@ async function registerUsers(users, password) {
 
 const scenario = loadScenario();
 step(
-  `target ${target}, ${scenario.scenarioSql.length} scenario statements, ${scenario.users.length} users`,
+  `${scenario.scenarioSql.length} scenario statements, ${scenario.users.length} users`,
 );
 
 if (reset) {
@@ -383,7 +311,7 @@ if (skipUsers) {
   step("users skipped (--skip-users)");
 } else {
   // `SEED_PASSWORD` is the deployed-environment override (B13); locally the B12 default is
-  // what `.env.example` and `.dev.vars.example` already name. `resolveCredential` is the
+  // what `.env.example` already names. `resolveCredential` is the
   // wrong tool here: this is a maintenance script's own environment, not a request's, so
   // there is no user or organization to resolve a credential for — and the value is the
   // password of the accounts this script is about to create, which it never logs.

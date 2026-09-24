@@ -1,171 +1,95 @@
 # Backups and restore
 
-A backup strategy is incomplete until restore has been tested.
+The database is a managed PostgreSQL add-on, and its backups are the platform's. That is a
+smaller surface than the Cloudflare arrangement this replaced — no nightly export workflow, no
+object-storage credentials, no age recipient — and it is worth being explicit about what that
+does and does not cover.
 
-This page is the strategy and the full procedures. `docs/runbook.md` has the incident-time
-short versions — *Verify the most recent backup*, *Perform a test restore*, *Restore D1 with
-Time Travel*, *Recover after a bad migration* — and links back here.
+- [What backs up what](#what-backs-up-what)
+- [What is not covered](#what-is-not-covered)
+- [Listing and downloading a backup](#listing-and-downloading-a-backup)
+- [Restoring](#restoring)
+- [Testing the restore](#testing-the-restore)
+- [If you need more than this](#if-you-need-more-than-this)
 
-## Strategy
+## What backs up what
 
-Two layers protect the production database, because they fail in different ways.
+The `xxs_sml` PostgreSQL plan takes a **daily backup with seven-day retention**, and supports
+point-in-time restore through pgBackRest. Retention and frequency can be changed by asking
+Clever Cloud support.
 
-1. **D1 Time Travel** is Cloudflare's built-in point-in-time recovery. It is always on, needs no
-   configuration, and restores the same database in place. Retention and the exact restore
-   semantics are Cloudflare's, so read them at the source rather than trusting a number copied
-   into this file:
-   [D1 Time Travel](https://developers.cloudflare.com/d1/reference/time-travel/).
-   `deploy-production.yml` records a bookmark into the job summary before every migration, so
-   the recovery point for a bad release is written down at the moment it is needed.
-2. **Exported SQL dumps** are this repository's own copies, taken by
-   `.github/workflows/backup-d1.yml` (daily at 03:00 UTC, plus manual dispatch) through
-   `scripts/backup-d1.sh`. They survive losing the Cloudflare account itself, which Time Travel
-   does not. The export format and its limits are documented under
-   [D1 export](https://developers.cloudflare.com/d1/best-practices/import-export-data/).
+Every production promotion records, in its job summary, the backups that existed **before** it
+migrated. That is the list to reach for when a migration is the thing that went wrong, and it
+is written before any schema change runs rather than after.
 
-Layer 1 answers "we broke the data an hour ago". Layer 2 answers "we lost the account" and
-"we need last month's rows". Restore is always into a **new** database, never in place (D23).
+The free `dev` plan has no backups at all. It is refused by `scripts/bootstrap.mjs` for a
+different reason — five connections against a pool of twenty — but the absence of backups is
+its own argument against using it for anything real.
 
-## What is covered
+## What is not covered
 
-Covered: everything in the production D1 database. That is the application's own tables from
-`migrations/` (`events`, `seating_tables`, `operations`, `idempotency_keys`),
-the framework's own tables (users, sessions, organizations, memberships, audit events) that
-live in the same database, and the `d1_migrations` bookkeeping table, so a restored copy knows
-which migrations it already has. The two schema owners are explained in
-`docs/database-and-migrations.md`; for backup purposes they are one database and one dump.
+- **Anything outside the database.** Uploaded files, if the application ever has any, need a
+  second backup path.
+- **Application settings.** `BETTER_AUTH_SECRET`, `OAUTH_STATE_SECRET`, the Google client
+  credentials and `ANTHROPIC_API_KEY` are set on the platform and are readable back with
+  `clever env --alias production`, but they are not part of a database backup. Losing the
+  application means re-running `scripts/bootstrap.mjs`, which regenerates the signing secrets
+  and signs everyone out.
+- **The deployed code.** A promotion is a commit, so git is the backup. The rollback is to
+  re-promote the previous staging run.
 
-Not covered:
-
-- **R2 objects.** This starter stores no files in R2 (D24). An application that adds R2 needs a
-  second backup path; a D1 dump will not contain the objects.
-- **Cloudflare Worker secrets.** `BETTER_AUTH_SECRET`, `OAUTH_STATE_SECRET`, the Google client
-  credentials and `ANTHROPIC_API_KEY` are set with `wrangler secret put` and are not readable
-  back. Keep them in the password manager that issued them; a restored database with a
-  different `BETTER_AUTH_SECRET` invalidates every existing session.
-- **The Worker script itself.** Deployments are rolled back with
-  `wrangler rollback --env production`, and the exact bundle of any release is kept as the
-  90-day `worker-bundle-<sha>` artifact of its staging run.
-- **GitHub environment secrets and variables.** Configured by hand; see
-  `docs/repository-settings.md`.
-
-## Configuration
-
-`scripts/backup-d1.sh` is configured entirely through environment variables. Everything except
-the Cloudflare credentials has a working default.
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `D1_DATABASE` | `seating-arrangement-production` | Database to export |
-| `WRANGLER_ENV` | `production` | Wrangler environment holding that binding |
-| `BACKUP_DIR` | `backups` | Where the dump is written before upload |
-| `BACKUP_AGE_RECIPIENT` | – | `age` public key; when set the gzip is encrypted and the plaintext deleted |
-| `BACKUP_S3_BUCKET` | – | When set, the artifact is uploaded to S3-compatible storage |
-| `BACKUP_S3_ENDPOINT` | – | Required with the bucket (for R2: `https://<account>.r2.cloudflarestorage.com`) |
-| `BACKUP_S3_REGION` | `auto` | Region; `auto` is correct for R2 |
-| `BACKUP_S3_ACCESS_KEY_ID` | – | Required with the bucket |
-| `BACKUP_S3_SECRET_ACCESS_KEY` | – | Required with the bucket |
-| `BACKUP_S3_PREFIX` | `d1/<database>` | Key prefix inside the bucket |
-| `BACKUP_AGE_IDENTITY` | – | Read by `scripts/restore-d1-check.sh` only: the private identity file matching the recipient |
-
-The workflow runs in the `production-backup` GitHub environment, which has no required
-reviewers so the schedule can run unattended, and whose Cloudflare token needs only
-account-scoped `D1 Read`. With no `BACKUP_S3_BUCKET` configured the dump stays as a GitHub
-workflow artifact with 30-day retention, which is enough to start but not a backup destination:
-it lives in the same account as the code.
-
-Recommendations for the destination:
-
-- Use a **different provider or at least a different account** from the one running production.
-  A backup in the account you might lose is not a backup.
-- Set `BACKUP_AGE_RECIPIENT`. The dump contains every application row and every user record in
-  plain SQL. Keep the matching identity file out of this repository and out of the same
-  account.
-- Express retention as **lifecycle rules on the destination bucket**, not as logic in this
-  repository: keep daily backups for 30 days and one backup per month for 12 months. The
-  script writes objects and never deletes them, so the bucket's own rules are the only thing
-  that expires them.
-- File names are `<database>-<UTC yyyymmdd-HHMMSS>-<git sha short>.sql.gz[.age]`, so the
-  lifecycle rule can match the prefix and the object name identifies the deployed commit.
-
-## Verification
-
-Every backup is checked at the moment it is written: the export must be non-empty and must
-contain `CREATE TABLE` and `events`, or `scripts/backup-d1.sh` exits non-zero and the
-workflow fails. That proves the file is a database dump. It does not prove the dump restores.
-
-`scripts/restore-d1-check.sh` is the test restore. It never touches production: it loads the
-backup into a scratch **local** D1 under its own `--persist-to` directory inside a temporary
-directory, which is deleted on exit, so `.wrangler/state` is untouched.
+## Listing and downloading a backup
 
 ```bash
-# a plain, gzipped, or age-encrypted dump; set BACKUP_AGE_IDENTITY for .age input
-bash scripts/restore-d1-check.sh backups/seating-arrangement-production-20260907-030000-f16b25d.sql.gz
+clever addon list                               # find the add-on's id
+clever database backups <addon-id>
+clever database backups download <addon-id> <backup-id>
 ```
 
-It decompresses (and decrypts), repeats the content checks, imports the SQL, and prints a row
-count for `events`, `seating_tables`, `operations` and `d1_migrations`, teeing everything into a report
-file (`RESTORE_REPORT` overrides its name). Read the output as follows:
+The add-on is named `<app>-<environment>-db`. `clever addon list --format json` gives its id
+without the table formatting.
 
-- The import must complete without an error. A failure here means the dump is unusable and the
-  backup configuration is broken, not that the data is wrong.
-- `events`, `seating_tables` and `operations` must be plausible for the day the backup was taken. Zero
-  where you expect rows means the export ran against the wrong database or environment.
-- `d1_migrations` tells you which schema the dump belongs to. If it is behind the migrations in
-  `migrations/`, a restore has to apply the newer migrations after importing.
+## Restoring
 
-Run it against a real production backup at least once per quarter and after any change to the
-schema, the export script or the destination. Record the date and the counts.
+Restoring is not a CLI one-liner and should not be: it overwrites a customer's data. The
+supported path is the Clever Cloud console, which offers both the daily backups and
+point-in-time recovery for the plan.
 
-To rehearse without production data, export the local database and restore-check that:
+Before restoring anything:
+
+1. **Stop writing.** `clever stop --alias production`. A restore that races live traffic
+   produces a database nobody can reason about.
+2. **Note the current state.** `clever activity --alias production` for the deployed commit,
+   and the promotion's job summary for the backup list as it was.
+3. **Decide what you are undoing.** A bad migration and a bad row are different problems. The
+   second is usually better fixed forward — this application keeps an undo ledger and an audit
+   trail precisely so that a single wrong change does not need a restore.
+4. Restore, then `clever restart --alias production`, then run the production smoke.
+
+## Testing the restore
+
+A backup nobody has restored is a hypothesis. Test it against **staging**, which carries only
+the synthetic scenario:
 
 ```bash
-pnpm db:reset
-pnpm exec wrangler d1 export seating-arrangement-local --local --output /tmp/local.sql
-bash scripts/restore-d1-check.sh /tmp/local.sql
+clever database backups <staging-addon-id>
+# restore the most recent one through the console, then:
+node scripts/smoke.mjs --base-url "$STAGING_URL" --mode staging \
+  --qa-email owner@example.invalid --qa-password "$SEED_PASSWORD" --expect-org-id org_acme
 ```
 
-## Restoring into a new database
+A green smoke after a restore is the evidence. Do this when the application first goes live and
+after any change to the schema that you would not want to re-run by hand.
 
-Never import a dump over a live database. Create a new one, verify it, then move the binding.
+## If you need more than this
 
-1. **Stop writing.** Announce the outage. If the damage is still spreading, deploy a previous
-   Worker version first (`pnpm exec wrangler rollback <version-id> --env production`).
-2. **Pick the backup** and run `scripts/restore-d1-check.sh` on it. Do not proceed on a dump
-   whose test restore fails; take the next one.
-3. **Create the new database** and note its id:
-   ```bash
-   pnpm exec wrangler d1 create seating-arrangement-production-restored --jurisdiction eu
-   ```
-4. **Import the dump** (decompress first; the plain `.sql` is what `--file` takes):
-   ```bash
-   gzip -dc backups/<file>.sql.gz > /tmp/restore.sql
-   pnpm exec wrangler d1 execute seating-arrangement-production-restored --remote --file /tmp/restore.sql
-   ```
-5. **Bring the schema forward** if `d1_migrations` in the dump is behind `migrations/`. Point
-   the production binding at the new id first (step 6), then run
-   `pnpm db:migrate:production`.
-6. **Update the binding** in `wrangler.jsonc`: replace `env.production.d1_databases[0].database_id`
-   with the new id. Keep `database_name` and `binding` as they are — the application only ever
-   sees `DB`.
-7. **Deploy** the same Worker bundle against the new binding:
-   ```bash
-   pnpm exec wrangler deploy --env production
-   ```
-   Use the promotion workflow when the release itself is also being changed; a pure database
-   swap can be deployed directly by the maintainer.
-8. **Verify** before announcing recovery:
-   ```bash
-   node scripts/worker-smoke.mjs --base-url "$PRODUCTION_URL" --mode production
-   ```
-   plus a manual sign-in and one read of a known event and its floor plan. Confirm
-   `GET /api/ready` reports `migrations.applied === migrations.expected`.
-9. **Commit** the changed `wrangler.jsonc` so the repository and the deployed reality agree.
-10. **Keep the old database for at least a week.** Do not delete it while the incident is still
-    being understood; it is the only copy of anything written after the backup was taken. Take
-    a fresh backup of the restored database immediately, and confirm the next scheduled backup
-    run succeeds against the new binding.
+Seven days of daily backups is a starting point, not a policy. If the data warrants more:
 
-Write down what was lost: every row created between the backup timestamp and the incident is
-gone unless Time Travel can supply it. That gap is the real cost of the backup interval, and it
-is the number to argue about when deciding how often this workflow should run.
+- A larger plan changes what the platform retains — ask support rather than guessing.
+- An independent copy, in a different provider, protects against losing the account itself.
+  `clever database backups download` in a scheduled workflow is the shape of it; the thing to
+  get right is where the download lands and who can read it, which is why this repository does
+  not ship one by default rather than shipping one that quietly writes customer data somewhere
+  nobody reviewed.
+
+`docs/runbook.md` covers what to do when something is actually broken.

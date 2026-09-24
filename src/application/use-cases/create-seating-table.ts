@@ -5,8 +5,8 @@
  *
  * - The event must exist, belong to this organization and still be active.
  *   That is enforced inside the repository's atomic write (B11), because a
- *   check here followed by a write there is a race: D1 cannot hold a
- *   transaction open across the two. The repository reports it as
+ *   check here followed by a write there is a race that no dialect closes for
+ *   us, so the guard travels inside the statement (D07). The repository reports it as
  *   `NOT_FOUND "Event not found or archived"`.
  * - The space must be free. The domain checks it against the tables read below
  *   so the caller gets a precise `INVARIANT`, but the binding check is the

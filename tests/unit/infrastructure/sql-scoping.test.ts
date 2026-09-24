@@ -12,7 +12,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import * as sql from "../../../src/infrastructure/d1/sql";
+import * as sql from "../../../src/infrastructure/sql/sql";
 
 // Read as a plain record: the test is about what the module exports at
 // runtime, and the literal types TypeScript infers for the constants would

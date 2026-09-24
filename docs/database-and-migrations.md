@@ -11,8 +11,8 @@ One SQL database per environment. One migration source. Two owners.
 - [The local migration runner](#the-local-migration-runner)
 - [Readiness](#readiness)
 - [How the repositories talk to the database](#how-the-repositories-talk-to-the-database)
-- [D1 jurisdiction and residency](#d1-jurisdiction-and-residency)
-- [The Node + libSQL fallback](#the-node--libsql-fallback)
+- [Where the data lives](#where-the-data-lives)
+- [Moving somewhere else](#moving-somewhere-else)
 
 ## Two schema owners
 
@@ -41,7 +41,7 @@ background job, because the moment the two could disagree the constraint would s
 what it says.
 
 `AGENT_NATIVE_SKIP_ENSURE_TABLES` is never set: CI exercises the framework's bootstrap on every
-run by booting the Worker against a fresh local D1.
+run by booting the built server against a fresh, empty SQLite file.
 
 Three consequences you will meet in practice.
 
@@ -61,8 +61,8 @@ pnpm dev                                # applies the framework migrations at bo
 pnpm db:seed
 ```
 
-Under `wrangler dev` and on a deployed Worker the framework defers its migrations to the first
-request that touches the database, so one `GET /_agent-native/health` is enough.
+On a deployed environment the framework defers its migrations to the first request that
+touches the database, so one `GET /_agent-native/health` is enough.
 `scripts/seed.mjs` recognises the error and prints that instruction.
 
 **Hermetic tests that never start a server must create those two tables themselves.**
@@ -81,28 +81,32 @@ There is no `drizzle-kit generate` and no `drizzle-kit push` anywhere; the docto
 ```
 migrations/0001_init.sql
         │
-        ├── wrangler d1 migrations apply   →  D1 (local, staging, production)
-        └── scripts/migrate-local.mjs      →  file:./data/app.db (the Node dev server)
+        └── scripts/migrate.mjs   →  whatever DATABASE_URL names
+                                     file:./data/app.db  or  postgresql://…
 ```
 
-Same files, same order, every environment. `scripts/migrate-local.mjs` deliberately mimics
-Wrangler's bookkeeping — a `d1_migrations` table holding the migration's bare file name — so
-`/api/ready` can ask the same question of both runtimes with one query. It refuses a
-`DATABASE_URL` that does not start with `file:`, because pointing it at a shared database would
-apply app DDL where the Wrangler runner is the owner.
+Same files, same order, every environment, one runner. It goes through the framework's own
+executor rather than a driver of its own, which is what makes one runner possible: the executor
+resolves SQLite or PostgreSQL from the URL, and on PostgreSQL rewrites `?` placeholders to
+`$n` through a real parser. The bookkeeping table is still called `d1_migrations` and still
+holds the bare file name, so `/api/ready` asks one question of every runtime; renaming it would
+be a migration of its own for no gain.
+
+The 86 lines of SQL in `migrations/` applied to a real PostgreSQL instance unmodified. That is
+not luck — `TEXT`, `INTEGER`, ISO-string timestamps, `length()` checks and composite foreign
+keys are the intersection both dialects accept.
 
 ## Commands per environment
 
 | Environment | Migrate | Seed |
 | --- | --- | --- |
-| Node dev server (`pnpm dev`) | `pnpm db:migrate` | `pnpm db:seed` |
-| Local D1 (`pnpm dev:worker`, Playwright) | `pnpm db:migrate:worker` | `pnpm db:seed:worker` |
-| Both, from scratch | `pnpm db:reset` | **still required** — see below |
-| Staging | `pnpm db:migrate:staging` | the deploy workflow, QA org only |
-| Production | `pnpm db:migrate:production` | **never** |
+| Local (`pnpm dev`, or `pnpm start`) | `pnpm db:migrate` | `pnpm db:seed` |
+| From scratch | `pnpm db:reset` | **still required** — see below |
+| Staging | the deploy workflow | the deploy workflow, QA org only |
+| Production | the promotion workflow | **never** |
 
-`pnpm db:reset` deletes `data/app.db*` and `.wrangler/state`, then migrates both. It touches
-nothing outside the repository and `--local` never reaches Cloudflare.
+`pnpm db:reset` deletes `data/app.db*` and migrates again. It refuses to run when
+`DATABASE_URL` is not a local file, because it deletes.
 
 **A reset leaves you signed out of an empty application, and it does not say so.** The user
 accounts live in the database it just deleted, so the next `pnpm dev` serves a working app with
@@ -113,29 +117,31 @@ finish the sequence with `pnpm dev` and then `pnpm db:seed`, and treat `pnpm db:
 as an unfinished command. Rewriting a migration is the usual reason to reach for it, so this is
 easy to do in the middle of a schema change and not notice until the app is open.
 
-Staging and production migrations need `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in
-the environment. In practice the workflows run them; running
-`pnpm db:migrate:production` by hand is an incident procedure, not a routine.
+A deployed database is reached with `--addon`, which resolves the connection string through the
+Clever Cloud CLI in-process so it never appears in a log or a command line:
+
+```bash
+node scripts/migrate.mjs --addon <app>-staging-db
+```
+
+That is what the workflows run. Doing it by hand against production is an incident procedure,
+not a routine.
 
 Inspecting a database:
 
 ```bash
-# local D1
-pnpm exec wrangler d1 execute <app>-local --local \
-  --command "SELECT name FROM d1_migrations ORDER BY id"
-
-# staging, read-only
-pnpm exec wrangler d1 execute <app>-staging --remote --env staging \
-  --command "SELECT status, COUNT(*) FROM seating_tables GROUP BY status"
-
-pnpm exec wrangler d1 migrations list <app>-production --remote --env production
+clever addon list                    # find the add-on
+# then use any PostgreSQL client with the connection string from the console,
+# or for the local file:
+sqlite3 data/app.db "SELECT name FROM d1_migrations ORDER BY name"
 ```
 
 ## Writing a migration
 
+Create the file by hand, named `NNNN_snake_case.sql` after the highest existing number:
+
 ```bash
-pnpm exec wrangler d1 migrations create <app>-local "event venue"
-# creates migrations/0002_event_venue.sql
+$EDITOR migrations/0002_event_venue.sql
 ```
 
 Rules:
@@ -144,8 +150,8 @@ Rules:
   silently skipped in every environment that already ran it, so the schema silently diverges.
   Add a new file.
 - **Regenerate the manifest.** `src/infrastructure/migrations-manifest.ts` is generated from
-  the directory listing by `scripts/gen-migrations-manifest.mjs`, which `pnpm db:migrate` and
-  `pnpm build:worker` both run. It is committed, so a plain `pnpm typecheck` or `vitest` run
+  the directory listing by `scripts/gen-migrations-manifest.mjs`, which `pnpm db:migrate`
+  runs. It is committed, so a plain `pnpm typecheck` or `vitest` run
   does not depend on the build having happened. The generator formats its own output with the
   repository's `oxfmt`, so the committed file passes `pnpm lint` at any number of migrations.
 - **Mirror the change in `server/db/schema.ts`.** New tables need `org_id` (or
@@ -155,12 +161,13 @@ Rules:
   `tests/fixtures/scenario-sql.ts` is what `scripts/seed.mjs` reads.
 - **Keep the constraints in SQL.** `migrations/0001_init.sql` carries `CHECK` constraints for
   the status enums and the length limits the domain also enforces. Belt and braces: the domain
-  is the readable rule, the constraint is the one a bad migration or a manual `wrangler d1
-  execute` cannot get around. D1 has `PRAGMA foreign_keys` on.
+  is the readable rule, the constraint is the one a bad migration or a hand-typed `UPDATE`
+  cannot get around. PostgreSQL enforces foreign keys always; the SQLite runner turns
+  `PRAGMA foreign_keys` on.
 
 ## Expand and contract
 
-Migrations run **before** the new Worker is deployed, so for a moment the old code is running
+Migrations run **before** the new code is deployed, so for a moment the old code is running
 against the new schema. Every migration has to be safe in that window.
 
 Safe in one release:
@@ -190,31 +197,34 @@ switch reads, then drop the old one in a later release.
 The staging and production workflows both do this, in this order:
 
 ```
-record a D1 Time Travel bookmark   (production only)
-pnpm db:migrate:<env>
-wrangler deploy --env <env>
+record the database backups that exist   (production only)
+node scripts/migrate.mjs --addon <app>-db
+clever deploy
 smoke
 ```
 
-**Rolling the Worker back does not roll the database back.** `wrangler rollback --env
-production` restores the previous script; the migration that ran is still applied. That is why
-migrations must be backwards compatible, and why the bookmark is taken *before* the migration
-rather than after: if a migration corrupts data, the Worker rollback is not the fix — the
-bookmark is.
+Migrating first is deliberate: a migration that fails fails the **deployment**, and the
+application still serving traffic is untouched. The alternative — migrating at boot — turns a
+bad migration into an outage.
 
-The production workflow records the bookmark into the workflow job summary before it migrates, and on
-failure appends both recovery commands. `docs/runbook.md` § *Recover after a bad migration* is
-the procedure; the short version is that a Time Travel restore is in place and a dump restore is
-into a new database, never over a live one.
+**Rolling the code back does not roll the database back.** Re-promoting the previous commit
+restores the previous code; the migration that ran is still applied. That is why migrations
+must be backwards compatible, and why the backup list is recorded *before* the migration rather
+than after: if a migration corrupts data, a code rollback is not the fix — the backup is.
 
-## The local migration runner
+The production workflow records what backups exist into the workflow job summary before it migrates, and
+on failure appends the recovery guidance. `docs/runbook.md` § *Recover after a bad migration*
+is the procedure; the short version is that a restore is through the console, with the
+application stopped, and never over live traffic.
 
-`scripts/migrate-local.mjs` exists because the Node dev server does not use D1. It:
+## The migration runner
 
-- reads `DATABASE_URL`, refuses anything that is not `file:`;
-- applies `migrations/*.sql` in name order through `@libsql/client`;
-- records each applied file name in a `d1_migrations` table it creates itself, in the same
-  shape Wrangler uses.
+`scripts/migrate.mjs`:
+
+- resolves `DATABASE_URL`, `POSTGRESQL_ADDON_URI` or `--addon <name>`, in that order;
+- applies `migrations/*.sql` in name order through the framework's executor, one transaction
+  per file, so a failed file is never recorded and re-running retries it;
+- records each applied file name in a `d1_migrations` table it creates itself.
 
 It is not a general-purpose migration tool and is not meant to grow into one. If you need
 something it cannot do, the answer is usually that the thing belongs in a `.sql` file.
@@ -230,8 +240,8 @@ curl -s https://<host>/api/ready
 ```
 
 It counts, in `d1_migrations`, the migrations this build knows about — from
-`src/infrastructure/migrations-manifest.ts`, embedded at build time because a Worker has no
-filesystem to list files with. It counts *expected* migrations that are recorded, not rows in
+`src/infrastructure/migrations-manifest.ts`, which is generated from the directory listing and
+committed, so the answer does not depend on what happens to be on disk at runtime. It counts *expected* migrations that are recorded, not rows in
 the table, so a leftover row for a file that no longer exists cannot make a deployment look
 ready. It returns HTTP 503 when it is not, and it is public (a probe that needs a session
 cannot distinguish "not deployed yet" from "not signed in"). It exposes migration file names
@@ -242,65 +252,62 @@ reports `ok`, `ready`, `db` and `database.dialect`.
 
 ## How the repositories talk to the database
 
-Not through an ORM. `src/infrastructure/d1/` uses the framework's executor with hand-written
-parameterized SQL, because D1 has no interactive transactions and the guarantees this
-application needs are expressed as predicates.
+Not through an ORM. `src/infrastructure/sql/` uses the framework's executor with hand-written
+parameterized SQL, because the guarantees this application needs are expressed as predicates
+rather than as object graphs.
 
-- **Every statement is a named constant** in `src/infrastructure/d1/sql.ts`, and every one
+- **Every statement is a named constant** in `src/infrastructure/sql/sql.ts`, and every one
   contains `org_id = ?`. `tests/unit/infrastructure/sql-scoping.test.ts` asserts it for every
   exported statement. Optional list filters are grouped in a frozen record per statement
   (`SELECT_JOBS_PARTS`, `SELECT_CUSTOMERS_PARTS`) and checked against a fixed
   `AND <column> <operator> ?` allow-list, so no caller value can reach the SQL text.
 - **Placeholders are `?`.** There is no string interpolation of a value anywhere.
-- **Multi-statement writes go through `runAtomic`** (`src/infrastructure/d1/atomic.ts`), which
-  uses D1's `atomicBatch` when it is available and a `transaction` otherwise. Inside one batch,
-  a stale writer affects zero rows in every statement, so nothing is written.
+- **Multi-statement writes go through `runAtomic`** (`src/infrastructure/sql/atomic.ts`), which
+  uses a `transaction` where one exists and a batch otherwise. A stale writer affects zero rows
+  in every statement, so nothing is written.
 - **The version guard is in the SQL**, on both the operation insert and the resource update,
   guarded on the version the caller read. Both row counts are checked; anything other than one
   row each is `CONFLICT`.
-- **The executor is resolved per call, never cached.** `getDbExec()` resolves the D1 binding of
+- **The executor is resolved per call, never cached.** `getDbExec()` resolves the executor for
   the request being served. There is one wrinkle worth knowing: the framework returns a lazy
   proxy that advertises **both** `atomicBatch` and `transaction` until its first query has
   chosen a driver, so `resolveExec` issues one `SELECT 1` when both are advertised and re-reads
   the shape before choosing. Without that, a local-file write goes down the `atomicBatch` path
   and throws `This database does not support atomic batches`.
 
-## D1 jurisdiction and residency
+## Where the data lives
 
-Both databases are created with `--jurisdiction eu`:
+Both databases are created in the Clever Cloud zone `CLEVER_REGION` names, `par` (Paris) by
+default. The European zones are `par`, `parhds`, `rbx`, `rbxhds`, `grahds`, `wsw` and `ldn`;
+`parhds` and `grahds` are the French health-data-certified ones.
 
-```bash
-pnpm exec wrangler d1 create <app>-production --jurisdiction eu
-```
+Two things about that choice:
 
-Jurisdiction restricts where the database runs and stores data, for local data-protection
-compliance. Two things about it:
+- **Decide before the first run.** Moving a database between zones means a new add-on, a dump
+  and a load — with downtime.
+- **Keep the application and its database in the same zone.** They talk on every request. A
+  database on another continent from its application is the single most expensive mistake
+  available here: measured on the arrangement this replaced, one health check went from 6ms to
+  260ms that way, and every page that asks several questions pays it several times
+  (`docs/plan/DISCREPANCIES.md`, 2026-09-16).
 
-- **It cannot be changed after creation.** Moving jurisdiction means a new database, an export
-  and an import — with downtime. Decide before you run the bootstrap.
-- **It overrides `--location`.** When a jurisdiction is set the location hint is ignored, so do
-  not pass both and expect the hint to matter.
+One honest caveat about residency: the embedded agent calls Anthropic, which is American. Where
+the database sits does not change that. `@ai-sdk/mistral` is already a dependency if a European
+model provider matters more than the default — it is an `AGENT_ENGINE` change and a key, not a
+project.
 
-`scripts/bootstrap.mjs` passes `--jurisdiction eu`. If you need another one, change that
-argument before the first run; the current choices are `eu`, `us` and `fedramp`.
+## Moving somewhere else
 
-## The Node + libSQL fallback
+The repository layer is portable by construction, and this repository has now proved it rather
+than claimed it: moving off Cloudflare D1 to PostgreSQL needed **one** change in 1,346 lines of
+repositories, `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING`. Nothing under `src/` or `server/`
+imports a platform type or calls a platform API.
 
-This is Cloudflare-*first*, not Cloudflare-*only*. The repository layer is thin enough to move:
-it talks to `getDbExec()`, which the framework backs with libSQL on Node, and it uses no D1
-feature beyond `atomicBatch` — for which `runAtomic` already has a `transaction` branch that
-the Node dev server and the integration suite exercise on every run.
+Two things do that work. The framework's executor rewrites `?` placeholders for PostgreSQL, so
+the statements are dialect-neutral as written. And `runAtomic` is a seam: repositories build a
+list of statements and never learn which runtime applied them, so a runtime with `transaction`
+and one with only a batch API are both fine.
 
-So a deployment on Node with libSQL or SQLite needs no repository changes. What it does need:
-
-- `DATABASE_URL` pointing at the libSQL server or file, and the startup check's `local` rules
-  loosened for that environment class;
-- migrations applied by `scripts/migrate-local.mjs` (file) or `wrangler`-less tooling of your
-  choice — the SQL is plain SQLite;
-- somewhere to run the Node process, and a different deployment pipeline: nothing in
-  `.github/workflows/deploy-*.yml` applies.
-
-The reason to keep the option open is the framework's Worker compatibility patch
-(`scripts/patch-worker-bundle.mjs`). If an upgrade ever needs substantially more runtime
-surgery than two stub getters, moving to Node is the safer answer than growing the patch —
-`docs/upgrade-playbook.md` says so as a rule.
+What a move costs is the deployment half — `scripts/bootstrap.mjs`, the deploy workflows, the
+e2e launcher and the docs. `docs/plan/tasks/T28-clever-cloud-migration.md` is the worked
+example.

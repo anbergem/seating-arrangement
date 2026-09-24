@@ -11,7 +11,6 @@ Protect `main` with pull requests, block force pushes and block deletions. Requi
 status checks, which are the three jobs of `ci.yml`:
 
 - `CI / verify`
-- `CI / worker`
 - `CI / e2e`
 
 Requiring branches to be current before merge is optional, and it serialises merges on a small
@@ -21,32 +20,25 @@ raise the approval count once there is somebody to approve.
 
 ## Environments
 
-Three, and the split between them is about credentials and about who has to be awake.
+Two, and the split between them is about who has to approve a deployment.
 
-**`staging`** — secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `SEED_PASSWORD`;
+**`staging`** — secrets `CLEVER_TOKEN`, `CLEVER_SECRET`, `SEED_PASSWORD`;
 variable `STAGING_URL`. No required reviewers, because it only ever deploys a commit that
 already has a successful same-repository `CI` run on `main`.
 
-**`production`** — secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`; variable
+**`production`** — secrets `CLEVER_TOKEN`, `CLEVER_SECRET`; variable
 `PRODUCTION_URL`; **required reviewers**, so an artifact promotion cannot start without human
 approval. No `SEED_PASSWORD`: production is never seeded.
 
-**`production-backup`** — secrets `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and the
-optional `BACKUP_AGE_RECIPIENT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ENDPOINT`,
-`BACKUP_S3_ACCESS_KEY_ID` and `BACKUP_S3_SECRET_ACCESS_KEY`; variables `BACKUP_S3_REGION` and
-`BACKUP_S3_PREFIX`. **No required reviewers**, and that is the whole reason it exists: a
-required reviewer would make the nightly export sit waiting for approval every night, so the
-schedule would never run unattended.
+There is no third environment. The Cloudflare arrangement had a `production-backup` one, so
+that a nightly export could run unattended without waiting for a reviewer. The database plan
+takes its own backups now, so nothing schedules a workflow and nothing needs a
+lower-privilege credential.
 
-Its Cloudflare token needs only account-scoped **D1 Read**, the minimum documented D1 read
-permission, while the deployment token needs Workers Scripts:Edit, D1:Edit and Workers
-Routes:Edit. `D1 Read` is account-scoped rather than restricted to one database, so use a
-dedicated Cloudflare account where database-level credential isolation is required. This
-separation lets scheduled exports run unattended while keeping production deployment approval
-intact.
-
-`STAGING_URL` and `PRODUCTION_URL` are the origins the smoke script calls; `wrangler.jsonc`
-carries the matching `APP_URL` per environment, and the two must agree.
+`STAGING_URL` and `PRODUCTION_URL` are the origins the smoke script calls, and
+`CLEVER_APP_NAME` is what lets a workflow link its checkout to the right application. All
+three are set by `scripts/bootstrap.mjs` from what the platform actually assigned, so they
+cannot disagree with the deployment.
 
 ## Repository options
 
@@ -63,7 +55,8 @@ additional read access they need (`actions: read` for the two deployment workflo
 ## Why framework upgrades are never automerged
 
 Renovate groups the framework packages, holds them for three days after release, labels them
-`framework-upgrade` and never automerges them. Generated Worker output and the compatibility
-patch have to be exercised together, and review also verifies migrations, authenticated
-actions, approval behaviour and organization isolation before staging receives the change.
+`framework-upgrade` and never automerges them. The framework patch this repository carries is
+pinned to an exact version and has to be re-examined with every bump, and review also verifies
+migrations, authenticated actions, approval behaviour and organization isolation before staging
+receives the change.
 `docs/upgrade-playbook.md` is the procedure.

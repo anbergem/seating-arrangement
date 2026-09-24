@@ -2227,3 +2227,32 @@ over the public internet.
 Resolution: 2026-09-15 — applied; `pnpm check` and `pnpm verify:worker` (12/12) pass. Whether 45s
 is enough is not proven: the next staging run is the test, and if `create-job` still exceeds it
 the problem is not cold-start latency and the hunt resumes with better numbers than before.
+
+---
+
+## 2026-09-24 — The migration's stale-reference sweep has to include assertions
+
+Ported from the template with the rest of T28, because the same line was here.
+
+`validateEnvironment` refused to start production when `DATABASE_URL` was set:
+
+```
+DATABASE_URL must not be set in production; the Worker reaches D1 through its binding
+```
+
+Right against a Cloudflare binding, backwards against a PostgreSQL add-on, which production
+reaches *through* that connection string. The first production promotion would have thrown at
+boot. Two reasons it survived:
+
+- **There is no `staging` rule set**, so a deployed staging application never evaluates the
+  production branch. Green smoke runs proved nothing about it.
+- **Three unit tests asserted the old rule** and passed, because they were named and written
+  against the mechanism (`production forbids DATABASE_URL when present at all`) rather than the
+  intent. A test written that way cannot outlive its premise.
+
+The rule now requires the variable in production and refuses a `file:` URL there — production on
+a SQLite file inside a container that is replaced every deploy.
+
+The general lesson for a platform migration: the dangerous stale references are not the ones
+naming the old tool. Those are greppable and obvious. It is the ones that encoded a platform
+assumption as an invariant, in a validator whose own tests agreed with it.

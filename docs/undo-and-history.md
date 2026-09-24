@@ -209,7 +209,7 @@ other change did. For a business application that is worse than refusing: the us
 trust in the record.
 
 The scenario the tests pin (`tests/unit/application/seating-undo.test.ts`, repeated against
-real SQL in `tests/integration/use-cases-d1.test.ts` and through the browser in
+real SQL in `tests/integration/use-cases-sql.test.ts` and through the browser in
 `tests/e2e/undo-conflict.spec.ts`):
 
 | Step | Actor | Result |
@@ -316,5 +316,5 @@ and it is the only record of *how* a change could be reversed.
 
 The framework's audit log has its own retention, set per environment through
 `AGENT_NATIVE_AUDIT_RETENTION_DAYS`: 365 days on staging, `0` (forever) on production. Both
-tables live in the same D1 database and are therefore covered by the same backups and the same
-Time Travel bookmarks.
+tables live in the same PostgreSQL database and are therefore covered by the same add-on
+backups.

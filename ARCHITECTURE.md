@@ -26,49 +26,50 @@ Read `AGENTS.md` for the rules a change must obey. This file is the reasoning be
 
 ## 1. High-level runtime
 
-One Worker serves everything: the static React shell, the framework's own endpoints, the
-application's actions, the agent chat stream and the MCP endpoint. There is one database.
+One always-on Node process serves everything: the static React shell, the framework's own
+endpoints, the application's actions, the agent chat stream and the MCP endpoint. There is one
+database.
 
 ```mermaid
 flowchart TB
   subgraph Browser
     SHELL["React app<br/>(static shell + client routing)"]
   end
-  subgraph CF["Cloudflare"]
-    ASSETS["ASSETS binding<br/>dist/ static files"]
-    W["Worker<br/>dist/_worker.js/index.js"]
-    D1[("D1<br/>DB binding")]
+  subgraph CC["Clever Cloud"]
+    W["Node server<br/>.output/server/index.mjs"]
+    DB[("PostgreSQL add-on<br/>POSTGRESQL_ADDON_URI")]
   end
   ANTHROPIC["Anthropic API"]
 
-  SHELL -->|"GET /, /events, assets"| ASSETS
+  SHELL -->|"GET /, /events, assets"| W
   SHELL -->|"POST /_agent-native/actions/*"| W
   SHELL -->|"POST /_agent-native/agent-chat"| W
   MCPC["MCP client"] -->|"POST /mcp"| W
-  W --> D1
+  W --> DB
   W -->|"agent turns"| ANTHROPIC
   W -->|"invoice draft"| VENDOR
 ```
 
 Two things about this picture are worth knowing before you debug anything.
 
-**`/` is a static file.** The Cloudflare build renders `dist/index.html` at build time and the
-`ASSETS` binding serves it for `GET /` before the Worker runs. The redirect to `/events` is
-therefore client-side (`<Navigate to="/events" replace />` in `app/routes/_index.tsx`); a loader
-`redirect()` there breaks the static-shell render, and a smoke test must expect 200 from `/`,
-never a 302.
+**`/` is a static shell.** The build renders the HTML at build time and the server returns it
+for `GET /` without running a loader. The redirect to `/events` is therefore client-side
+(`<Navigate to="/events" replace />` in `app/routes/_index.tsx`); a loader `redirect()` there
+breaks the static-shell render, and a smoke test must expect 200 from `/`, never a 302.
 
 **The sync channel polls.** The framework's `useDbSync` prefers an `EventSource` on
-`/_agent-native/events`, which is a response held open with no pending I/O. The Workers runtime
-cancels exactly that shape, and under `wrangler dev` the cancellation kills the dev server. So
-`app/root.tsx` passes `sseUrl: false` and the framework's `/_agent-native/poll` transport is
-used instead. Streams that produce data and finish — agent chat — are unaffected.
+`/_agent-native/events`. `app/root.tsx` passes `sseUrl: false`, so the framework's
+`/_agent-native/poll` transport is used instead.
 
-The build is `NITRO_PRESET=cloudflare_pages`, whose single-file bundle boots on workerd, and
-the output is deployed as a **Worker with static assets** through our own `wrangler.jsonc`, not
-as a Pages project. Two Node built-in stubs in that bundle are patched after every build by
-`scripts/patch-worker-bundle.mjs`, which fails loudly if the framework changes their shape;
-`docs/upgrade-playbook.md` is what to do when it does.
+That choice was forced: on Cloudflare Workers a response held open with no pending I/O is cancelled by the
+runtime. On an always-on Node process it no longer is, so switching back to the event stream is
+now _available_ — a lower-latency sync channel for one line of change. It has not been taken,
+because polling works and a change to how every client receives updates deserves its own
+measurement rather than riding along with a migration.
+
+The build is `agent-native build` with the Node preset, producing `.output/`, which `pnpm start`
+serves. No bundle patching, no runtime surgery — the two stub patches this repository used to
+carry existed only because of the Cloudflare bundle and went with it.
 
 ## 2. Request flow
 
@@ -82,7 +83,7 @@ sequenceDiagram
   participant R as runAppAction
   participant U as moveSeatingTable (use case)
   participant D as src/domain/seating-table.ts
-  participant Repo as SeatingTableRepository (D1)
+  participant Repo as SeatingTableRepository (SQL)
   participant Audit as agent_audit_log
 
   B->>M: POST /_agent-native/actions/move-seating-table<br/>X-Agent-Native-Frontend: 1
@@ -226,7 +227,7 @@ flowchart LR
   S4 --> ACT
   S5 --> ACT
   ACT["actions/label-seat.ts"] --> UC["labelSeat use case"]
-  UC --> DOM["domain + D1"]
+  UC --> DOM["domain + SQL"]
   UC --> AUD["audit row<br/>caller differs, nothing else"]
 ```
 
@@ -324,7 +325,7 @@ Four properties hold together:
 2. **The role is read fresh** from `org_members` for that `(orgId, email)` pair on every call.
    A session carrying a stale `orgId` finds no membership and is refused.
 3. **Every SQL constant contains `org_id = ?`.** `tests/unit/infrastructure/sql-scoping.test.ts`
-   imports `src/infrastructure/d1/sql.ts` and asserts it for every exported statement; the
+   imports `src/infrastructure/sql/sql.ts` and asserts it for every exported statement; the
    optional filter fragments are checked against a fixed `AND <column> <op> ?` allow-list, so
    no caller value can reach the SQL text.
 4. **A foreign record is `NOT_FOUND`, never `AUTHORIZATION`.** "That event exists but is not
@@ -341,7 +342,7 @@ flowchart TB
   INT["src/interface/ — runAppAction<br/>may import: src/application, src/infrastructure, @agent-native/core/action"]
   APP["src/application/ — use cases, ports, authorization, actor, errors<br/>may import: src/domain, src/application"]
   DOM["src/domain/ — event, seating-table, operation, errors<br/>may import: src/domain. Nothing else. Not even zod."]
-  INF["src/infrastructure/ — D1 repositories, clock, ids, logging, container<br/>may import: src/domain, src/application, @agent-native/core/db|org|server, node:crypto"]
+  INF["src/infrastructure/ — SQL repositories, clock, ids, logging, container<br/>may import: src/domain, src/application, @agent-native/core/db|org|server, node:crypto"]
 
   UI --> ACT
   ACT --> INT
@@ -375,7 +376,7 @@ Why each rule earns its keep:
   action that has its own idea of tenancy.
 
 `src/infrastructure/container.ts` is the one file that knows which adapter implements which
-port. It memoises the repository objects but never the executor: `getDbExec()` resolves the D1
+port. It memoises the repository objects but never the executor: `getDbExec()` resolves the
 binding of the request being served, so a cached executor could outlive its request.
 
 ## 8. Integration ports and adapters
@@ -406,7 +407,7 @@ flowchart TB
 
 Three rules any such feature has to obey:
 
-1. **A local write and a vendor call are two steps, never one transaction.** D1 has no
+1. **A local write and a vendor call are two steps, never one transaction.** There is no
    distributed transaction and neither does the vendor. So an immutable pending request is
    written first, carrying the exact payload and an idempotency key derived from our own
    resource id; only then is the vendor called; the "sent" state is a separate, version-guarded
@@ -496,23 +497,22 @@ failures.
 
 ```mermaid
 flowchart TB
-  subgraph DB["one D1 database"]
+  subgraph DB["one SQL database"]
     FW["framework-owned (~50 tables)<br/>users, sessions, accounts,<br/>organizations, org_members, org_invitations,<br/>agent_audit_log, settings, agent runs"]
     APP["app-owned (4 tables)<br/>events, seating_tables,<br/>operations, idempotency_keys"]
   end
   R1["the framework's own migration runners<br/>_better_auth_migrations, _org_migrations, …"] --> FW
-  R2["migrations/*.sql<br/>wrangler d1 migrations apply | scripts/migrate-local.mjs"] --> APP
+  R2["migrations/*.sql<br/>scripts/migrate.mjs — SQLite or PostgreSQL"] --> APP
 ```
 
 **The framework owns its tables and migrates them itself, at runtime, on the first database
-touch.** Not at deploy time, not from a file you can read. The Node dev server does it at boot;
-`wrangler dev` and a deployed Worker do it during the first request that touches the database —
+touch.** Not at deploy time, not from a file you can read. The dev server does it at boot; a
+deployed environment does it during the first request that touches the database —
 `GET /_agent-native/health` is enough — and it takes a few seconds once.
 `AGENT_NATIVE_SKIP_ENSURE_TABLES` is never set.
 
-**We own ours**, in `migrations/*.sql`, applied by `wrangler d1 migrations apply` on D1 and by
-`scripts/migrate-local.mjs` on the Node dev server's SQLite file. Same files, same order, every
-environment. No `drizzle-kit push` anywhere; `server/db/schema.ts` is a typed mirror the
+**We own ours**, in `migrations/*.sql`, applied by `scripts/migrate.mjs` against whatever
+`DATABASE_URL` names. Same files, same order, every environment, both dialects. No `drizzle-kit push` anywhere; `server/db/schema.ts` is a typed mirror the
 framework and its doctor expect, not the source of truth.
 
 Three consequences you will meet:
@@ -524,12 +524,12 @@ Three consequences you will meet:
   framework's DDL. `tests/integration/framework-tables.ts` does exactly that, and is the only
   copy of a framework table definition in the repository.
 - **`/api/ready` only counts app migrations.** It compares `d1_migrations` against
-  `src/infrastructure/migrations-manifest.ts`, which the build embeds from `migrations/`
-  because a Worker has no filesystem to count files with. The framework's tables are not its
+  `src/infrastructure/migrations-manifest.ts`, generated from `migrations/` and committed, so
+  the answer does not depend on what happens to be on disk. The framework's tables are not its
   business.
 
 `docs/database-and-migrations.md` covers expand/contract, the deploy ordering constraint, and
-why a Worker rollback does not roll back D1.
+why a code rollback does not roll back the database.
 
 ## 11. CI and CD
 
@@ -539,29 +539,27 @@ flowchart TB
   PUSH["push to main"] --> CI
   subgraph CI["ci.yml"]
     direction LR
-    V["verify<br/>pnpm check<br/>pnpm test:integration"] --> WK["worker<br/>pnpm verify:worker<br/>upload worker-bundle"]
-    WK --> E2E["e2e<br/>download the bundle<br/>pnpm test:e2e"]
+    V["verify<br/>pnpm check<br/>pnpm test:integration<br/>pnpm build → upload server-build"] --> E2E["e2e<br/>download server-build<br/>pnpm test:e2e"]
   end
   CI -->|"workflow_run: success on main"| ST
   subgraph ST["deploy-staging.yml — environment: staging"]
     direction TB
-    S1["validate: this SHA has a successful CI run on main"] --> S2["build once"]
-    S2 --> S3["upload worker-bundle-&lt;sha&gt; + deployment-manifest<br/>90-day retention"]
-    S3 --> S4["migrate -> deploy -> reset QA scenario -> staging smoke"]
+    S1["validate: this SHA has a successful CI run on main"] --> S2["upload deployment-manifest<br/>90-day retention"]
+    S2 --> S3["migrate -> deploy -> reset QA scenario -> staging smoke"]
   end
   ST -->|"manual: gh workflow run -f staging_run_id"| PR2
   subgraph PR2["deploy-production.yml — environment: production, reviewer required"]
     direction TB
-    P1["validate the staging run and its manifest"] --> P2["check out that exact SHA"]
-    P2 --> P3["download that exact bundle; verify BUILD_INFO.sha,<br/>HEAD and the PATCHED.json hash"]
-    P3 --> P4["record a D1 Time Travel bookmark"]
-    P4 --> P5["migrate -> deploy -> read-only production smoke"]
+    P1["validate the staging run and its manifest"] --> P2["check out that exact SHA<br/>verify HEAD matches the manifest"]
+    P2 --> P3["record the database backups that exist"]
+    P3 --> P4["migrate -> deploy -> read-only production smoke"]
   end
 ```
 
-The bundle is built **once**, by the staging run, and production downloads that artifact. So
-the bytes serving production are the bytes that passed staging — not a rebuild that happens to
-come from the same commit.
+What is promoted is a **commit**. The platform builds from the git push, so production cannot
+download the bytes staging ran; what the chain guarantees instead is that the commit production
+builds is the commit staging deployed and smoked. That is a narrower promise than the Cloudflare
+arrangement's, and stating it honestly is better than implying the old one still holds.
 
 Provenance is a manifest, not a workflow-run field. A `workflow_run`-triggered run's `head_sha`
 describes the context the workflow file was loaded from, so two runs can report the same
@@ -569,9 +567,7 @@ describes the context the workflow file was loaded from, so two runs can report 
 deploys and writes an immutable `deployment-manifest` artifact `{ repository, sha,
 sourceCiRunId }`; production re-validates that manifest, the staging run's workflow path,
 repository, branch, status and conclusion, and the CI run that actually verified that SHA. Then
-it checks that SHA out and refuses unless `dist/BUILD_INFO.json.sha`, `git rev-parse HEAD` and
-the manifest agree, and `dist/_worker.js/PATCHED.json` matches the SHA-256 of the downloaded
-bundle. A missing patch marker fails the promotion.
+it checks that SHA out and refuses unless `git rev-parse HEAD` and the manifest agree.
 `tests/guards/deployment-validation.test.mjs` unit-tests every one of those refusals.
 
 ## 12. Staging and production separation
@@ -580,65 +576,65 @@ bundle. A missing patch marker fails the promotion.
 flowchart LR
   subgraph LOCAL["local"]
     L1["pnpm dev — Node, file:./data/app.db"]
-    L2["pnpm dev:worker — workerd, local D1"]
+    L2["pnpm build &amp;&amp; pnpm start — the built server, same file"]
   end
   subgraph STAGING["staging"]
-    S["Worker &lt;app&gt;-staging<br/>D1 &lt;app&gt;-staging (EU)<br/>seeded QA org, password sign-in allowed"]
+    S["&lt;app&gt;-staging<br/>PostgreSQL &lt;app&gt;-staging-db (Paris)<br/>seeded QA org, password sign-in allowed"]
   end
   subgraph PRODUCTION["production"]
-    P["Worker &lt;app&gt;-production<br/>D1 &lt;app&gt;-production (EU)<br/>Google only, never seeded"]
+    P["&lt;app&gt;-production<br/>PostgreSQL &lt;app&gt;-production-db (Paris)<br/>Google only, never seeded"]
   end
   LOCAL -->|"merge to main, CI green"| STAGING
-  STAGING -->|"manual promotion of the artifact"| PRODUCTION
+  STAGING -->|"manual promotion of the commit"| PRODUCTION
 ```
 
-Separate Workers, separate databases, separate secrets, separate GitHub environments. Nothing
-is shared, and no credential reaches both.
+Separate applications, separate databases, separate settings, separate GitHub environments.
+Nothing is shared, and no credential reaches both.
 
-|                  | local                | CI / local worker | staging           | production                 |
-| ---------------- | -------------------- | ----------------- | ----------------- | -------------------------- |
-| `APP_ENV`        | `local`              | `ci`              | `staging`         | `production`               |
-| Database         | `file:./data/app.db` | local D1          | D1, EU            | D1, EU                     |
-| Password sign-up | yes                  | yes               | yes (QA)          | **refused**                |
-| Google sign-in   | —                    | —                 | configured        | required, per organization |
-| `SEED_ENABLED`   | `1`                  | `1`               | `1` (QA org only) | **forbidden**              |
-| Audit retention  | —                    | —                 | 365 days          | forever (`0`)              |
+|                  | local                | CI               | staging           | production                 |
+| ---------------- | -------------------- | ---------------- | ----------------- | -------------------------- |
+| `APP_ENV`        | `local`              | `ci`             | `staging`         | `production`               |
+| Database         | `file:./data/app.db` | a temporary file | PostgreSQL        | PostgreSQL                 |
+| Password sign-up | yes                  | yes              | yes (QA)          | **refused**                |
+| Google sign-in   | —                    | —                | configured        | required, per organization |
+| `SEED_ENABLED`   | `1`                  | `1`              | `1` (QA org only) | **forbidden**              |
+| Audit retention  | —                    | —                | 365 days          | forever (`0`)              |
 
 `server/plugins/00-env-check.ts` refuses to start a misconfigured deployment. Production
 requires `BETTER_AUTH_SECRET` (32+ characters), `OAUTH_STATE_SECRET`, an https `APP_URL`, the
 Google credentials and `ANTHROPIC_API_KEY`, and forbids `AUTH_DISABLED`, `SEED_ENABLED`,
-`ACCESS_TOKEN(S)`, `AGENT_PROD_CODE_EXECUTION` and any `DATABASE_URL`. Local refuses
-`APP_ENV=production` and any `DATABASE_URL` that is not a local `file:`. Violation messages
-never contain a value. `scripts/check-config-hygiene.mjs` fails the build if a secret is parked
-in `wrangler.jsonc` `vars`, or a telemetry key appears anywhere.
+`ACCESS_TOKEN(S)` and `AGENT_PROD_CODE_EXECUTION`. Local refuses `APP_ENV=production`.
+Violation messages never contain a value. `scripts/check-config-hygiene.mjs` fails the build if
+a telemetry key appears anywhere or an example file carries a value.
 
 ## 13. Backup and recovery
 
 ```mermaid
 flowchart TB
-  PROD[("production D1")]
-  PROD -->|"always on"| TT["D1 Time Travel<br/>bookmark recorded before every migration"]
-  PROD -->|"nightly 03:00 UTC + dispatch"| EXP["wrangler d1 export<br/>gzip, optional age encryption"]
-  EXP --> DEST["S3-compatible bucket in another account<br/>(or a 30-day GitHub artifact)"]
-  DEST --> CHK["scripts/restore-d1-check.sh<br/>test restore into scratch local D1"]
-  TT -->|"we broke the data an hour ago"| R1["restore in place"]
-  DEST -->|"we lost the account"| R2["import into a NEW database, then move the binding"]
-  WORKER["Worker code"] -->|"wrangler rollback"| RB["previous version"]
+  PROD[("production PostgreSQL add-on")]
+  PROD -->|"daily, 7-day retention"| BK["platform backups<br/>listed in the job summary before every migration"]
+  PROD -->|"point in time"| PITR["pgBackRest recovery"]
+  BK -->|"we broke the data yesterday"| R1["restore through the console"]
+  PITR -->|"we broke the data an hour ago"| R1
+  CODE["deployed commit"] -->|"re-promote the previous staging run"| RB["previous version"]
 ```
 
-Two layers, because they fail differently. Time Travel is Cloudflare's, always on, and restores
-the same database in place — it answers "we broke the data an hour ago". SQL exports are our
-own copies and survive losing the Cloudflare account — they answer "we lost the account" and
-"we need last month's rows". Restore is always into a **new** database, never in place.
+One layer, not two. The plan takes a daily backup with seven-day retention and supports
+point-in-time recovery; this repository writes no backups of its own. That is a smaller surface
+than the nightly-export arrangement it replaced — no object-storage credentials, no encryption
+recipient, no export script to have silently failed — and a real dependency on the platform in
+exchange. `docs/runbook.md` § _Verify the most recent backup_ is how you stop trusting it
+blindly.
 
-Three things a backup does not cover, and it matters: R2 objects (this starter stores none),
-Worker secrets (`wrangler secret put` values cannot be read back — a restore with a different
-`BETTER_AUTH_SECRET` invalidates every session), and the Worker script itself (rolled back with
-`wrangler rollback`, or redeployed from the 90-day promotion artifact).
+Three things a backup does not cover, and it matters: uploaded files (this starter stores
+none), application settings (`clever env` can read them back, which the Worker secrets it
+replaced could not — but a restore paired with a different `BETTER_AUTH_SECRET` still
+invalidates every session), and the deployed code, which is git.
 
-Rolling the Worker back does **not** roll back D1. A migration that ran is still applied. That
-is why every migration must be backwards compatible with the version still serving traffic,
-and why the bookmark is recorded before the migration rather than after.
+Rolling the code back does **not** roll back the database. A migration that ran is still
+applied. That is why every migration must be backwards compatible with the version still
+serving traffic, why migrations run before the deploy so a failed one takes nothing down, and
+why the backup list is recorded before the migration rather than after.
 
 `docs/backups.md` has the configuration, the coverage list, the verification procedure and the
 step-by-step restore. `docs/runbook.md` is the incident-time version.
@@ -666,13 +662,13 @@ one company, 1–20 users, modest data, years of it.
 - **A message broker.** Nothing here is asynchronous by requirement. The one external write
   uses a durable pending request and idempotent retries, which is the same reliability property
   a queue would provide, with one table instead of one more piece of infrastructure.
-- **Kubernetes.** A Worker with static assets and a SQL database has no orchestration problem
-  to solve.
-- **Multi-region.** One D1 database in the EU jurisdiction, chosen for data residency rather
-  than latency. A single small company's users are not distributed enough for replication to
-  pay for its consistency cost.
-- **Cloudflare Access on production.** The application authenticates its own users; a second
-  identity fence in front of it would double the sign-in surface. Access stays an optional
-  documented fence for staging.
+- **Kubernetes.** One Node process and one SQL database have no orchestration problem to solve.
+- **Multi-region.** One database in Paris, chosen for data residency rather than latency. A
+  single small company's users are not distributed enough for replication to pay for its
+  consistency cost — and the application and its database are deliberately in the _same_ zone,
+  which is the one latency decision that does matter here.
+- **An identity fence in front of production.** The application authenticates its own users; a
+  second fence would double the sign-in surface. It stays an optional documented measure for
+  staging.
 - **An elaborate DI container.** `src/infrastructure/container.ts` is one function returning
   one object literal.
