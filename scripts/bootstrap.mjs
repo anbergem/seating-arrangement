@@ -1402,14 +1402,28 @@ function printManualChecklist(ctx) {
   );
   say("     after the first run rather than before it.");
   say("  4. Install the Renovate GitHub App on the repository (D22).");
+  // Both environments, staging first. Staging and production are separate databases, so
+  // each needs its own organization row and its own owner; the order matters because
+  // staging is where Google sign-in is proved, and step 6 revokes every non-Google session
+  // — on production, where there is no password fallback, a broken OAuth client would
+  // lock the owner out (docs/bootstrap.md steps 14, 15 and 17).
   say(
-    "  5. Sign in once with Google on staging, then create the organization and its owner:",
+    "  5. On staging: sign in once with Google, then create the organization and its owner:",
   );
   say(
     `       node scripts/bootstrap-org.mjs --env staging --name "<Org>" --owner <email>`,
   );
   say(
-    '  6. Turn on "require Google sign-in" for that organization on the Team page (D11).',
+    '  6. On staging: turn on "require Google sign-in" for that organization on the Team page (D11).',
+  );
+  say(
+    "  7. Once staging sign-in works, repeat 5 and 6 on production — a separate database,",
+  );
+  say(
+    "     so a separate organization row. Same name and owner:",
+  );
+  say(
+    `       node scripts/bootstrap-org.mjs --env production --name "<Org>" --owner <email>`,
   );
   say("");
   say(
