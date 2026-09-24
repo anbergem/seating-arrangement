@@ -35,6 +35,9 @@ jobs:
           # were found") and the e2e job fails one step later, downloading an
           # artifact that was never made.
           include-hidden-files: true
+          # Nothing downstream rebuilds this, so a missing build must fail the
+          # job that was supposed to make it, not the one that reads it.
+          if-no-files-found: error
           retention-days: 7
   e2e:
     needs: verify
