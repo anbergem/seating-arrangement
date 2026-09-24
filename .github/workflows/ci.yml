@@ -30,6 +30,11 @@ jobs:
         with:
           name: server-build
           path: .output/
+          # `.output` is a dotfile, and upload-artifact@v4 skips hidden paths
+          # unless told otherwise: without this the step only warns ("No files
+          # were found") and the e2e job fails one step later, downloading an
+          # artifact that was never made.
+          include-hidden-files: true
           retention-days: 7
   e2e:
     needs: verify
