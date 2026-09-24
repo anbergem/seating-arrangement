@@ -2256,3 +2256,46 @@ a SQLite file inside a container that is replaced every deploy.
 The general lesson for a platform migration: the dangerous stale references are not the ones
 naming the old tool. Those are greppable and obvious. It is the ones that encoded a platform
 assumption as an invariant, in a validator whose own tests agreed with it.
+
+---
+
+## 2026-09-24 — bootstrap's second run tried to recreate what its first run made
+
+Two faults in `scripts/bootstrap.mjs`, surfaced by the first real `--yes` run against
+`seating-arrangement`. Both were in code whose own tests passed.
+
+**1. `github-secrets` could not read a logged-in CLI's profile.** clever-tools 5.x writes
+`{ version, profiles: [{ alias, token, secret, expirationDate }] }`; the script read a
+top-level `token`. It refused with *"Run `clever login` first"* — at a CLI whose preflight had
+just reported `[ok] Clever Cloud authentication`. The message named the wrong cause, so the
+maintainer did the reasonable thing it suggested, which fixed nothing.
+
+**2. The re-run tried to create applications that existed.** `listApps()` called
+`clever applications --format json`. That subcommand takes `--json`; `addon list` and `env`
+take `--format json`. And `clever` **exits 0** on an unknown option, printing its usage text
+to stdout. So the exit-status check passed, `JSON.parse` threw, the `catch` returned `[]`, and
+"I could not tell" became "there are none" — in the one function whose answer decides whether
+to create a paid resource. `clever create` then refused on the alias, which is the only reason
+it did not make duplicates.
+
+Why the tests did not catch either: **the stub agreed with the script.** It answered every
+`applications` call with the same flat array regardless of flags, and its profile fixture used
+the old flat shape. The idempotency test — `a second --yes run against an existing world
+creates nothing` — existed and passed, because the stub could not be asked the wrong question.
+A stub that mirrors the caller's assumptions tests the caller against itself.
+
+Now:
+
+- `cleverJson()` refuses when a command that should print JSON does not, so a wrong flag is a
+  loud failure instead of an empty list.
+- `listApps()` reads the account-wide `applications list`, not the checkout's links — a fresh
+  clone has none, and would otherwise try to create everything again. An application that
+  exists but is not linked here is linked, since every later step addresses it by alias.
+- The profile reader takes both shapes, prefers `CLEVER_PROFILE` then `default`, and refuses an
+  expired profile rather than writing a dead token into the CI secrets.
+- The stub reproduces the real CLI's per-subcommand flags **and its exit-0-on-unknown-option
+  behaviour**, and its default profile is the current shape. The old shape and the expired case
+  each have a test.
+
+The same lesson as the env-check rule earlier today, from the other side: there, a test encoded
+the old platform; here, a test double encoded the caller's belief about a tool.

@@ -50,9 +50,25 @@ const SECRETS = {
 };
 
 /** The CLI profile `clever login` writes, which bootstrap reads to set the CI secrets. */
+const PROFILE_TOKEN = "clever-token-000000000000000000";
+const PROFILE_SECRET = "clever-secret-00000000000000000";
+
+/** What clever-tools 5.x writes: the credentials nested in a profiles array, each with an
+ * alias and an expiry. The 4.x shape put `token` and `secret` at the top level, and reading
+ * only that shape made the script report "run `clever login` first" at a CLI that was logged
+ * in — so the default fixture is the current shape and the old one has its own test. */
 const PROFILE = {
-  token: "clever-token-000000000000000000",
-  secret: "clever-secret-00000000000000000",
+  version: 1,
+  profiles: [
+    {
+      alias: "default",
+      token: PROFILE_TOKEN,
+      secret: PROFILE_SECRET,
+      expirationDate: new Date(Date.now() + 86_400_000).toISOString(),
+      userId: "user_stub",
+      email: "owner@example.invalid",
+    },
+  ],
 };
 
 const INPUTS = {
@@ -112,8 +128,8 @@ function writeStubs({ dir, log, state, world, loggedIn = true }) {
     world === "full"
       ? {
           apps: [
-            { name: "example-jobs-staging" },
-            { name: "example-jobs-production" },
+            { name: "example-jobs-staging", alias: "staging" },
+            { name: "example-jobs-production", alias: "production" },
           ],
           addons: [
             { name: "example-jobs-staging-db" },
@@ -165,6 +181,12 @@ const world = JSON.parse(readFileSync(STATE, "utf8"));
 const save = () => writeFileSync(STATE, JSON.stringify(world, null, 2));
 const ok = (text) => { if (text !== undefined) process.stdout.write(text + "\\n"); process.exit(0); };
 const notFound = (text) => { process.stderr.write(text + "\\n"); process.exit(1); };
+// The real \`clever\` prints usage to stdout and exits 0 for an option it does not know,
+// so a caller that only checks the exit status sees success and parses nothing.
+const usage = (message) => {
+  process.stdout.write(message + "\\n\\nUSAGE\\n  clever ...\\n");
+  process.exit(0);
+};
 const unexpected = (code) => {
   process.stderr.write("stub ${name}: unexpected argv: " + argv.join(" ") + "\\n");
   process.exit(code);
@@ -188,12 +210,36 @@ if (c[0] === "profile") {
   if (!loggedIn) notFound("[ERROR] No profile found, use clever login command");
   ok("default (owner@example.invalid) [active]");
 }
-if (c[0] === "applications") ok(JSON.stringify(world.apps));
+// The real CLI takes a DIFFERENT json flag per subcommand and, worse, exits 0 with its
+// usage text when given one it does not know. This stub reproduces both, because a stub
+// that answered every spelling was what let a wrong flag pass its own idempotency test
+// (DISCREPANCIES.md, 2026-09-24). 'applications list' is account-wide and grouped by
+// organisation; bare 'applications' is only what this checkout has linked.
+if (join === "applications list") {
+  if (flag("--format") !== "json") usage("Unknown option: json");
+  ok(JSON.stringify([
+    { id: "user_stub", name: "Personal space",
+      applications: world.apps.map(({ name }) => ({ name })) },
+  ]));
+}
+if (c[0] === "applications") {
+  if (!argv.includes("--json")) usage("Unknown option: format");
+  ok(JSON.stringify(
+    world.apps.filter((app) => app.alias).map(({ name, alias }) => ({ name, alias })),
+  ));
+}
 if (c[0] === "create") {
   const name = c[3];
-  world.apps.push({ name });
+  world.apps.push({ name, alias: flag("--alias") });
   save();
   ok(JSON.stringify({ id: "app_" + name, name }));
+}
+if (c[0] === "link") {
+  const app = world.apps.find((candidate) => candidate.name === c[1]);
+  if (!app) notFound("[ERROR] Application not found");
+  app.alias = flag("--alias");
+  save();
+  ok("Application " + c[1] + " successfully linked");
 }
 if (c[0] === "scale") ok("App rescaled successfully");
 if (c[0] === "domain") {
@@ -324,10 +370,14 @@ unexpected(92);
  * run any more — the applications, their databases and their settings all live on the
  * platform — so unlike the Cloudflare version there is no configuration file to stage.
  * @param {string} destination
- * @param {{ appName?: string, withProfile?: boolean }} [options]
+ * @param {{ appName?: string, withProfile?: boolean, profile?: unknown }} [options]
  */
 function stageRepository(destination, options = {}) {
-  const { appName = INPUTS.APP_NAME, withProfile = true } = options;
+  const {
+    appName = INPUTS.APP_NAME,
+    withProfile = true,
+    profile = PROFILE,
+  } = options;
   mkdirSync(path.join(destination, "scripts", "lib"), { recursive: true });
   mkdirSync(path.join(destination, "server", "plugins"), { recursive: true });
   // The application's name lives where `rename-app.mjs` puts it, which is the one place
@@ -355,7 +405,7 @@ function stageRepository(destination, options = {}) {
     mkdirSync(directory, { recursive: true });
     writeFileSync(
       path.join(directory, "clever-tools.json"),
-      JSON.stringify(PROFILE),
+      JSON.stringify(profile),
     );
   }
 }
@@ -368,6 +418,7 @@ function stageRepository(destination, options = {}) {
  *   appName?: string,
  *   loggedIn?: boolean,
  *   withProfile?: boolean,
+ *   profile?: unknown,
  * }} [options]
  */
 function bootstrap(options = {}) {
@@ -378,10 +429,11 @@ function bootstrap(options = {}) {
     appName,
     loggedIn = true,
     withProfile = true,
+    profile,
   } = options;
   const scratch = mkdtempSync(path.join(tmpdir(), "bootstrap-guard-"));
   try {
-    stageRepository(scratch, { appName, withProfile });
+    stageRepository(scratch, { appName, withProfile, profile });
     const log = path.join(scratch, "calls.log");
     writeFileSync(log, "");
     const stubs = path.join(scratch, "stubs");
@@ -459,7 +511,15 @@ function mutatingCalls(calls) {
 
 /** @param {{ stdout: string, stderr: string }} result */
 function assertNoSecretLeaked(result) {
-  for (const [name, value] of Object.entries({ ...SECRETS, ...PROFILE })) {
+  // The credential values themselves, not the profile file's structure: spreading PROFILE
+  // here once meant asserting that stdout does not contain its `version: 1`, which every
+  // run trivially fails.
+  const leakable = {
+    ...SECRETS,
+    CLEVER_TOKEN: PROFILE_TOKEN,
+    CLEVER_SECRET: PROFILE_SECRET,
+  };
+  for (const [name, value] of Object.entries(leakable)) {
     assert.equal(
       result.stdout.includes(value),
       false,
@@ -620,6 +680,41 @@ test("refuses an APP_NAME that does not match the application name", () => {
     /the application is named "something-else" in server\/plugins\/config\.ts/,
   );
   assert.deepEqual(mutatingCalls(result.calls), []);
+});
+
+test("reads the credentials out of a clever-tools 4.x profile too", () => {
+  // The old flat shape. Accepting only one of the two shapes is how this broke: the newer
+  // CLI wrote `profiles: [...]`, the script read a top-level `token`, and the refusal it
+  // printed told the maintainer to run `clever login` at a CLI that was already logged in.
+  const result = bootstrap({
+    args: ["--yes", "--only", "github-secrets"],
+    world: "full",
+    profile: { token: PROFILE_TOKEN, secret: PROFILE_SECRET },
+  });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /CLEVER_TOKEN/);
+  assertNoSecretLeaked(result);
+});
+
+test("refuses an expired profile rather than writing a dead token into CI", () => {
+  const result = bootstrap({
+    args: ["--yes", "--only", "github-secrets"],
+    world: "full",
+    profile: {
+      version: 1,
+      profiles: [
+        {
+          alias: "default",
+          token: PROFILE_TOKEN,
+          secret: PROFILE_SECRET,
+          expirationDate: new Date(Date.now() - 86_400_000).toISOString(),
+        },
+      ],
+    },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr + result.stdout, /expired/i);
+  assertNoSecretLeaked(result);
 });
 
 test("refuses when the Clever CLI is not logged in, before creating anything", () => {

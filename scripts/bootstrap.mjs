@@ -480,28 +480,78 @@ function clever(args, options = {}) {
   return run("npx", ["--yes", "clever-tools@latest", ...args], options);
 }
 
-/** @returns {any[]} */
-function listApps() {
-  const result = clever(["applications", "--format", "json"]);
-  if (result.status !== 0) return [];
+/**
+ * Run a `clever` subcommand that is supposed to print JSON, and refuse if it did not.
+ *
+ * `clever` exits **0** when given an option it does not know, printing its usage text to
+ * stdout instead of the data. A `try { JSON.parse } catch { return [] }` around that reads
+ * as "the account has none of these", which is the most dangerous possible misreading: the
+ * `apps` and `postgres` steps use these lists to decide whether to create. An empty list
+ * from a failed call means creating a second copy of something that already exists.
+ *
+ * The flags are per-subcommand and not consistent — `applications` takes `--json`,
+ * `addon list` and `env` take `--format json` — so this has to be verified against the CLI
+ * rather than assumed (DISCREPANCIES.md, 2026-09-24).
+ *
+ * @param {string[]} args
+ * @param {string} what what the caller wanted, for the refusal message
+ * @returns {any}
+ */
+function cleverJson(args, what) {
+  const result = clever(args);
   try {
-    const parsed = JSON.parse(result.stdout);
-    return Array.isArray(parsed) ? parsed : (parsed?.applications ?? []);
+    return JSON.parse(result.stdout);
   } catch {
-    return [];
+    return refuse(
+      `could not read ${what}: \`clever ${args.join(" ")}\` printed no JSON ` +
+        `(exit ${result.status}). ${result.stdout.split("\n")[0]?.trim() || result.stderr.trim()}`,
+    );
   }
+}
+
+/**
+ * Every application in the account, not only the ones linked in this checkout.
+ *
+ * `clever applications` lists what `.clever.json` links, which is empty in a fresh clone and
+ * would make this script try to create applications that already exist. `applications list`
+ * is the account-wide view, grouped by organisation.
+ * @returns {any[]}
+ */
+function listApps() {
+  const groups = cleverJson(
+    ["applications", "list", "--format", "json"],
+    "the account's applications",
+  );
+  return (Array.isArray(groups) ? groups : []).flatMap((group) =>
+    Array.isArray(group?.applications) ? group.applications : [],
+  );
+}
+
+/** The aliases this checkout has linked, which is what every `--alias` flag resolves against.
+ * @returns {Map<string, string>} alias -> application name */
+function linkedAppAliases() {
+  const result = clever(["applications", "--json"]);
+  /** @type {Map<string, string>} */
+  const linked = new Map();
+  try {
+    // A bare array from `--json`, though `.clever.json` itself nests them under `apps`.
+    const parsed = JSON.parse(result.stdout);
+    for (const app of Array.isArray(parsed) ? parsed : (parsed?.apps ?? [])) {
+      if (app?.alias && app?.name) linked.set(app.alias, app.name);
+    }
+  } catch {
+    // No link file yet is a normal state, not a failure: nothing is linked.
+  }
+  return linked;
 }
 
 /** @returns {any[]} */
 function listAddons() {
-  const result = clever(["addon", "list", "--format", "json"]);
-  if (result.status !== 0) return [];
-  try {
-    const parsed = JSON.parse(result.stdout);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  const parsed = cleverJson(
+    ["addon", "list", "--format", "json"],
+    "the account's add-ons",
+  );
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 /** The domain Clever Cloud assigned, which is what `APP_URL` has to be unless the caller
@@ -524,12 +574,37 @@ function stepApps(ctx) {
   const { inputs } = ctx;
   say("apps — one Node application per environment");
   const existing = listApps();
+  const linked = linkedAppAliases();
 
   for (const environment of ENVIRONMENTS) {
     const name = `${inputs.APP_NAME}-${environment}`;
     const found = existing.find((app) => app?.name === name);
     if (found) {
       record("apps", `application ${name}`, "already present");
+      // Existing in the account is not the same as reachable from here. Every later step
+      // addresses applications by `--alias`, which only resolves through `.clever.json`, so
+      // an unlinked application would fail the next step with a confusing message about an
+      // alias rather than about the link.
+      if (linked.get(environment) !== name) {
+        if (!ctx.apply) {
+          record("apps", `${environment} link`, "would link");
+          showCommand("clever", ["link", name, "--alias", environment]);
+        } else {
+          const relinked = clever([
+            "link",
+            name,
+            "--alias",
+            environment,
+            ...(inputs.CLEVER_ORG ? ["--org", inputs.CLEVER_ORG] : []),
+          ]);
+          if (relinked.status !== 0) {
+            refuse(
+              `\`clever link ${name} --alias ${environment}\` failed: ${relinked.stderr.trim()}`,
+            );
+          }
+          record("apps", `${environment} link`, "linked");
+        }
+      }
     } else if (!ctx.apply) {
       record("apps", `application ${name}`, "would create", region(inputs));
       showCommand("clever", [
@@ -1048,8 +1123,33 @@ function cleverProfileCredentials() {
     if (!existsSync(file)) continue;
     try {
       const parsed = JSON.parse(readFileSync(file, "utf8"));
-      const token = String(parsed?.token ?? "");
-      const secret = String(parsed?.secret ?? "");
+      // Two shapes. clever-tools 5.x writes `{ version, profiles: [{ alias, token, secret,
+      // expirationDate }] }`; older versions wrote the credentials flat. Reading only the
+      // flat one failed with "run `clever login` first" against a CLI that was perfectly
+      // well logged in — the message named the wrong cause (DISCREPANCIES.md, 2026-09-24).
+      const profiles = Array.isArray(parsed?.profiles)
+        ? parsed.profiles
+        : [parsed];
+      const wanted = (process.env.CLEVER_PROFILE ?? "").trim(); // guard:allow-env-credential — a profile alias, not a credential
+      const chosen =
+        (wanted && profiles.find((p) => p?.alias === wanted)) ||
+        profiles.find((p) => p?.alias === "default") ||
+        (profiles.length === 1 ? profiles[0] : undefined);
+      if (!chosen) {
+        return refuse(
+          `the Clever Cloud CLI profile holds ${profiles.length} profiles and none is named "default". ` +
+            `Set CLEVER_PROFILE to the alias to use.`,
+        );
+      }
+      const expiry = Date.parse(String(chosen?.expirationDate ?? ""));
+      if (Number.isFinite(expiry) && expiry <= Date.now()) {
+        return refuse(
+          "the Clever Cloud CLI profile has expired. Run `clever login` again — an expired " +
+            "token would be written into the GitHub secrets and fail every deployment.",
+        );
+      }
+      const token = String(chosen?.token ?? "");
+      const secret = String(chosen?.secret ?? "");
       if (token && secret) {
         protect(token);
         protect(secret);
