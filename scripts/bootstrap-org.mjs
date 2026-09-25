@@ -141,7 +141,7 @@ async function main() {
   }
   const now = Date.now();
   // A fresh member id every run is fine: `org_members` is UNIQUE(org_id, email), so the
-  // second run's row is the one `INSERT OR IGNORE` drops.
+  // second run's row is the one `ON CONFLICT DO NOTHING` drops.
   const memberId = crypto.randomUUID();
 
   const statements = [
@@ -190,7 +190,7 @@ async function main() {
   }
   console.log(
     `bootstrap-org: done. ${owner} is now the owner of ${orgId}. Next: enable "require ` +
-      'Google sign-in" for the organization on the Team page (docs/bootstrap.md step 14).',
+      'Google sign-in" for the organization on the Team page (docs/bootstrap.md step 15).',
   );
 }
 

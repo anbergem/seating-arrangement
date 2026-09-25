@@ -2299,3 +2299,22 @@ Now:
 
 The same lesson as the env-check rule earlier today, from the other side: there, a test encoded
 the old platform; here, a test double encoded the caller's belief about a tool.
+
+---
+
+## 2026-09-25 — The add-on resolver read clever-tools 4.x output only
+
+`bootstrap-org` refused with `add-on "seating-arrangement-staging-db" reported no
+POSTGRESQL_ADDON_URI` against an add-on that had one. `clever addon env <id> --format json`
+printed a list of `{ name, value }` pairs in 4.x and prints one object keyed by variable name in
+5.x; `scripts/lib/addon-url.mjs` read only the list.
+
+The same resolver is how `scripts/migrate.mjs --addon` and `scripts/seed.mjs --addon` reach a
+deployed database, so the staging deploy workflow's migration step would have failed the same
+way on the first merge to `main`. It was found by a hand-run script rather than by that
+workflow only because the maintainer happened to need an organization first.
+
+Third clever-tools 5.x shape change in two days, after the profile file and the
+`applications` flag. The parser is now `connectionStringFrom()`, which reads both shapes, and
+`tests/guards/addon-url.test.mjs` pins both with the current one first. No test covered this
+function before; its only exercise was a real deployment.

@@ -1419,9 +1419,7 @@ function printManualChecklist(ctx) {
   say(
     "  7. Once staging sign-in works, repeat 5 and 6 on production — a separate database,",
   );
-  say(
-    "     so a separate organization row. Same name and owner:",
-  );
+  say("     so a separate organization row. Same name and owner:");
   say(
     `       node scripts/bootstrap-org.mjs --env production --name "<Org>" --owner <email>`,
   );
