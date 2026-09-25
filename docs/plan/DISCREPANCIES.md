@@ -2318,3 +2318,38 @@ Third clever-tools 5.x shape change in two days, after the profile file and the
 `applications` flag. The parser is now `connectionStringFrom()`, which reads both shapes, and
 `tests/guards/addon-url.test.mjs` pins both with the current one first. No test covered this
 function before; its only exercise was a real deployment.
+
+---
+
+## 2026-09-25 — Every test ran on SQLite, so two PostgreSQL errors reached staging
+
+After the organization existed, every action on staging returned 500: `relation "events" does
+not exist`. Staging had never been migrated — the deploy workflow does that, and it had not
+run. Migrating by hand then failed on the first file:
+
+```
+function json_valid(text) does not exist
+```
+
+`migrations/0001_init.sql` constrained `seating_tables.seats` with `CHECK (json_valid(seats))`,
+which is a SQLite function. A local PostgreSQL then showed the next one: the seeded scenario
+still rendered `INSERT OR IGNORE`, which PostgreSQL rejects as a syntax error — and the staging
+workflow runs that seed. Its comment had been updated to say `ON CONFLICT DO NOTHING` on
+2026-09-24; the line under it had not. The template had both right, because the template's
+migration never used `json_valid` and its `insertOrIgnore()` had been converted.
+
+The port was verified with 45 guards, 36 integration tests and 33 browser tests, **all against
+SQLite files**: unit tests use memory, `test:integration` and `test:e2e` build a SQLite file, and
+CI does the same. PostgreSQL was exercised only by deploying. A suite that runs every dialect
+except the production one cannot find a dialect bug, however large it is.
+
+Fixed: the check is now `seats LIKE '[%]'`, which both dialects accept (the mapper already
+parses and shape-checks the column on every read), and the scenario renders
+`ON CONFLICT DO NOTHING`. `0001_init.sql` was edited in place, against the usual rule, because
+PostgreSQL cannot get past it to reach a later file; no PostgreSQL database had applied it.
+
+Tried and set aside: PGlite as a local PostgreSQL. It runs one engine behind its socket server,
+and the framework's twenty-connection pool fails against it — with concurrency on, on unnamed
+prepared statements; without, on refused connections. It is not a faithful host for this app.
+The durable fix is a PostgreSQL service container in CI running the integration suite, which
+is a decision, not a patch, and is raised with the maintainer rather than made here.

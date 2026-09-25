@@ -610,7 +610,7 @@ function insertOrIgnore(
   columns: string,
   values: readonly string[],
 ): string {
-  return `INSERT OR IGNORE INTO ${table} (${columns}) VALUES (${values.join(", ")});`;
+  return `INSERT INTO ${table} (${columns}) VALUES (${values.join(", ")}) ON CONFLICT DO NOTHING;`;
 }
 
 // The application tables. Column names and their order mirror

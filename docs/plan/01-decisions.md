@@ -315,8 +315,11 @@ Decision: one always-on Node process per environment on Clever Cloud (Paris), wi
 PostgreSQL add-on per environment on the `xxs_sml` plan. The free `dev` plan cannot run this
 application at all: it allows five connections and the framework opens a pool of twenty.
 
-Evidence it was the platform and not the application: the move needed **one** change in this
-repository's SQL — `INSERT OR IGNORE` became `ON CONFLICT DO NOTHING` — because nothing under
+Evidence it was the platform and not the application: the move needed **two** changes in this
+repository's SQL — `INSERT OR IGNORE` became `ON CONFLICT DO NOTHING` in the seeded scenario,
+and the migration's `CHECK (json_valid(seats))`, which is SQLite's, became a portable
+`LIKE '[%]'` check. This record first said one; both were found only when staging was
+migrated, a day later (DISCREPANCIES.md, 2026-09-25). The rest held because nothing under
 `src/` or `server/` imports a platform type or calls a platform API, and the framework's
 executor rewrites `?` placeholders for PostgreSQL itself. `src/infrastructure/d1/` was a
 directory name, not a dependency, and is now `src/infrastructure/sql/`.
