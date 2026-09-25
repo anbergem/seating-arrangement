@@ -43,8 +43,8 @@ function initialiseDatabase() {
   for (const suffix of ["", "-wal", "-shm"])
     rmSync(`${databaseFile}${suffix}`, { force: true });
   assertSuccess(
-    run(process.execPath, ["scripts/migrate-local.mjs"], { inherit: true }),
-    "migrate-local",
+    run(process.execPath, ["scripts/migrate.mjs"], { inherit: true }),
+    "migrate",
   );
   assertSuccess(
     run(

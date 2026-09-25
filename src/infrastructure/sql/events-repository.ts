@@ -1,11 +1,11 @@
 /**
- * `EventRepository` against D1 / SQLite (blueprint B7, B11).
+ * `EventRepository` against PostgreSQL / SQLite (blueprint B7, B11).
  *
  * Reads are filtered by `orgId`, so an event from another organization reads as
  * absent rather than as forbidden, and `commit` refuses a stale version with
  * CONFLICT. Nothing here knows which database it is talking to: `runAtomic`
  * picks `atomicBatch` or `transaction`, and the preconditions travel inside the
- * SQL (D07) because D1 cannot hold a transaction open across a check.
+ * SQL (D07) rather than in application code between two statements.
  */
 
 import { AppError } from "../../application/errors";

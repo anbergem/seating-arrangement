@@ -18,6 +18,7 @@ function validProductionEnv(): Env {
     GOOGLE_SIGN_IN_CLIENT_ID: "google-client-id",
     GOOGLE_SIGN_IN_CLIENT_SECRET: "google-client-secret",
     ANTHROPIC_API_KEY: "anthropic-key",
+    DATABASE_URL: "postgresql://user:pass@host:5432/db",
   };
 }
 
@@ -132,23 +133,32 @@ describe("validateEnvironment — production dangerous flags", () => {
   });
 });
 
-describe("validateEnvironment — production forbids DATABASE_URL when present at all", () => {
-  it("a non-file DATABASE_URL is a violation", () => {
-    const violations = validateEnvironment({
-      ...validProductionEnv(),
-      DATABASE_URL: "postgres://user:pass@host/db",
-    });
-    expect(violations).toHaveLength(1);
-    expect(violations[0]).toContain("DATABASE_URL");
+describe("validateEnvironment — production requires a server DATABASE_URL", () => {
+  it("a server connection string is not a violation", () => {
+    expect(
+      validateEnvironment({
+        ...validProductionEnv(),
+        DATABASE_URL: "postgres://user:pass@host/db",
+      }),
+    ).toEqual([]);
   });
 
-  it("APP_ENV=production combined with a local file database is still a violation", () => {
+  it("an unset DATABASE_URL is a violation", () => {
+    const violations = validateEnvironment({
+      ...validProductionEnv(),
+      DATABASE_URL: undefined,
+    });
+    expect(violations).toHaveLength(1);
+    expect(violations[0]).toContain("DATABASE_URL must be set in production");
+  });
+
+  it("a file: DATABASE_URL is a violation, because the container loses it", () => {
     const violations = validateEnvironment({
       ...validProductionEnv(),
       DATABASE_URL: "file:./data/app.db",
     });
     expect(violations).toHaveLength(1);
-    expect(violations[0]).toContain("DATABASE_URL");
+    expect(violations[0]).toContain("must not be a file: URL in production");
   });
 });
 

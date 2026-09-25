@@ -3,7 +3,7 @@ import { parseArgs } from "node:util";
 
 import { CookieClient, detail } from "./lib/http-client.mjs";
 
-const USAGE = `usage: node scripts/worker-smoke.mjs --base-url <url> --mode local|staging|production
+const USAGE = `usage: node scripts/smoke.mjs --base-url <url> --mode local|staging|production
        [--qa-email <email> --qa-password <password> --expect-org-id <id>]
        [--run-id <id>] [--timeout-ms <milliseconds>]
 
@@ -57,6 +57,12 @@ const assert = (condition, message) => {
   if (!condition) throw new Error(message);
 };
 
+// Both spellings on purpose. The hyphenated names are the AI SDK's; the underscored
+// ones are what this framework's agent-chat route actually emits, and a real run reaches
+// `tool_input_start` — the model choosing a tool — long before it reaches any text.
+// Without them a working agent looks like silence: the first two kilobytes of a healthy
+// stream are a keepalive, two `activity` lines, `model_stream`, empty `thinking`, and
+// then tool-input deltas (T28).
 const MEANINGFUL_SSE_TYPES = new Set([
   "text",
   "text-delta",
@@ -64,9 +70,12 @@ const MEANINGFUL_SSE_TYPES = new Set([
   "tool-result",
   "finish",
   "message",
+  "tool_input_start",
+  "tool_call",
+  "tool_result",
 ]);
 
-export async function readSseEvidence(response, maxBytes = 2048) {
+export async function readSseEvidence(response, maxBytes = 8192) {
   const reader = response.body?.getReader();
   if (!reader) return { text: "", events: [], evidence: undefined };
   const decoder = new TextDecoder();
@@ -185,14 +194,18 @@ export async function runSmoke(
     }
     throw new Error(last);
   });
-  await check("health uses D1", async () => {
+  // Local runs a SQLite file and deployments run PostgreSQL, and the point of the check is
+  // that the app reached a real database rather than a default it invented — so it asserts
+  // the dialect the mode actually implies rather than one spelling everywhere (T28).
+  const expectedDialect = options.mode === "local" ? "sqlite" : "postgres";
+  await check(`health uses ${expectedDialect}`, async () => {
     const { response, body } = await client.json("/_agent-native/health", {
       signal: deadline,
     });
     assert(
       response.status === 200 &&
         body?.db === true &&
-        body?.database?.dialect === "d1",
+        body?.database?.dialect === expectedDialect,
       `HTTP ${response.status}: ${detail(body)}`,
     );
   });
@@ -395,9 +408,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     }
     process.exitCode = await runSmoke(options);
   } catch (error) {
-    console.error(
-      `worker-smoke: ${error instanceof Error ? error.message : error}`,
-    );
+    console.error(`smoke: ${error instanceof Error ? error.message : error}`);
     process.exitCode = 1;
   }
 }

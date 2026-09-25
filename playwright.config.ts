@@ -1,6 +1,6 @@
 import { defineConfig } from "@playwright/test";
 
-import { WORKER_STATE_FILE } from "./tests/e2e/worker-state";
+import { SERVER_STATE_FILE } from "./tests/e2e/server-state";
 
 // guard:allow-env-credential — E2E_PORT selects a local test listener, never a credential.
 const e2ePort = Number(process.env.E2E_PORT ?? "8787");
@@ -18,16 +18,16 @@ export default defineConfig({
   use: { baseURL, trace: "on-first-retry" },
   globalSetup: "tests/e2e/global-setup.ts",
   webServer: {
-    // The server creates and owns the Worker's D1 directory and records it in
-    // this file; the path travels as an explicit argument, never through the
+    // The server creates and owns a private SQLite file and records it in this
+    // file; the path travels as an explicit argument, never through the
     // environment.
-    command: `node scripts/e2e-server.mjs --state-file "${WORKER_STATE_FILE}"`,
+    command: `node scripts/e2e-server.mjs --state-file "${SERVER_STATE_FILE}"`,
     url: `${baseURL}/_agent-native/ping`,
     timeout: 180_000,
     reuseExistingServer: false,
     // Without this Playwright ends the run with SIGKILL, which no handler can
-    // catch, and the detached Wrangler process group survives holding port
-    // the selected E2E_PORT. SIGTERM reaches the script's handler, which stops
+    // catch, and the detached server process group survives holding the
+    // selected E2E_PORT. SIGTERM reaches the script's handler, which stops
     // that group.
     gracefulShutdown: { signal: "SIGTERM", timeout: 20_000 },
   },

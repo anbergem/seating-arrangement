@@ -96,12 +96,13 @@ function DbSyncSetup() {
   useDbSync({
     queryClient: qc,
     ignoreSource: TAB_ID,
-    // Polling only. The framework's SSE fast path holds a response open with no
-    // pending I/O, which the Workers runtime cancels ("your Worker's code had
-    // hung and would never generate a response") — and under `wrangler dev`
-    // that cancellation is a fatal error that stops the dev server. Polling is
-    // the framework's documented transport for exactly this case (serverless
-    // and edge). See docs/plan/DISCREPANCIES.md.
+    // Polling only. This was forced on Cloudflare, where the framework's SSE
+    // fast path held a response open with no pending I/O and the runtime
+    // cancelled it. That constraint left with the platform (T28): a long-lived
+    // Node process can hold the stream. It stays polling because nothing here
+    // has been measured against SSE yet, and polling is a transport the
+    // framework supports on both. Switching is a deliberate change with its own
+    // verification, not a leftover to tidy. See docs/plan/DISCREPANCIES.md.
     sseUrl: false,
   });
   return null;

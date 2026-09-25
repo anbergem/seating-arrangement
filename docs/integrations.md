@@ -41,7 +41,7 @@ Nothing above the port changes when an integration replaces a table. A use case 
 5. records an operation;
 6. is audited automatically.
 
-What changes is the adapter behind the port. An aggregate we own lives in D1 and is reached
+What changes is the adapter behind the port. An aggregate we own lives in our database and is reached
 through a repository; an aggregate the vendor owns is reached through an API adapter. The use
 case cannot tell the difference, and neither can its tests.
 
@@ -51,23 +51,23 @@ flowchart TB
   UC --> P1{{"CustomerRepository<br/>JobRepository"}}
   UC --> P2{{"ExternalAccountingSystem"}}
   UC --> P3{{"AccountingExportRepository"}}
-  P1 --> D1[("D1 — data we own")]
-  P3 --> D1
+  P1 --> DB[("SQL — data we own")]
+  P3 --> DB
   P2 --> ADP["API adapter"] --> V["the vendor"]
 ```
 
 Three ports in that picture, and the third is the important one: the durable record of *our
-intent* to call the vendor is data we own, so it lives in D1 next to everything else.
+intent* to call the vendor is data we own, so it lives in our database next to everything else.
 
 ## Where the data lives
 
 | Kind of data | Where | Reached through |
 | --- | --- | --- |
-| Aggregates we own | D1 | A repository port |
-| Our intent to call the vendor, and the vendor's answer | D1 (`accounting_exports`) | A repository port |
+| Aggregates we own | Our database | A repository port |
+| Our intent to call the vendor, and the vendor's answer | Our database (`accounting_exports`) | A repository port |
 | Aggregates the vendor owns | The vendor | An API adapter behind a port |
-| A read model or cache synced from the vendor | D1 | A repository port, refreshed by a sync |
-| The vendor's credentials | Worker secrets | `src/infrastructure/<vendor>/` only |
+| A read model or cache synced from the vendor | Our database | A repository port, refreshed by a sync |
+| The vendor's credentials | Application settings | `src/infrastructure/<vendor>/` only |
 
 Three rules follow from that table.
 
@@ -85,7 +85,7 @@ updates the model.
 
 ## The two-step write
 
-A local write and a vendor call are **two steps, never one transaction**. D1 has no distributed
+A local write and a vendor call are **two steps, never one transaction**. There is no distributed
 transaction, the vendor certainly does not, and pretending otherwise produces the two worst
 outcomes: a local row saying we sent something we never sent, or a vendor record nothing local
 knows about.
@@ -93,7 +93,7 @@ knows about.
 ```mermaid
 sequenceDiagram
   participant UC as use case
-  participant DB as D1
+  participant DB as the database
   participant V as vendor
 
   UC->>DB: 1. INSERT the pending request<br/>guarded on the job's version and status
@@ -221,7 +221,7 @@ needs an accounting system. Files:
 src/application/ports/<vendor>.ts                  the port + ExternalSystemError
 src/infrastructure/mock/mock-<vendor>.ts           the deterministic vendor double
 src/application/ports.ts                           the pending-request repository port
-src/infrastructure/d1/<vendor>-exports-repository.ts     the SQL adapter
+src/infrastructure/sql/<vendor>-exports-repository.ts     the SQL adapter
 src/application/use-cases/send-<thing>-to-<vendor>.ts    the use case
 actions/send-<thing>-to-<vendor>.ts                the declaration
 migrations/0002_job_accounting.sql                 the accounting columns + accounting_exports
@@ -372,7 +372,7 @@ Four steps. Nothing above the port is one of them.
 
 3. **Keep the mock**, and keep it wired for tests. It is what makes the use-case tests
    deterministic and what lets them simulate response loss.
-4. **Add the credentials as Worker secrets** per environment (next section) and to
+4. **Add the credentials as application settings** per environment (next section) and to
    `.bootstrap.env.example` if the bootstrap script should set them.
 
 The vendor's sandbox is worth insisting on. An integration whose tests only ever run against
@@ -382,10 +382,9 @@ the mock will meet the real API's opinions for the first time in production.
 
 | Environment | Where | How |
 | --- | --- | --- |
-| Local (`pnpm dev`) | `.env` | Git-ignored; only `.env.example` is committed, names only |
-| Local Worker | `.dev.vars` | Git-ignored; only `.dev.vars.example` is committed |
-| Staging, production | Worker secrets | `pnpm exec wrangler secret put ACCOUNTING_API_TOKEN --env <env>` |
-| GitHub Actions | Environment secrets | Only if a *workflow* needs it. A Worker secret is not readable by a workflow, and should not be. |
+| Local (`pnpm dev`, `pnpm start`) | `.env` | Git-ignored; only `.env.example` is committed, names only |
+| Staging, production | Application settings | Add it to `scripts/bootstrap.mjs`'s `app-env` step so it is set reproducibly, or `printf 'ACCOUNTING_API_TOKEN=%s\n' "<value>" \| clever env import-vars ACCOUNTING_API_TOKEN --alias <env>` |
+| GitHub Actions | Environment secrets | Only if a *workflow* needs it. An application setting is the application's, not the pipeline's. |
 
 Rules:
 
@@ -395,8 +394,8 @@ Rules:
   credential vault for it (`resolveCredential(key, { userEmail, orgId })`) — and it changes who
   the vendor thinks is calling.
 - **Only the adapter reads them.** Not the use case, not the action, not the UI.
-- **`scripts/check-config-hygiene.mjs` must know the name** if it is a secret, so a value parked
-  in `wrangler.jsonc` `vars` fails the build instead of being deployed.
+- **Never commit a value.** `scripts/check-config-hygiene.mjs` fails the build if an example
+  file carries one, and the example files are the only place a name belongs.
 - **Never log one, and never let one into an error message.** The framework's doctor has a
   `no-env-credentials` guard that flags a `process.env` read outside its allowlist; if the read
   is legitimate, the marker is `// guard:allow-env-credential — <reason>` on the line above or

@@ -7,8 +7,11 @@ export default defineAgentNativeConfig({
   // No Builder.io connection and no per-user provider keys (D15): the first-run
   // "Connect" flow has nothing to offer.
   onboarding: { firstRun: "off" },
-  // `database.required: false` because production reaches D1 through the Worker
-  // binding, not through a `DATABASE_URL` (B13, F8).
+  // `database.required: false` even though every deployment has a `DATABASE_URL`
+  // (T28): the local server falls back to a SQLite file when it is unset, and on
+  // the platform the value is mapped from `POSTGRESQL_ADDON_URI` by
+  // `server/plugins/00-database-url.ts`, which runs after this config is read
+  // (B13, F8).
   runtime: { auth: { enabled: true }, database: { required: false } },
   diagnostics: { failOnBuild: false },
   // Two audiences, two files (D20): `agent/AGENTS.md` is the deployed runtime

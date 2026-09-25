@@ -35,7 +35,6 @@ const SKIP_DIRS = new Set([
   "node_modules",
   "dist",
   ".output",
-  ".wrangler",
   ".react-router",
   ".generated",
   "build",

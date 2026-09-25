@@ -7,7 +7,7 @@ on:
         required: true
         type: string
       confirm:
-        description: Type deploy to promote this exact artifact
+        description: Type deploy to promote this exact commit
         required: true
         type: string
 permissions:
@@ -20,37 +20,28 @@ jobs:
   promote:
     if: inputs.confirm == 'deploy' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     environment: production
     env:
       GH_TOKEN: ${{ github.token }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLEVER_TOKEN: ${{ secrets.CLEVER_TOKEN }}
+      CLEVER_SECRET: ${{ secrets.CLEVER_SECRET }}
       PRODUCTION_URL: ${{ vars.PRODUCTION_URL }}
+      CLEVER_APP_NAME: ${{ vars.CLEVER_APP_NAME }}
       STAGING_RUN_ID: ${{ inputs.staging_run_id }}
     steps:
       - name: Validate run id
         shell: bash
         run: '[[ "$STAGING_RUN_ID" =~ ^[1-9][0-9]*$ ]]'
-      # First, and before install or build: this is the only step that needs no
-      # repository, and it exercises the exact pairing that a wrong credential
-      # breaks — this token, on this account, against D1. A stale token sent the
-      # first real deployment through three minutes of install, build and two
-      # artifact uploads before failing on `d1 migrations apply` with a bare
-      # "[code: 7403]" (DISCREPANCIES.md, 2026-09-14). Only the API's own error
-      # lines are printed; the response body is never echoed.
-      - name: Preflight — Cloudflare credentials reach D1
-        shell: bash
+      # First, before anything else: the one step that needs no repository, and
+      # it exercises the exact pairing a wrong credential breaks. A stale
+      # Cloudflare token once sent a promotion through three minutes of install
+      # and build before failing on a bare "[code: 7403]"
+      # (DISCREPANCIES.md, 2026-09-14). The platform changed; the lesson did not.
+      - name: Preflight — the Clever Cloud credentials work
         run: |
-          body="$RUNNER_TEMP/d1-preflight.json"
-          status=$(curl -sS -o "$body" -w '%{http_code}' \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database?per_page=1")
-          if [[ "$status" != "200" ]]; then
-            echo "::error::Cloudflare credentials cannot reach D1 on this account (HTTP $status)"
-            jq -r '.errors[]? | "  [\(.code)] \(.message)"' "$body" 2>/dev/null || true
-            echo "CLOUDFLARE_API_TOKEN needs D1 Edit (the \"Edit Cloudflare Workers\" template does not include it),"
-            echo "and CLOUDFLARE_ACCOUNT_ID must be the account that token belongs to."
+          if ! npx --yes clever-tools@latest profile > /dev/null 2>&1; then
+            echo "::error::CLEVER_TOKEN / CLEVER_SECRET are not accepted by Clever Cloud."
             echo "Re-set them with: node scripts/bootstrap.mjs --yes --only github-secrets"
             exit 1
           fi
@@ -60,8 +51,8 @@ jobs:
             echo "STAGING_RUN_JSON=$RUNNER_TEMP/staging-run.json"
             echo "CI_RUN_JSON=$RUNNER_TEMP/ci-run.json"
             echo "DEPLOYMENT_MANIFEST=$RUNNER_TEMP/deployment-manifest/deployment-manifest.json"
-            echo "TIME_TRAVEL_JSON=$RUNNER_TEMP/time-travel.json"
-            echo "PREVIOUS_DEPLOYMENTS_JSON=$RUNNER_TEMP/previous-deployments.json"
+            echo "BACKUPS_JSON=$RUNNER_TEMP/backups.json"
+            echo "PREVIOUS_DEPLOYMENTS_JSON=$RUNNER_TEMP/previous-deployments.txt"
           } >> "$GITHUB_ENV"
       - name: Read staging run metadata
         run: gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STAGING_RUN_ID" > "$STAGING_RUN_JSON"
@@ -80,72 +71,71 @@ jobs:
       - name: Validate trusted staging run
         id: staging
         run: node scripts/validate-staging-run.mjs
+      # What is promoted is a commit, not a file. Clever Cloud builds from the
+      # git history it is pushed, so the artifact chain proves *which* commit
+      # staging proved, and this checkout is that commit exactly.
       - uses: actions/checkout@v4
         with:
           ref: ${{ steps.staging.outputs.sha }}
           clean: true
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - name: Download promoted bundle
+      - name: Verify the promoted commit
         env:
-          STAGING_SHA: ${{ steps.staging.outputs.sha }}
-        run: >-
-          gh run download "$STAGING_RUN_ID" --repo "$GITHUB_REPOSITORY"
-          --name "worker-bundle-$STAGING_SHA" --dir dist
-      - name: Verify promoted bundle
-        env:
-          ARTIFACT_DIR: dist
           STAGING_SHA: ${{ steps.staging.outputs.sha }}
         run: |
           CHECKOUT_SHA="$(git rev-parse HEAD)"
           export CHECKOUT_SHA
-          node scripts/verify-promotion-artifact.mjs
-      - name: Record Time Travel bookmark
+          node scripts/verify-promoted-commit.mjs
+      - name: Link this checkout to the production application
+        run: npx --yes clever-tools@latest link "$CLEVER_APP_NAME" --alias production
+      - name: Record the database backups that exist before this promotion
         run: |
-          pnpm exec wrangler d1 time-travel info seating-arrangement-production \
-            --env production --json > "$TIME_TRAVEL_JSON"
+          npx --yes clever-tools@latest addon list --format json > "$RUNNER_TEMP/addons.json"
+          id="$(node -e 'const fs=require("fs");const list=JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP+"/addons.json","utf8"));const a=list.find((x)=>x.name===process.env.CLEVER_APP_NAME+"-db");if(!a)process.exit(1);process.stdout.write(a.realId||a.id)')"
+          npx --yes clever-tools@latest database backups "$id" --format json > "$BACKUPS_JSON" || echo '[]' > "$BACKUPS_JSON"
           {
-            echo '### Pre-deploy D1 Time Travel bookmark'
+            echo '### Backups available before this promotion'
             echo '```json'
-            cat "$TIME_TRAVEL_JSON"
+            cat "$BACKUPS_JSON"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Record previous deployment
-        run: pnpm exec wrangler deployments list --env production --json > "$PREVIOUS_DEPLOYMENTS_JSON"
-      - run: pnpm db:migrate:production
-      - run: pnpm deploy:production
-      # A remote smoke is not a local one: every request crosses the internet to
-      # the Worker and then to remote D1, where the local runs this default was
-      # calibrated against answer from a file in 0-2ms. 120s (the script's
-      # default) was exhausted by the eighth check on the first real staging
-      # smoke (DISCREPANCIES.md, 2026-09-14), including a cold start on the
-      # first request after a fresh deploy.
+        run: npx --yes clever-tools@latest activity --alias production > "$PREVIOUS_DEPLOYMENTS_JSON" || true
+      # Before the deploy, not after: a migration that fails must fail the
+      # promotion rather than take production down with it.
+      - name: Apply migrations
+        run: node scripts/migrate.mjs --addon "$CLEVER_APP_NAME-db"
+      - name: Deploy
+        run: >-
+          npx --yes clever-tools@latest deploy --alias production
+          --same-commit-policy restart
       - run: >-
-          node scripts/worker-smoke.mjs --base-url "$PRODUCTION_URL"
+          node scripts/smoke.mjs --base-url "$PRODUCTION_URL"
           --mode production --timeout-ms 300000
       - name: Record rollback guidance
         if: failure()
         run: |
           {
             echo '### Rollback guidance'
-            echo 'Pre-deploy D1 Time Travel bookmark:'
+            echo 'Database backups taken before this promotion:'
             echo '```json'
-            cat "$TIME_TRAVEL_JSON" 2>/dev/null || echo '{}'
+            cat "$BACKUPS_JSON" 2>/dev/null || echo '[]'
             echo '```'
-            echo 'Deployments before this promotion (the first id is the one to restore):'
-            echo '```json'
-            cat "$PREVIOUS_DEPLOYMENTS_JSON" 2>/dev/null || echo '[]'
+            echo 'Deployments before this promotion (the first line is the one to restore):'
             echo '```'
-            echo 'Roll the Worker back with:'
+            cat "$PREVIOUS_DEPLOYMENTS_JSON" 2>/dev/null || echo 'none recorded'
+            echo '```'
+            echo 'Roll the application back by re-running this workflow with the previous'
+            echo 'staging run id: promotion is a commit, so the previous commit is the rollback.'
+            echo 'Restore the database only if a migration corrupted data:'
             echo '```bash'
-            echo 'pnpm exec wrangler rollback <version-id> --env production'
-            echo '```'
-            echo 'Restore D1 only if a migration corrupted data:'
-            echo '```bash'
-            echo 'pnpm exec wrangler d1 time-travel restore seating-arrangement-production --bookmark <bookmark>'
+            echo 'clever database backups <addon-id>'
+            echo 'clever database backups download <addon-id> <backup-id>'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

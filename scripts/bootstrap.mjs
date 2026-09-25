@@ -2,8 +2,8 @@
 // One-shot post-template setup (decision D28, original spec section 43, docs/bootstrap.md).
 //
 // Every step of the bootstrap that a machine can do, done from one git-ignored input file:
-// D1 databases in the EU jurisdiction, the Wrangler ids and URLs, the first deployment when
-// a Worker does not exist yet, Worker secrets per environment, GitHub environments with
+// the two applications and their PostgreSQL add-ons in an EU region, the first deployment when
+// an application does not exist yet, application settings per environment, GitHub environments with
 // reviewers, GitHub secrets and variables, branch protection and the template flag.
 //
 // Rules this file obeys, because they are the difference between a convenience and a hazard:
@@ -20,23 +20,17 @@
 //   * Every step is idempotent and reports `created` / `already present` / `skipped`, so a
 //     re-run after a failure is safe and says what it did not have to do again.
 //
-// Verified against wrangler 4.129.0 and gh 2.98.0 (`tests/guards/bootstrap.test.mjs` drives
-// the whole script against stub `wrangler`, `gh` and `pnpm` executables on a temporary PATH).
+// Verified against clever-tools and gh 2.98.0 (`tests/guards/bootstrap.test.mjs` drives the
+// whole script against stub `npx`, `gh` and `pnpm` executables on a temporary PATH).
 
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import {
-  accessSync,
-  constants,
-  existsSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
-import { parseJsonc } from "./lib/jsonc.mjs";
+import { appName } from "./lib/app-identity.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -44,14 +38,14 @@ const repoRoot = path.resolve(
 );
 
 const ENVIRONMENTS = ["staging", "production"];
-const GITHUB_ENVIRONMENTS = ["staging", "production", "production-backup"];
-const REQUIRED_STATUS_CHECKS = ["CI / verify", "CI / worker", "CI / e2e"];
+const GITHUB_ENVIRONMENTS = ["staging", "production"];
 
 const STEPS = [
   "preflight",
-  "d1",
+  "apps",
+  "postgres",
+  "app-env",
   "deploy",
-  "worker-secrets",
   "github-environments",
   "github-secrets",
   "branch-protection",
@@ -61,37 +55,56 @@ const STEPS = [
 const REQUIRED_KEYS = [
   "APP_NAME",
   "GITHUB_REPO",
-  "STAGING_URL",
-  "PRODUCTION_URL",
-  "CLOUDFLARE_ACCOUNT_ID",
-  "CLOUDFLARE_API_TOKEN",
   "GOOGLE_SIGN_IN_CLIENT_ID",
   "GOOGLE_SIGN_IN_CLIENT_SECRET",
   "ANTHROPIC_API_KEY",
   "SEED_PASSWORD",
 ];
 
+// Clever Cloud's own zone names. The European ones come first because this template's
+// production database is meant to stay in Europe (D04); `parhds` and `grahds` are the
+// French health-data-certified zones, there for an application that needs them.
+const CLEVER_REGIONS = [
+  "par",
+  "parhds",
+  "rbx",
+  "rbxhds",
+  "grahds",
+  "scw",
+  "wsw",
+  "ldn",
+  "mtl",
+  "sgp",
+  "syd",
+];
+
+// `dev` is free and allows five connections. The framework opens a pool of twenty on a
+// long-lived Node server, with no way to configure it down, so `dev` cannot run this
+// application at all — measured, not assumed (DISCREPANCIES.md, 2026-09-23). `xxs_sml` is
+// the smallest plan that can, and it is the default for that reason.
+const POSTGRES_PLANS = ["xxs_sml", "xs_sml", "s_sml", "m_sml"];
+
+const REQUIRED_STATUS_CHECKS = ["CI / verify", "CI / e2e"];
+
 const OPTIONAL_KEYS = [
+  // Only for a custom domain. Left empty, each application answers on the
+  // `cleverapps.io` name Clever Cloud assigns when it creates it, which bootstrap reads
+  // back rather than asking anyone to know it in advance.
+  "STAGING_URL",
+  "PRODUCTION_URL",
+  "CLEVER_ORG",
+  "CLEVER_REGION",
+  "POSTGRES_PLAN",
   "PRODUCTION_REVIEWERS",
   "TEMPLATE_REPOSITORY",
-  "BACKUP_AGE_RECIPIENT",
-  "BACKUP_S3_BUCKET",
-  "BACKUP_S3_ENDPOINT",
-  "BACKUP_S3_ACCESS_KEY_ID",
-  "BACKUP_S3_SECRET_ACCESS_KEY",
-  "BACKUP_S3_REGION",
-  "BACKUP_S3_PREFIX",
 ];
 
 /** Every key whose value must never be printed. */
 const SECRET_KEYS = new Set([
-  "CLOUDFLARE_API_TOKEN",
   "GOOGLE_SIGN_IN_CLIENT_ID",
   "GOOGLE_SIGN_IN_CLIENT_SECRET",
   "ANTHROPIC_API_KEY",
   "SEED_PASSWORD",
-  "BACKUP_S3_ACCESS_KEY_ID",
-  "BACKUP_S3_SECRET_ACCESS_KEY",
 ]);
 
 const USAGE = `Usage: node scripts/bootstrap.mjs [options]
@@ -207,15 +220,20 @@ function validateInputs(inputs) {
   if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(inputs.GITHUB_REPO)) {
     problems.push("GITHUB_REPO must be owner/name");
   }
+  // Optional now: Clever Cloud assigns a domain when it creates the application, and
+  // bootstrap reads it back. A value here is a custom domain someone already owns.
   for (const key of ["STAGING_URL", "PRODUCTION_URL"]) {
     const value = inputs[key] ?? "";
-    if (!/^https:\/\/[^/?#\s]+$/.test(value)) {
+    if (value !== "" && !/^https:\/\/[^/?#\s]+$/.test(value)) {
       problems.push(
         `${key} must be an https origin with no path or trailing slash`,
       );
     }
   }
-  if (inputs.STAGING_URL === inputs.PRODUCTION_URL) {
+  if (
+    inputs.STAGING_URL !== "" &&
+    inputs.STAGING_URL === inputs.PRODUCTION_URL
+  ) {
     problems.push("STAGING_URL and PRODUCTION_URL must differ");
   }
   if (inputs.SEED_PASSWORD.length < 16) {
@@ -227,19 +245,28 @@ function validateInputs(inputs) {
   ) {
     problems.push("TEMPLATE_REPOSITORY must be 0 or 1 when set");
   }
-  const s3 = [
-    "BACKUP_S3_BUCKET",
-    "BACKUP_S3_ENDPOINT",
-    "BACKUP_S3_ACCESS_KEY_ID",
-    "BACKUP_S3_SECRET_ACCESS_KEY",
-  ];
-  const s3Present = s3.filter((key) => inputs[key] !== "");
-  if (s3Present.length > 0 && s3Present.length < s3.length) {
+  if (inputs.CLEVER_REGION && !CLEVER_REGIONS.includes(inputs.CLEVER_REGION)) {
     problems.push(
-      `S3 backup upload needs all of ${s3.join(", ")} or none of them`,
+      `CLEVER_REGION must be one of ${CLEVER_REGIONS.join(", ")} when set`,
+    );
+  }
+  if (inputs.POSTGRES_PLAN && !POSTGRES_PLANS.includes(inputs.POSTGRES_PLAN)) {
+    problems.push(
+      `POSTGRES_PLAN must be one of ${POSTGRES_PLANS.join(", ")} when set. ` +
+        "`dev` is deliberately absent: it allows five connections and the framework opens twenty.",
     );
   }
   return problems;
+}
+
+/** The zone every application and add-on is created in. */
+function region(inputs) {
+  return inputs.CLEVER_REGION || "par";
+}
+
+/** The PostgreSQL plan every add-on is created with. */
+function postgresPlan(inputs) {
+  return inputs.POSTGRES_PLAN || "xxs_sml";
 }
 
 /** @param {Record<string, string>} inputs */
@@ -256,7 +283,7 @@ function reviewerLogins(inputs) {
 /**
  * Resolves an executable the same way a shell would, then falls back to the repository's own
  * `node_modules/.bin`. PATH wins so `tests/guards/bootstrap.test.mjs` can put stubs in front
- * of the real tools; the fallback means a developer needs no globally installed wrangler.
+ * of the real tools; the fallback means a developer needs no globally installed CLI.
  * @param {string} name
  */
 function resolveExecutable(name) {
@@ -318,18 +345,6 @@ function run(name, args, options = {}) {
   };
 }
 
-/**
- * The token has to reach `wrangler`, and the only channel that is not a file and not an
- * argument is the child environment.
- * @param {Record<string, string>} inputs
- */
-function cloudflareEnv(inputs) {
-  return {
-    CLOUDFLARE_API_TOKEN: inputs.CLOUDFLARE_API_TOKEN,
-    CLOUDFLARE_ACCOUNT_ID: inputs.CLOUDFLARE_ACCOUNT_ID,
-  };
-}
-
 // ---------------------------------------------------------------------------------------
 // Reporting
 // ---------------------------------------------------------------------------------------
@@ -363,218 +378,42 @@ function showCommand(name, args, stdinDescription) {
 }
 
 // ---------------------------------------------------------------------------------------
-// wrangler.jsonc, edited as text
-// ---------------------------------------------------------------------------------------
-
-const wranglerPath = path.join(repoRoot, "wrangler.jsonc");
-
-/** @returns {string} */
-function readWrangler() {
-  if (!existsSync(wranglerPath)) refuse("wrangler.jsonc not found");
-  return readFileSync(wranglerPath, "utf8");
-}
-
-/**
- * The `{ ... }` span of one `env.<name>` block, found by string-aware brace matching so a
- * brace inside a comment or a string cannot end it early.
- * @param {string} source
- * @param {string} environment
- * @returns {{ start: number, end: number }}
- */
-function environmentBlock(source, environment) {
-  const envKey = /"env"\s*:\s*\{/.exec(source);
-  if (!envKey?.index) refuse('wrangler.jsonc has no top-level "env" object');
-  const search = new RegExp(`"${environment}"\\s*:\\s*\\{`, "g");
-  search.lastIndex = /** @type {number} */ (envKey.index);
-  const opening = search.exec(source);
-  if (!opening) refuse(`wrangler.jsonc has no env.${environment} block`);
-  const start =
-    /** @type {RegExpExecArray} */ (opening).index +
-    /** @type {RegExpExecArray} */ (opening)[0].length -
-    1;
-  let depth = 0;
-  let inString = false;
-  let inLineComment = false;
-  let inBlockComment = false;
-  for (let index = start; index < source.length; index += 1) {
-    const char = source[index];
-    const next = source[index + 1];
-    if (inLineComment) {
-      if (char === "\n") inLineComment = false;
-      continue;
-    }
-    if (inBlockComment) {
-      if (char === "*" && next === "/") {
-        inBlockComment = false;
-        index += 1;
-      }
-      continue;
-    }
-    if (inString) {
-      if (char === "\\") index += 1;
-      else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      continue;
-    }
-    if (char === "/" && next === "/") {
-      inLineComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      inBlockComment = true;
-      index += 1;
-      continue;
-    }
-    if (char === "{") depth += 1;
-    else if (char === "}") {
-      depth -= 1;
-      if (depth === 0) return { start, end: index + 1 };
-    }
-  }
-  return refuse(`wrangler.jsonc env.${environment} block is not closed`);
-}
-
-/**
- * Replaces the first `"key": "…"` value inside one environment block, leaving every comment,
- * every blank line and the surrounding formatting exactly as it was.
- * @param {string} source
- * @param {string} environment
- * @param {string} key
- * @param {string} value
- * @returns {{ source: string, changed: boolean, previous: string }}
- */
-function setEnvironmentString(source, environment, key, value) {
-  const { start, end } = environmentBlock(source, environment);
-  const block = source.slice(start, end);
-  const pattern = new RegExp(`("${key}"\\s*:\\s*")([^"]*)(")`);
-  const match = pattern.exec(block);
-  if (!match) {
-    return refuse(
-      `wrangler.jsonc env.${environment} has no "${key}" string to set`,
-    );
-  }
-  const previous = match[2] ?? "";
-  if (previous === value) return { source, changed: false, previous };
-  const updatedBlock =
-    block.slice(0, match.index) +
-    match[1] +
-    value +
-    match[3] +
-    block.slice(match.index + match[0].length);
-  return {
-    source: source.slice(0, start) + updatedBlock + source.slice(end),
-    changed: true,
-    previous,
-  };
-}
-
-/**
- * Re-parses the edited file with the reader `scripts/check-config-hygiene.mjs` uses and
- * asserts the value actually landed where it was meant to. An in-place text edit that
- * produced unparseable JSONC, or wrote into the wrong block, fails here rather than at the
- * next `wrangler deploy`.
- * @param {string} source
- * @param {string} environment
- * @param {(env: Record<string, any>) => unknown} pick
- * @param {string} expected
- * @param {string} label
- */
-function verifyWrangler(source, environment, pick, expected, label) {
-  /** @type {any} */
-  let parsed;
-  try {
-    parsed = parseJsonc(source);
-  } catch (error) {
-    refuse(
-      `the wrangler.jsonc edit is not parseable (${error}); nothing was written`,
-    );
-  }
-  const block = parsed?.env?.[environment];
-  if (!block)
-    refuse(
-      `the wrangler.jsonc edit lost env.${environment}; nothing was written`,
-    );
-  const actual = pick(block);
-  if (actual !== expected) {
-    refuse(
-      `the wrangler.jsonc edit did not set env.${environment} ${label} (found ${JSON.stringify(actual)}); nothing was written`,
-    );
-  }
-}
-
-/** @param {string} environment */
-function currentWranglerValues(environment) {
-  /** @type {any} */
-  const parsed = parseJsonc(readWrangler());
-  const block = parsed?.env?.[environment] ?? {};
-  return {
-    databaseId: block?.d1_databases?.[0]?.database_id ?? "",
-    appUrl: block?.vars?.APP_URL ?? "",
-  };
-}
-
-// ---------------------------------------------------------------------------------------
-// Steps
-// ---------------------------------------------------------------------------------------
-
-/**
- * @typedef {{
- *   inputs: Record<string, string>,
- *   apply: boolean,
- *   rotate: boolean,
- *   allowUnprotectedProduction: boolean,
- *   selected: Set<string>,
- *   state: {
- *     workerExists: Record<string, boolean>,
- *     deploymentNeeded: Record<string, boolean>,
- *     isTemplate: boolean,
- *     built: boolean,
- *   },
- * }} Context
- */
 
 /** @param {Context} ctx */
 function stepPreflight(ctx) {
   const { inputs } = ctx;
   say("preflight");
 
-  /** @type {any} */
-  const wrangler = parseJsonc(readWrangler());
-  if (wrangler?.name !== inputs.APP_NAME) {
+  const declared = appName();
+  if (declared !== inputs.APP_NAME) {
     refuse(
-      `wrangler.jsonc top-level "name" is ${JSON.stringify(wrangler?.name)} but APP_NAME is ` +
-        `"${inputs.APP_NAME}". Run \`node scripts/rename-app.mjs --name ${inputs.APP_NAME} ` +
-        `--display "<Display Name>"\` first, or correct APP_NAME.`,
+      `the application is named ${JSON.stringify(declared)} in server/plugins/config.ts but ` +
+        `APP_NAME is "${inputs.APP_NAME}". Run \`node scripts/rename-app.mjs --name ` +
+        `${inputs.APP_NAME} --display "<Display Name>"\` first, or correct APP_NAME.`,
     );
   }
-  record("preflight", `wrangler.jsonc name is ${inputs.APP_NAME}`, "ok");
+  record("preflight", `application name is ${inputs.APP_NAME}`, "ok");
 
-  const version = run("wrangler", ["--version"], {
-    env: cloudflareEnv(inputs),
-  });
+  const version = clever(["version"]);
   if (version.status !== 0)
-    refuse(`wrangler --version failed: ${version.stderr.trim()}`);
-  record(
-    "preflight",
-    "wrangler",
-    "ok",
-    version.stdout.trim().split("\n").pop(),
-  );
-
-  const whoami = run("wrangler", ["whoami", "--json"], {
-    env: cloudflareEnv(inputs),
-  });
-  if (whoami.status !== 0) {
     refuse(
-      "`wrangler whoami` failed with the supplied CLOUDFLARE_API_TOKEN. Check the token's " +
-        `permissions (Workers Scripts:Edit, D1:Edit) and CLOUDFLARE_ACCOUNT_ID: ${whoami.stderr.trim()}`,
+      `\`clever version\` failed. Install the CLI (\`npm i -g clever-tools\`): ${version.stderr.trim()}`,
+    );
+  record("preflight", "clever-tools", "ok", version.stdout.trim());
+
+  // Authentication is the CLI's own profile, established once by `clever login`. No
+  // Clever Cloud credential is ever written to the env file — which is the one thing this
+  // arrangement has over the Cloudflare token it replaces. Checked here rather than at the
+  // first mutating call, so an unauthenticated run creates nothing before it stops.
+  const profile = clever(["profile"]);
+  if (profile.status !== 0) {
+    refuse(
+      "`clever profile` failed: the CLI is not logged in. Run `clever login` (it opens a browser) and try again.",
     );
   }
-  record("preflight", "Cloudflare authentication", "ok");
+  record("preflight", "Clever Cloud authentication", "ok");
+  record("preflight", "region", "ok", region(inputs));
+  record("preflight", "PostgreSQL plan", "ok", postgresPlan(inputs));
 
   const auth = run("gh", ["auth", "status"]);
   if (auth.status !== 0)
@@ -617,209 +456,474 @@ function stepPreflight(ctx) {
     `default branch ${defaultBranch}`,
   );
 
-  ctx.state.built = existsSync(path.join(repoRoot, "dist", "BUILD_INFO.json"));
+  ctx.state.built = existsSync(
+    path.join(repoRoot, ".output", "server", "index.mjs"),
+  );
   record(
     "preflight",
-    "built Worker bundle (dist/BUILD_INFO.json)",
+    "built server (.output/server/index.mjs)",
     ctx.state.built ? "ok" : "skipped",
     ctx.state.built
       ? undefined
-      : "absent; the deploy step will run `pnpm build:worker`",
+      : "absent; the deploy step will run `pnpm build`",
   );
 }
 
-/** @param {Context} ctx */
-function listDatabases(ctx) {
-  const result = run("wrangler", ["d1", "list", "--json"], {
-    env: cloudflareEnv(ctx.inputs),
-  });
-  if (result.status !== 0)
-    refuse(`\`wrangler d1 list --json\` failed: ${result.stderr.trim()}`);
-  try {
-    const parsed = JSON.parse(result.stdout);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return refuse("`wrangler d1 list --json` did not return a JSON array");
-  }
+/**
+ * Every `clever` invocation goes through here. `npx --yes` rather than a global install so
+ * a fresh machine needs nothing beyond Node, and the CLI's own profile carries the
+ * credentials, so nothing is passed in the environment.
+ * @param {string[]} args
+ * @param {{ input?: string }} [options]
+ */
+function clever(args, options = {}) {
+  return run("npx", ["--yes", "clever-tools@latest", ...args], options);
 }
 
-/** @param {Context} ctx */
-function stepD1(ctx) {
-  const { inputs } = ctx;
-  say("d1 — databases, ids and APP_URL");
-  let databases = listDatabases(ctx);
-
-  for (const environment of ENVIRONMENTS) {
-    const name = `${inputs.APP_NAME}-${environment}`;
-    let existing = databases.find((database) => database?.name === name);
-    if (existing) {
-      record(
-        "d1",
-        `database ${name}`,
-        "already present",
-        `id ${existing.uuid}`,
-      );
-    } else if (!ctx.apply) {
-      record("d1", `database ${name}`, "would create", "EU jurisdiction");
-      showCommand("wrangler", ["d1", "create", name, "--jurisdiction", "eu"]);
-    } else {
-      const created = run(
-        "wrangler",
-        ["d1", "create", name, "--jurisdiction", "eu"],
-        {
-          env: cloudflareEnv(inputs),
-        },
-      );
-      if (created.status !== 0) {
-        refuse(
-          `\`wrangler d1 create ${name}\` failed: ${created.stderr.trim()}`,
-        );
-      }
-      databases = listDatabases(ctx);
-      existing = databases.find((database) => database?.name === name);
-      if (!existing?.uuid) {
-        refuse(
-          `created ${name} but \`wrangler d1 list --json\` does not report its id`,
-        );
-      }
-      record("d1", `database ${name}`, "created", `id ${existing.uuid}`);
-    }
-
-    const appUrl =
-      environment === "staging" ? inputs.STAGING_URL : inputs.PRODUCTION_URL;
-    const current = currentWranglerValues(environment);
-    const databaseId = existing?.uuid ?? current.databaseId;
-
-    if (!existing && !ctx.apply) {
-      record(
-        "d1",
-        `wrangler.jsonc env.${environment}.database_id`,
-        "would update",
-        "id known only after creation",
-      );
-    } else if (current.databaseId === databaseId) {
-      record(
-        "d1",
-        `wrangler.jsonc env.${environment}.database_id`,
-        "already present",
-      );
-    } else if (!ctx.apply) {
-      record(
-        "d1",
-        `wrangler.jsonc env.${environment}.database_id`,
-        "would update",
-        `${current.databaseId} -> ${databaseId}`,
-      );
-    } else {
-      let source = readWrangler();
-      const edit = setEnvironmentString(
-        source,
-        environment,
-        "database_id",
-        databaseId,
-      );
-      verifyWrangler(
-        edit.source,
-        environment,
-        (block) => block?.d1_databases?.[0]?.database_id,
-        databaseId,
-        "database_id",
-      );
-      writeFileSync(wranglerPath, edit.source);
-      record(
-        "d1",
-        `wrangler.jsonc env.${environment}.database_id`,
-        "updated",
-        `${edit.previous} -> ${databaseId}`,
-      );
-    }
-
-    const afterId = currentWranglerValues(environment);
-    if (afterId.appUrl === appUrl) {
-      record(
-        "d1",
-        `wrangler.jsonc env.${environment}.vars.APP_URL`,
-        "already present",
-        appUrl,
-      );
-    } else if (!ctx.apply) {
-      record(
-        "d1",
-        `wrangler.jsonc env.${environment}.vars.APP_URL`,
-        "would update",
-        `${afterId.appUrl} -> ${appUrl}`,
-      );
-    } else {
-      const source = readWrangler();
-      const edit = setEnvironmentString(source, environment, "APP_URL", appUrl);
-      verifyWrangler(
-        edit.source,
-        environment,
-        (block) => block?.vars?.APP_URL,
-        appUrl,
-        "vars.APP_URL",
-      );
-      writeFileSync(wranglerPath, edit.source);
-      record(
-        "d1",
-        `wrangler.jsonc env.${environment}.vars.APP_URL`,
-        "updated",
-        `${edit.previous} -> ${appUrl}`,
-      );
-    }
-  }
-
-  if (ctx.apply) {
-    say(
-      "      commit the changed wrangler.jsonc: the deployment workflows read it from git.",
+/**
+ * Run a `clever` subcommand that is supposed to print JSON, and refuse if it did not.
+ *
+ * `clever` exits **0** when given an option it does not know, printing its usage text to
+ * stdout instead of the data. A `try { JSON.parse } catch { return [] }` around that reads
+ * as "the account has none of these", which is the most dangerous possible misreading: the
+ * `apps` and `postgres` steps use these lists to decide whether to create. An empty list
+ * from a failed call means creating a second copy of something that already exists.
+ *
+ * The flags are per-subcommand and not consistent — `applications` takes `--json`,
+ * `addon list` and `env` take `--format json` — so this has to be verified against the CLI
+ * rather than assumed (DISCREPANCIES.md, 2026-09-24).
+ *
+ * @param {string[]} args
+ * @param {string} what what the caller wanted, for the refusal message
+ * @returns {any}
+ */
+function cleverJson(args, what) {
+  const result = clever(args);
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    return refuse(
+      `could not read ${what}: \`clever ${args.join(" ")}\` printed no JSON ` +
+        `(exit ${result.status}). ${result.stdout.split("\n")[0]?.trim() || result.stderr.trim()}`,
     );
   }
 }
 
 /**
- * A Worker that has never been deployed has no secrets store, so `wrangler secret put` fails
- * on it. `wrangler deployments list` is the cheapest way to ask: a missing Worker makes it
- * exit non-zero, and a Worker that exists but was never deployed returns an empty array.
- * @param {Context} ctx
+ * Every application in the account, not only the ones linked in this checkout.
+ *
+ * `clever applications` lists what `.clever.json` links, which is empty in a fresh clone and
+ * would make this script try to create applications that already exist. `applications list`
+ * is the account-wide view, grouped by organisation.
+ * @returns {any[]}
+ */
+function listApps() {
+  const groups = cleverJson(
+    ["applications", "list", "--format", "json"],
+    "the account's applications",
+  );
+  return (Array.isArray(groups) ? groups : []).flatMap((group) =>
+    Array.isArray(group?.applications) ? group.applications : [],
+  );
+}
+
+/** The aliases this checkout has linked, which is what every `--alias` flag resolves against.
+ * @returns {Map<string, string>} alias -> application name */
+function linkedAppAliases() {
+  const result = clever(["applications", "--json"]);
+  /** @type {Map<string, string>} */
+  const linked = new Map();
+  try {
+    // A bare array from `--json`, though `.clever.json` itself nests them under `apps`.
+    const parsed = JSON.parse(result.stdout);
+    for (const app of Array.isArray(parsed) ? parsed : (parsed?.apps ?? [])) {
+      if (app?.alias && app?.name) linked.set(app.alias, app.name);
+    }
+  } catch {
+    // No link file yet is a normal state, not a failure: nothing is linked.
+  }
+  return linked;
+}
+
+/** @returns {any[]} */
+function listAddons() {
+  const parsed = cleverJson(
+    ["addon", "list", "--format", "json"],
+    "the account's add-ons",
+  );
+  return Array.isArray(parsed) ? parsed : [];
+}
+
+/** The domain Clever Cloud assigned, which is what `APP_URL` has to be unless the caller
+ * supplied a custom one. Read back rather than derived: the assigned name contains the
+ * application id, which nobody can know before the application exists.
  * @param {string} environment
  */
-function deploymentsPresent(ctx, environment) {
-  const result = run(
-    "wrangler",
-    ["deployments", "list", "--env", environment, "--json"],
-    {
-      env: cloudflareEnv(ctx.inputs),
-    },
+function assignedDomain(environment) {
+  const result = clever(["domain", "--alias", environment]);
+  if (result.status !== 0) return "";
+  const first = result.stdout
+    .split("\n")
+    .map((line) => line.trim().replace(/\/$/, ""))
+    .find((line) => line !== "");
+  return first ? `https://${first}` : "";
+}
+
+/** @param {Context} ctx */
+function stepApps(ctx) {
+  const { inputs } = ctx;
+  say("apps — one Node application per environment");
+  const existing = listApps();
+  const linked = linkedAppAliases();
+
+  for (const environment of ENVIRONMENTS) {
+    const name = `${inputs.APP_NAME}-${environment}`;
+    const found = existing.find((app) => app?.name === name);
+    if (found) {
+      record("apps", `application ${name}`, "already present");
+      // Existing in the account is not the same as reachable from here. Every later step
+      // addresses applications by `--alias`, which only resolves through `.clever.json`, so
+      // an unlinked application would fail the next step with a confusing message about an
+      // alias rather than about the link.
+      if (linked.get(environment) !== name) {
+        if (!ctx.apply) {
+          record("apps", `${environment} link`, "would link");
+          showCommand("clever", ["link", name, "--alias", environment]);
+        } else {
+          const relinked = clever([
+            "link",
+            name,
+            "--alias",
+            environment,
+            ...(inputs.CLEVER_ORG ? ["--org", inputs.CLEVER_ORG] : []),
+          ]);
+          if (relinked.status !== 0) {
+            refuse(
+              `\`clever link ${name} --alias ${environment}\` failed: ${relinked.stderr.trim()}`,
+            );
+          }
+          record("apps", `${environment} link`, "linked");
+        }
+      }
+    } else if (!ctx.apply) {
+      record("apps", `application ${name}`, "would create", region(inputs));
+      showCommand("clever", [
+        "create",
+        "--type",
+        "node",
+        name,
+        "--region",
+        region(inputs),
+        "--alias",
+        environment,
+      ]);
+      continue;
+    } else {
+      const created = clever([
+        "create",
+        "--type",
+        "node",
+        name,
+        "--region",
+        region(inputs),
+        "--alias",
+        environment,
+        ...(inputs.CLEVER_ORG ? ["--org", inputs.CLEVER_ORG] : []),
+        "--format",
+        "json",
+      ]);
+      if (created.status !== 0) {
+        refuse(`\`clever create ${name}\` failed: ${created.stderr.trim()}`);
+      }
+      record("apps", `application ${name}`, "created", region(inputs));
+    }
+
+    // A thousand-package install is killed by the default builder, which shares the
+    // application's own instance. A dedicated build instance is billed per build minute
+    // and is the difference between a deploy that works and one that reports
+    // `Killed  pnpm install` (DISCREPANCIES.md, 2026-09-23).
+    if (ctx.apply) {
+      const scaled = clever([
+        "scale",
+        "--alias",
+        environment,
+        "--build-flavor",
+        "M",
+      ]);
+      if (scaled.status !== 0) {
+        refuse(
+          `\`clever scale --build-flavor M\` failed for ${name}: ${scaled.stderr.trim()}`,
+        );
+      }
+      record("apps", `${environment} dedicated build instance`, "ok", "M");
+    } else {
+      showCommand("clever", [
+        "scale",
+        "--alias",
+        environment,
+        "--build-flavor",
+        "M",
+      ]);
+    }
+
+    const url =
+      (environment === "staging"
+        ? inputs.STAGING_URL
+        : inputs.PRODUCTION_URL) ||
+      (ctx.apply ? assignedDomain(environment) : "");
+    ctx.state.appUrl[environment] = url;
+    record(
+      "apps",
+      `${environment} APP_URL`,
+      url ? "ok" : "would read back",
+      url || "assigned when the application is created",
+    );
+  }
+}
+
+/** @param {Context} ctx */
+function stepPostgres(ctx) {
+  const { inputs } = ctx;
+  say(
+    "postgres — one managed database per environment, linked to its application",
   );
-  if (result.status !== 0) return false;
+  const existing = listAddons();
+
+  for (const environment of ENVIRONMENTS) {
+    const name = `${inputs.APP_NAME}-${environment}-db`;
+    const found = existing.find((addon) => addon?.name === name);
+    if (found) {
+      record("postgres", `database ${name}`, "already present");
+    } else if (!ctx.apply) {
+      record(
+        "postgres",
+        `database ${name}`,
+        "would create",
+        `${postgresPlan(inputs)} in ${region(inputs)}`,
+      );
+      showCommand("clever", [
+        "addon",
+        "create",
+        "postgresql-addon",
+        name,
+        "--region",
+        region(inputs),
+        "--plan",
+        postgresPlan(inputs),
+        "--yes",
+      ]);
+    } else {
+      // `--format json` prints the connection string and password on stdout. The result is
+      // never recorded, never logged and never written anywhere: the application reads the
+      // address from the platform variable the link below injects.
+      const created = clever([
+        "addon",
+        "create",
+        "postgresql-addon",
+        name,
+        "--region",
+        region(inputs),
+        "--plan",
+        postgresPlan(inputs),
+        "--yes",
+      ]);
+      if (created.status !== 0) {
+        refuse(
+          `\`clever addon create ${name}\` failed: ${created.stderr.trim()}`,
+        );
+      }
+      record(
+        "postgres",
+        `database ${name}`,
+        "created",
+        `${postgresPlan(inputs)} in ${region(inputs)}`,
+      );
+    }
+
+    if (!ctx.apply) {
+      showCommand("clever", [
+        "service",
+        "link-addon",
+        name,
+        "--alias",
+        environment,
+      ]);
+      continue;
+    }
+    // A linked add-on shows up as `POSTGRESQL_ADDON_URI` among the application's
+    // variables, which is the cheapest evidence there is and keeps a second run from
+    // reporting a link it did not make.
+    if (existingAppEnv(environment)?.POSTGRESQL_ADDON_URI) {
+      record("postgres", `${environment} link`, "already present");
+      continue;
+    }
+    const linked = clever([
+      "service",
+      "link-addon",
+      name,
+      "--alias",
+      environment,
+    ]);
+    if (linked.status !== 0 && !/already/i.test(linked.stderr)) {
+      refuse(
+        `\`clever service link-addon ${name}\` failed: ${linked.stderr.trim()}`,
+      );
+    }
+    record(
+      "postgres",
+      `${environment} link`,
+      "ok",
+      "POSTGRESQL_ADDON_URI injected",
+    );
+  }
+}
+
+/** The variables an application already has, so a re-run neither regenerates a signing
+ * secret nor reports a change it did not make.
+ * @param {string} environment
+ */
+function existingAppEnv(environment) {
+  const result = clever(["env", "--alias", environment, "--format", "json"]);
+  if (result.status !== 0) return null;
+  /** @type {Record<string, string>} */
+  const values = {};
   try {
     const parsed = JSON.parse(result.stdout);
-    return Array.isArray(parsed) ? parsed.length > 0 : Boolean(parsed);
+    const walk = (node) => {
+      if (Array.isArray(node)) return node.forEach(walk);
+      if (!node || typeof node !== "object") return;
+      if (typeof node.name === "string" && "value" in node) {
+        values[node.name] = String(node.value ?? "");
+      }
+      Object.values(node).forEach(walk);
+    };
+    walk(parsed);
   } catch {
-    return false;
+    return null;
+  }
+  return values;
+}
+
+/** @param {Context} ctx */
+function stepAppEnv(ctx) {
+  const { inputs } = ctx;
+  say("app-env — every setting each application needs, secrets on stdin");
+
+  for (const environment of ENVIRONMENTS) {
+    const existing = ctx.apply ? existingAppEnv(environment) : {};
+    if (existing === null) {
+      refuse(
+        `\`clever env --alias ${environment}\` failed: the application does not exist yet. Run the \`apps\` step first.`,
+      );
+    }
+    const url = ctx.state.appUrl[environment] || assignedDomain(environment);
+    if (ctx.apply && !url) {
+      refuse(
+        `could not determine the ${environment} application's URL; set ${environment === "staging" ? "STAGING_URL" : "PRODUCTION_URL"} or check \`clever domain\`.`,
+      );
+    }
+
+    // Generated once and kept. Regenerating a signing secret signs every user of that
+    // environment out, so a re-run reuses what is already there unless --rotate says
+    // otherwise. The value exists in this process's memory only long enough to reach the
+    // CLI on stdin; it is never written to disk.
+    const keep = (name) =>
+      !ctx.rotate && existing[name]
+        ? existing[name]
+        : randomBytes(32).toString("hex");
+
+    /** @type {[string, string][]} */
+    const values = [
+      ["APP_ENV", environment],
+      ["NODE_ENV", "production"],
+      ["APP_URL", url],
+      ["AUTO_CREATE_DEFAULT_ORG", "0"],
+      ["AGENT_NATIVE_DISABLE_AUTO_DEV_ACCOUNT", "1"],
+      [
+        "AUTH_REQUIRE_EMAIL_VERIFICATION",
+        environment === "production" ? "1" : "0",
+      ],
+      ["SEED_ENABLED", environment === "staging" ? "1" : "0"],
+      [
+        "AGENT_NATIVE_AUDIT_RETENTION_DAYS",
+        environment === "production" ? "0" : "365",
+      ],
+      // Clever Cloud installs production dependencies only, and builds on the server. The
+      // build toolchain lives in devDependencies, so without this the build fails on a
+      // missing `react-dom/client` (DISCREPANCIES.md, 2026-09-23).
+      ["CC_NODE_BUILD_TOOL", "pnpm"],
+      ["CC_NODE_DEV_DEPENDENCIES", "install"],
+      ["CC_RUN_COMMAND", "pnpm start"],
+      ["CC_POST_BUILD_HOOK", "pnpm build"],
+      ["BETTER_AUTH_SECRET", keep("BETTER_AUTH_SECRET")],
+      ["OAUTH_STATE_SECRET", keep("OAUTH_STATE_SECRET")],
+      ["GOOGLE_SIGN_IN_CLIENT_ID", inputs.GOOGLE_SIGN_IN_CLIENT_ID],
+      ["GOOGLE_SIGN_IN_CLIENT_SECRET", inputs.GOOGLE_SIGN_IN_CLIENT_SECRET],
+      ["ANTHROPIC_API_KEY", inputs.ANTHROPIC_API_KEY],
+    ];
+    // Staging runs the QA scenario; production is never seeded (B13).
+    if (environment === "staging")
+      values.push(["SEED_PASSWORD", inputs.SEED_PASSWORD]);
+    for (const [name, value] of values) {
+      if (SECRET_KEYS.has(name) || name.endsWith("_SECRET")) protect(value);
+    }
+
+    if (!ctx.apply) {
+      for (const [name] of values) {
+        record("app-env", `${environment} ${name}`, "would set");
+      }
+      showCommand(
+        "clever",
+        ["env", "import", "--alias", environment],
+        "the whole set on stdin",
+      );
+      continue;
+    }
+
+    if (
+      !ctx.rotate &&
+      values.every(([name, value]) => existing[name] === value)
+    ) {
+      record("app-env", `${environment} variables`, "already present");
+      continue;
+    }
+    // `import` replaces the manually-set variables as a set, which is what makes this
+    // idempotent: one call puts the environment in a known state rather than diffing
+    // fifteen. Platform-injected variables (POSTGRESQL_ADDON_*) are untouched by it.
+    const body = values.map(([name, value]) => `${name}=${value}`).join("\n");
+    const imported = clever(["env", "import", "--alias", environment], {
+      input: `${body}\n`,
+    });
+    if (imported.status !== 0) {
+      refuse(
+        `\`clever env import --alias ${environment}\` failed: ${imported.stderr.trim()}`,
+      );
+    }
+    record(
+      "app-env",
+      `${environment} variables`,
+      "set",
+      `${values.length} of them, secrets on stdin`,
+    );
   }
 }
 
 /** @param {Context} ctx */
 function stepDeploy(ctx) {
-  const { inputs } = ctx;
-  say("deploy — first deployment, only where the Worker does not exist yet");
+  say("deploy — first deployment, only where the application has none");
   say(
-    "      Why: `wrangler secret put` needs the Worker to exist, so the very first deployment",
+    "      Why: the smoke and the seed both need a running application, and later",
   );
-  say(
-    "      has to happen before any secret can be stored. Later deployments come from GitHub",
-  );
-  say("      Actions only (docs/deployment.md).");
+  say("      deployments come from GitHub Actions only (docs/deployment.md).");
 
   for (const environment of ENVIRONMENTS) {
-    const present = deploymentsPresent(ctx, environment);
-    ctx.state.workerExists[environment] = present;
-    ctx.state.deploymentNeeded[environment] = !present;
-    if (present) {
+    const activity = clever(["activity", "--alias", environment]);
+    const deployed =
+      activity.status === 0 && /OK\s+DEPLOY/.test(activity.stdout);
+    if (deployed) {
       record(
         "deploy",
-        `Worker ${inputs.APP_NAME}-${environment}`,
+        `application ${ctx.inputs.APP_NAME}-${environment}`,
         "already present",
         "has deployments",
       );
@@ -828,167 +932,25 @@ function stepDeploy(ctx) {
     if (!ctx.apply) {
       record(
         "deploy",
-        `Worker ${inputs.APP_NAME}-${environment}`,
-        "would create",
+        `application ${ctx.inputs.APP_NAME}-${environment}`,
+        "would deploy",
         "first deployment",
       );
-      if (!ctx.state.built) showCommand("pnpm", ["build:worker"]);
-      showCommand("wrangler", ["deploy", "--env", environment]);
+      showCommand("clever", ["deploy", "--alias", environment]);
       continue;
     }
-    if (!ctx.state.built) {
-      const build = run("pnpm", ["build:worker"]);
-      if (build.status !== 0) {
-        refuse(
-          `\`pnpm build:worker\` failed:\n${build.stdout}\n${build.stderr}`,
-        );
-      }
-      ctx.state.built = true;
-      record("deploy", "pnpm build:worker", "ok");
-    }
-    const deployed = run("wrangler", ["deploy", "--env", environment], {
-      env: cloudflareEnv(inputs),
-    });
-    if (deployed.status !== 0) {
+    const result = clever(["deploy", "--alias", environment]);
+    if (result.status !== 0) {
       refuse(
-        `\`wrangler deploy --env ${environment}\` failed: ${deployed.stderr.trim()}`,
+        `\`clever deploy --alias ${environment}\` failed: ${result.stderr.trim()}`,
       );
     }
-    ctx.state.workerExists[environment] = true;
     record(
       "deploy",
-      `Worker ${inputs.APP_NAME}-${environment}`,
-      "created",
+      `application ${ctx.inputs.APP_NAME}-${environment}`,
+      "deployed",
       "first deployment",
     );
-  }
-}
-
-/**
- * @param {Context} ctx
- * @param {string} environment
- */
-function existingWorkerSecrets(ctx, environment) {
-  const result = run(
-    "wrangler",
-    ["secret", "list", "--env", environment, "--format", "json"],
-    {
-      env: cloudflareEnv(ctx.inputs),
-    },
-  );
-  if (result.status !== 0) return null;
-  try {
-    const parsed = JSON.parse(result.stdout);
-    return new Set(
-      (Array.isArray(parsed) ? parsed : []).map((entry) =>
-        String(entry?.name ?? ""),
-      ),
-    );
-  } catch {
-    return new Set();
-  }
-}
-
-/** @param {Context} ctx */
-function stepWorkerSecrets(ctx) {
-  const { inputs } = ctx;
-  say("worker-secrets — one set per environment, never shared between them");
-
-  for (const environment of ENVIRONMENTS) {
-    // A generated signing secret is created per environment and never written to disk: it
-    // exists in this process's memory only long enough to reach `wrangler` on stdin.
-    /** @type {[string, string][]} */
-    const values = [
-      ["BETTER_AUTH_SECRET", randomBytes(32).toString("hex")],
-      ["OAUTH_STATE_SECRET", randomBytes(32).toString("hex")],
-      ["GOOGLE_SIGN_IN_CLIENT_ID", inputs.GOOGLE_SIGN_IN_CLIENT_ID],
-      ["GOOGLE_SIGN_IN_CLIENT_SECRET", inputs.GOOGLE_SIGN_IN_CLIENT_SECRET],
-      ["ANTHROPIC_API_KEY", inputs.ANTHROPIC_API_KEY],
-    ];
-    // Staging runs the QA scenario; production is never seeded (B13).
-    if (environment === "staging")
-      values.push(["SEED_PASSWORD", inputs.SEED_PASSWORD]);
-    for (const [, value] of values) protect(value);
-
-    const existing = existingWorkerSecrets(ctx, environment);
-    if (existing === null) {
-      const needed = ctx.state.deploymentNeeded[environment];
-      if (ctx.apply) {
-        refuse(
-          `\`wrangler secret list --env ${environment}\` failed: the Worker ` +
-            `${inputs.APP_NAME}-${environment} does not exist yet. ` +
-            (needed === false
-              ? "Check the token's Workers Scripts permission."
-              : "Run the `deploy` step first (do not exclude it with --only)."),
-        );
-      }
-      record(
-        "worker-secrets",
-        `secrets for ${environment}`,
-        "would create",
-        "the Worker does not exist yet",
-      );
-      for (const [name] of values) {
-        showCommand(
-          "wrangler",
-          ["secret", "put", name, "--env", environment],
-          "<redacted> on stdin",
-        );
-      }
-      continue;
-    }
-
-    for (const [name, value] of values) {
-      const present = existing.has(name);
-      const signing =
-        name === "BETTER_AUTH_SECRET" || name === "OAUTH_STATE_SECRET";
-      if (present && !ctx.rotate) {
-        record(
-          "worker-secrets",
-          `${environment} ${name}`,
-          "already present",
-          "pass --rotate to replace",
-        );
-        continue;
-      }
-      if (!ctx.apply) {
-        record(
-          "worker-secrets",
-          `${environment} ${name}`,
-          "would create",
-          signing ? "generated, 32 random bytes as hex" : "from the env file",
-        );
-        showCommand(
-          "wrangler",
-          ["secret", "put", name, "--env", environment],
-          "<redacted> on stdin",
-        );
-        continue;
-      }
-      if (present && signing) {
-        warn(
-          `bootstrap: rotating ${name} on ${environment} signs every user of that environment out.`,
-        );
-      }
-      const put = run(
-        "wrangler",
-        ["secret", "put", name, "--env", environment],
-        {
-          input: value,
-          env: cloudflareEnv(inputs),
-        },
-      );
-      if (put.status !== 0) {
-        refuse(
-          `\`wrangler secret put ${name} --env ${environment}\` failed: ${put.stderr.trim()}`,
-        );
-      }
-      record(
-        "worker-secrets",
-        `${environment} ${name}`,
-        present ? "updated" : "created",
-      );
-    }
   }
 }
 
@@ -1142,41 +1104,100 @@ function existingGithubNames(ctx, kind, environment) {
   }
 }
 
+/**
+ * The token and secret `clever login` stored, so CI can act as this account. Read from the
+ * CLI's own configuration rather than asked for: the interactive login already produced
+ * them, and asking again would put a credential in the env file this migration was able to
+ * remove.
+ */
+function cleverProfileCredentials() {
+  const candidates = [
+    path.join(
+      process.env.HOME ?? "", // guard:allow-env-credential — home directory, not a credential
+      ".config",
+      "clever-cloud",
+      "clever-tools.json",
+    ),
+  ];
+  for (const file of candidates) {
+    if (!existsSync(file)) continue;
+    try {
+      const parsed = JSON.parse(readFileSync(file, "utf8"));
+      // Two shapes. clever-tools 5.x writes `{ version, profiles: [{ alias, token, secret,
+      // expirationDate }] }`; older versions wrote the credentials flat. Reading only the
+      // flat one failed with "run `clever login` first" against a CLI that was perfectly
+      // well logged in — the message named the wrong cause (DISCREPANCIES.md, 2026-09-24).
+      const profiles = Array.isArray(parsed?.profiles)
+        ? parsed.profiles
+        : [parsed];
+      const wanted = (process.env.CLEVER_PROFILE ?? "").trim(); // guard:allow-env-credential — a profile alias, not a credential
+      const chosen =
+        (wanted && profiles.find((p) => p?.alias === wanted)) ||
+        profiles.find((p) => p?.alias === "default") ||
+        (profiles.length === 1 ? profiles[0] : undefined);
+      if (!chosen) {
+        return refuse(
+          `the Clever Cloud CLI profile holds ${profiles.length} profiles and none is named "default". ` +
+            `Set CLEVER_PROFILE to the alias to use.`,
+        );
+      }
+      const expiry = Date.parse(String(chosen?.expirationDate ?? ""));
+      if (Number.isFinite(expiry) && expiry <= Date.now()) {
+        return refuse(
+          "the Clever Cloud CLI profile has expired. Run `clever login` again — an expired " +
+            "token would be written into the GitHub secrets and fail every deployment.",
+        );
+      }
+      const token = String(chosen?.token ?? "");
+      const secret = String(chosen?.secret ?? "");
+      if (token && secret) {
+        protect(token);
+        protect(secret);
+        return { token, secret };
+      }
+    } catch {
+      // Fall through to the refusal below: an unreadable profile is the same as none.
+    }
+  }
+  return refuse(
+    "could not read the Clever Cloud CLI profile (~/.config/clever-cloud/clever-tools.json). Run `clever login` first.",
+  );
+}
+
 /** @param {Context} ctx */
 function stepGithubSecrets(ctx) {
   const { inputs } = ctx;
   say("github-secrets — what the workflows themselves need, nothing more");
 
+  // The CLI's own profile, so CI can deploy as this account without anyone pasting a
+  // token. `clever login` wrote it; bootstrap copies it into the two GitHub secrets the
+  // workflows read, and nothing else ever reads the file.
+  const profile = cleverProfileCredentials();
+
   /** @type {Record<string, { secrets: [string, string][], variables: [string, string][] }>} */
   const wanted = {
     staging: {
       secrets: [
-        ["CLOUDFLARE_API_TOKEN", inputs.CLOUDFLARE_API_TOKEN],
-        ["CLOUDFLARE_ACCOUNT_ID", inputs.CLOUDFLARE_ACCOUNT_ID],
+        ["CLEVER_TOKEN", profile.token],
+        ["CLEVER_SECRET", profile.secret],
         ["SEED_PASSWORD", inputs.SEED_PASSWORD],
       ],
-      variables: [["STAGING_URL", inputs.STAGING_URL]],
+      variables: [
+        ["STAGING_URL", ctx.state.appUrl.staging || inputs.STAGING_URL],
+        ["CLEVER_APP_NAME", `${inputs.APP_NAME}-staging`],
+      ],
     },
     production: {
       secrets: [
-        ["CLOUDFLARE_API_TOKEN", inputs.CLOUDFLARE_API_TOKEN],
-        ["CLOUDFLARE_ACCOUNT_ID", inputs.CLOUDFLARE_ACCOUNT_ID],
-      ],
-      variables: [["PRODUCTION_URL", inputs.PRODUCTION_URL]],
-    },
-    "production-backup": {
-      secrets: [
-        ["CLOUDFLARE_API_TOKEN", inputs.CLOUDFLARE_API_TOKEN],
-        ["CLOUDFLARE_ACCOUNT_ID", inputs.CLOUDFLARE_ACCOUNT_ID],
-        ["BACKUP_AGE_RECIPIENT", inputs.BACKUP_AGE_RECIPIENT],
-        ["BACKUP_S3_BUCKET", inputs.BACKUP_S3_BUCKET],
-        ["BACKUP_S3_ENDPOINT", inputs.BACKUP_S3_ENDPOINT],
-        ["BACKUP_S3_ACCESS_KEY_ID", inputs.BACKUP_S3_ACCESS_KEY_ID],
-        ["BACKUP_S3_SECRET_ACCESS_KEY", inputs.BACKUP_S3_SECRET_ACCESS_KEY],
+        ["CLEVER_TOKEN", profile.token],
+        ["CLEVER_SECRET", profile.secret],
       ],
       variables: [
-        ["BACKUP_S3_REGION", inputs.BACKUP_S3_REGION],
-        ["BACKUP_S3_PREFIX", inputs.BACKUP_S3_PREFIX],
+        [
+          "PRODUCTION_URL",
+          ctx.state.appUrl.production || inputs.PRODUCTION_URL,
+        ],
+        ["CLEVER_APP_NAME", `${inputs.APP_NAME}-production`],
       ],
     },
   };
@@ -1354,35 +1375,58 @@ function printManualChecklist(ctx) {
     "Not automatable — do these by hand (docs/bootstrap.md has the click paths):",
   );
   say(
-    "  1. Enable the Workers Paid plan on the Cloudflare account (D04: the bundle is over",
-  );
-  say("     the 3 MiB free-plan limit).");
-  say(
-    '  2. Create the Cloudflare API token — template "Edit Cloudflare Workers" plus D1 Edit —',
+    "  1. Create a Clever Cloud account and add a payment method. The PostgreSQL plan this",
   );
   say(
-    "     before running this script. It is CLOUDFLARE_API_TOKEN in the env file.",
+    "     script uses is not free: the free `dev` plan allows five connections and the",
+  );
+  say("     framework opens twenty, so it cannot run this application at all.");
+  say(
+    "  2. Run `clever login` once. It opens a browser and stores a profile that this",
+  );
+  say(
+    "     script reads; no Clever Cloud credential ever goes in the env file.",
   );
   say(
     "  3. Create the Google OAuth client (Web application, internal consent screen) with",
   );
   say("     these authorized redirect URIs:");
-  say(`       ${inputs.STAGING_URL}/_agent-native/google/callback`);
-  say(`       ${inputs.PRODUCTION_URL}/_agent-native/google/callback`);
-  say("  4. Install the Renovate GitHub App on the repository (D22).");
+  const staging =
+    ctx.state.appUrl.staging || inputs.STAGING_URL || "<staging url>";
+  const production =
+    ctx.state.appUrl.production || inputs.PRODUCTION_URL || "<production url>";
+  say(`       ${staging}/_agent-native/google/callback`);
+  say(`       ${production}/_agent-native/google/callback`);
   say(
-    "  5. Sign in once with Google on staging, then create the organization and its owner:",
+    "     The URLs are assigned when the applications are created, so this step comes",
+  );
+  say("     after the first run rather than before it.");
+  say("  4. Install the Renovate GitHub App on the repository (D22).");
+  // Both environments, staging first. Staging and production are separate databases, so
+  // each needs its own organization row and its own owner; the order matters because
+  // staging is where Google sign-in is proved, and step 6 revokes every non-Google session
+  // — on production, where there is no password fallback, a broken OAuth client would
+  // lock the owner out (docs/bootstrap.md steps 14, 15 and 17).
+  say(
+    "  5. On staging: sign in once with Google, then create the organization and its owner:",
   );
   say(
     `       node scripts/bootstrap-org.mjs --env staging --name "<Org>" --owner <email>`,
   );
   say(
-    '  6. Turn on "require Google sign-in" for that organization on the Team page (D11).',
+    '  6. On staging: turn on "require Google sign-in" for that organization on the Team page (D11).',
+  );
+  say(
+    "  7. Once staging sign-in works, repeat 5 and 6 on production — a separate database,",
+  );
+  say("     so a separate organization row. Same name and owner:");
+  say(
+    `       node scripts/bootstrap-org.mjs --env production --name "<Org>" --owner <email>`,
   );
   say("");
   say(
     ctx.apply
-      ? "Done. Commit the changed wrangler.jsonc, then follow docs/bootstrap.md from step 11."
+      ? "Done. Nothing in the repository changed — the applications, their databases and their settings all live on Clever Cloud. Follow docs/bootstrap.md from step 11."
       : "This was a plan. Nothing was created. Re-run with --yes to perform it.",
   );
 }
@@ -1491,8 +1535,7 @@ function main() {
     allowUnprotectedProduction: values["allow-unprotected-production"] === true,
     selected,
     state: {
-      workerExists: {},
-      deploymentNeeded: {},
+      appUrl: {},
       isTemplate: false,
       built: false,
     },
@@ -1501,9 +1544,10 @@ function main() {
   /** @type {Record<string, (ctx: Context) => void>} */
   const runners = {
     preflight: stepPreflight,
-    d1: stepD1,
+    apps: stepApps,
+    postgres: stepPostgres,
+    "app-env": stepAppEnv,
     deploy: stepDeploy,
-    "worker-secrets": stepWorkerSecrets,
     "github-environments": stepGithubEnvironments,
     "github-secrets": stepGithubSecrets,
     "branch-protection": stepBranchProtection,

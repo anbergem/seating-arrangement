@@ -1,7 +1,7 @@
 /**
  * In-memory implementation of `Dependencies` (blueprint B7, B11).
  *
- * Every use-case test builds one of these instead of touching D1: the
+ * Every use-case test builds one of these instead of touching a database: the
  * behaviour mirrors the real repositories closely enough that a use case
  * cannot tell the difference — `getById`/`list` filter by `orgId`, a table
  * requires an active event in the same org and free space to stand in,
@@ -12,8 +12,8 @@
  * can seed or inspect it without going through the repository interfaces,
  * which run the same preconditions a real adapter would.
  *
- * Every `list` returns rows in the order the matching D1 statement in
- * `src/infrastructure/d1/sql.ts` does — events by `starts_at, id`, tables by
+ * Every `list` returns rows in the order the matching statement in
+ * `src/infrastructure/sql/sql.ts` does — events by `starts_at, id`, tables by
  * `created_at, id`, operations by `performed_at DESC, id DESC`. A `Map`
  * iterates in insertion order, which is not an order any database promises,
  * so without this a unit test and the integration test for the same use case
@@ -188,7 +188,7 @@ function createEventRepository(state: InMemoryState): EventRepository {
 }
 
 /**
- * Mirrors `src/infrastructure/d1/seating-tables-repository.ts`, including the
+ * Mirrors `src/infrastructure/sql/seating-tables-repository.ts`, including the
  * part that matters most: the no-overlap rule is enforced *by the write*, not
  * before it. There it is the `seating_cells` primary key; here it is this
  * function, and the two have to agree cell for cell, or a use-case test and its

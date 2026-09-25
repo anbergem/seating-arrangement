@@ -1,5 +1,5 @@
 /**
- * `OperationRepository` against D1 / SQLite (blueprint B7, B9, B11).
+ * `OperationRepository` against PostgreSQL / SQLite (blueprint B7, B9, B11).
  *
  * Read-only: operation rows are written by `events-repository.ts` and
  * `seating-tables-repository.ts`, inside the same atomic batch as the change they

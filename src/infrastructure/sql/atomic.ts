@@ -1,11 +1,13 @@
 /**
  * The one place a multi-statement write happens (blueprint B11, decision D07).
  *
- * D1 and the local SQLite file agree on almost nothing here: D1 exposes
- * `atomicBatch` and no interactive transactions, the local libsql /
- * better-sqlite3 client exposes `transaction` and no batch (F8). `runAtomic`
- * is the seam — repositories build a list of statements and never learn which
- * runtime applied them.
+ * PostgreSQL and the local SQLite file both expose `transaction`, so today this
+ * seam costs nothing — but it is the reason the move off Cloudflare touched no
+ * repository (T28). D1 exposed `atomicBatch` and no interactive transactions, and
+ * `runAtomic` absorbed that difference: repositories build a list of statements
+ * and never learn which runtime applied them. The `atomicBatch` branch is kept
+ * for the same reason it was written, which is that the next runtime may not
+ * look like this one either.
  *
  * The type is structural on purpose: `DbExecLike` is the subset of the
  * framework's `DbExec` this application uses, so a test can pass the real
@@ -37,8 +39,8 @@ export interface DbExecLike {
 
 /**
  * Either an executor or a way to get one. The container passes a function,
- * because on Workers the framework's executor is bound to the request and must
- * not be cached across them; a test can pass an executor directly.
+ * because the framework's executor is bound to the current request context and
+ * must not be cached across requests; a test can pass an executor directly.
  */
 export type DbExecSource =
   | DbExecLike
