@@ -22,6 +22,7 @@ import {
 import { APP_TITLE } from "@/lib/app-config";
 import { TAB_ID } from "@/lib/tab-id";
 
+import { EnvironmentBanner } from "./EnvironmentBanner";
 import { Header } from "./Header";
 import { Sidebar } from "./Sidebar";
 
@@ -145,48 +146,62 @@ export function Layout({ children }: LayoutProps) {
 
   return (
     <HeaderActionsProvider>
-      <div className="agent-layout-shell flex h-screen w-full overflow-hidden bg-background text-foreground">
-        <div className="agent-layout-left-drawer hidden md:block">
-          <Sidebar
-            collapsed={sidebarCollapsed}
-            onCollapsedChange={setSidebarCollapsed}
-          />
-        </div>
-        <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
-          <SheetContent side="left" className="p-0 w-[260px]">
-            <SheetTitle className="sr-only">
-              {t("navigation.navigation")}
-            </SheetTitle>
-            <SheetDescription className="sr-only">
-              {t("navigation.navigationDescription")}
-            </SheetDescription>
-            <Sidebar collapsed={false} collapsible={false} />
-          </SheetContent>
-        </Sheet>
-        {isChatRoute ? (
-          <div className="agent-layout-main-surface flex min-w-0 flex-1 overflow-hidden">
-            {contentFrame}
+      {/* The framework pins `.agent-layout-shell` to the viewport height. With the
+          environment strip above it that would overflow by the strip's height, so
+          the column takes the viewport and the shell takes what is left. In
+          production there is no strip and the shell fills the column exactly as
+          it filled the viewport. */}
+      <div
+        className="flex w-full flex-col"
+        style={{ height: "var(--agent-native-viewport-height, 100dvh)" }}
+      >
+        <EnvironmentBanner />
+        <div
+          className="agent-layout-shell flex min-h-0 w-full flex-1 overflow-hidden bg-background text-foreground"
+          style={{ height: "auto" }}
+        >
+          <div className="agent-layout-left-drawer hidden md:block">
+            <Sidebar
+              collapsed={sidebarCollapsed}
+              onCollapsedChange={setSidebarCollapsed}
+            />
           </div>
-        ) : (
-          <AgentSidebar
-            position="right"
-            chatViewTransition
-            chatViewTransitionHandoff={chatHomeHandoffPending}
-            storageKey="chat"
-            browserTabId={TAB_ID}
-            openOnChatRunning={chatHomeHandoffActive}
-            onFullscreenRequest={openAskAgentFullscreen}
-            emptyStateText={t("chat.inspectEmptyState")}
-            agentPageHref="/settings/agent"
-            suggestions={[
-              t("chat.inspectSuggestionCapabilities"),
-              t("chat.inspectSuggestionHello"),
-              t("chat.inspectSuggestionAction"),
-            ]}
-          >
-            {contentFrame}
-          </AgentSidebar>
-        )}
+          <Sheet open={mobileSidebarOpen} onOpenChange={setMobileSidebarOpen}>
+            <SheetContent side="left" className="p-0 w-[260px]">
+              <SheetTitle className="sr-only">
+                {t("navigation.navigation")}
+              </SheetTitle>
+              <SheetDescription className="sr-only">
+                {t("navigation.navigationDescription")}
+              </SheetDescription>
+              <Sidebar collapsed={false} collapsible={false} />
+            </SheetContent>
+          </Sheet>
+          {isChatRoute ? (
+            <div className="agent-layout-main-surface flex min-w-0 flex-1 overflow-hidden">
+              {contentFrame}
+            </div>
+          ) : (
+            <AgentSidebar
+              position="right"
+              chatViewTransition
+              chatViewTransitionHandoff={chatHomeHandoffPending}
+              storageKey="chat"
+              browserTabId={TAB_ID}
+              openOnChatRunning={chatHomeHandoffActive}
+              onFullscreenRequest={openAskAgentFullscreen}
+              emptyStateText={t("chat.inspectEmptyState")}
+              agentPageHref="/settings/agent"
+              suggestions={[
+                t("chat.inspectSuggestionCapabilities"),
+                t("chat.inspectSuggestionHello"),
+                t("chat.inspectSuggestionAction"),
+              ]}
+            >
+              {contentFrame}
+            </AgentSidebar>
+          )}
+        </div>
       </div>
     </HeaderActionsProvider>
   );

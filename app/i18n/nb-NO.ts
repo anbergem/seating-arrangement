@@ -193,6 +193,11 @@ const messages = {
     acceptInvitation: "Godta invitasjon til {{name}}",
     teamInvitationError: "Kunne ikke godta invitasjonen. Prøv igjen.",
   },
+  environment: {
+    ci: "CI-miljø",
+    development: "Utviklingsmiljø",
+    staging: "Testmiljø (staging)",
+  },
   root: {
     commandActions: "Handlinger",
     commandAppearance: "Utseende",

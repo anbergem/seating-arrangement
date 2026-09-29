@@ -1,5 +1,8 @@
 import { createAuthPlugin } from "@agent-native/core/server";
 
+import { readAppEnv } from "../../src/infrastructure/env";
+import { environmentLabel } from "../../src/infrastructure/env-check";
+
 // No `workspaceAppPublicPaths`: every page requires sign-in, including `/`
 // (D11 — membership is invite-only and there is no marketing surface).
 //
@@ -10,13 +13,23 @@ import { createAuthPlugin } from "@agent-native/core/server";
 // sign-in document at `/` for everyone — signed in or not — and never reaches
 // the `_index` route. `/` is an ordinary authenticated page here (B17), so it
 // has to be off; the auth guard still sends anonymous visitors to sign in.
+//
+// Every environment but production names itself on the sign-in page, so a
+// staging tab is never mistaken for the real one. The framework renders
+// `appName` as the heading and in the page title, as text; this plugin runs
+// once per process, where `APP_ENV` is known, so one build shows the right
+// label wherever it is promoted. Production gets no label and an unchanged page.
+const label = environmentLabel(readAppEnv());
+
 export default createAuthPlugin({
   rootAuth: false,
   // The readiness probe (B19) must answer before anyone can sign in — and a load balancer
   // or a smoke test has no session. It exposes migration file names and nothing else.
   publicPaths: ["/api/ready"],
   marketing: {
-    appName: "Seating Arrangement",
-    tagline: "Sign in to continue.",
+    appName: label ? `Seating Arrangement (${label})` : "Seating Arrangement",
+    tagline: label
+      ? `${label} environment. Sign in to continue.`
+      : "Sign in to continue.",
   },
 });

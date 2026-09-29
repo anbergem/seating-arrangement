@@ -21,6 +21,28 @@ export const ENVIRONMENT_CLASSES = [
 
 export type EnvironmentClass = (typeof ENVIRONMENT_CLASSES)[number];
 
+/**
+ * The name shown to people for every environment that is not production, or
+ * `null` for production, which carries no label at all.
+ *
+ * It exists so nobody mistakes one environment for another: staging holds real
+ * sign-ins and looks exactly like production. Used on the server-rendered sign-in
+ * page, which is English whatever the reader's locale; the signed-in app asks
+ * `/api/environment` for the class and translates its own label.
+ */
+export function environmentLabel(environment: EnvironmentClass): string | null {
+  switch (environment) {
+    case "local":
+      return "Development";
+    case "ci":
+      return "CI";
+    case "staging":
+      return "Staging";
+    case "production":
+      return null;
+  }
+}
+
 /** Deployment secrets that must be at least this long (F7). */
 const MINIMUM_SECRET_LENGTH = 32;
 
