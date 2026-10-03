@@ -9,18 +9,17 @@ when only the UI works.
 | Application | `tests/unit/application` | `pnpm test:unit` | Node, in-memory doubles |
 | Guards | `tests/guards` | `pnpm test:guards` | Node, the scripts themselves |
 | Integration | `tests/integration` | `pnpm test:integration` | Node, a real SQLite file |
-| Worker smoke | `scripts/worker-smoke.mjs` | `pnpm verify:worker` | workerd, local D1 |
-| Browser | `tests/e2e` | `pnpm test:e2e:full` | Chromium against workerd |
+| Smoke | `scripts/smoke.mjs` | inside `pnpm test:e2e` | The built server, a throwaway SQLite file |
+| Browser | `tests/e2e` | `pnpm test:e2e:full` | Chromium against the built server |
 | Evals | `evals/` | `pnpm eval` | The real model, opt-in |
 
 ```bash
 pnpm check              # lint, typecheck, doctor, boundaries, config, unit, guards, i18n
 pnpm test:integration
-pnpm verify:worker
 pnpm test:e2e:full
 ```
 
-Those four are what CI runs and what a pull request pastes.
+Those three are what CI runs and what a pull request pastes.
 
 ## Domain tests
 
@@ -60,7 +59,7 @@ model — without a database — the race the SQL free-space predicate exists to
 without a database. **What they cannot:** that the SQL says what the in-memory double says.
 
 The doubles are deliberately faithful about the things that have bitten us: they sort like the
-D1 adapters, and their `to` filter is exclusive like the SQL fragment. When a double and an
+SQL adapters, and their `to` filter is exclusive like the SQL fragment. When a double and an
 adapter disagree, one of them is a bug.
 
 ## Guard tests
@@ -71,13 +70,11 @@ load-bearing as the application and easier to break silently.
 | File | What it covers |
 | --- | --- |
 | `boundaries.test.mjs` | Fixtures for every import form — multiline, side-effect, dynamic, type-only, re-export — proving the checker still catches each |
-| `worker-patches.test.mjs` | Both bundle patches against executable fixtures, plus missing, duplicate and throwing-unknown-API cases |
+| `core-patch.test.mjs` | That the framework patch is pinned to the installed version, applied, and still needed — it fails when upstream stops doing the thing it works around |
 | `deployment-validation.test.mjs` | Every promotion refusal: failed run, unrelated workflow, wrong branch, wrong repository, incomplete run, wrong SHA, mismatched manifest, tampered bundle hash |
-| `restore-d1-check.test.mjs` | The restore check imports a fixture dump and reports real row counts |
-| `worker-smoke.test.mjs` | The smoke script's own argument handling and check selection |
+| `smoke.test.mjs` | The smoke script's own argument handling, check selection and SSE reader |
 | `i18n-catalogs.test.mjs` | That two catalogs agreeing on a *broken* placeholder still fail the guard |
-| `bootstrap.test.mjs` | The bootstrap script against stub `wrangler`, `gh` and `pnpm` on a temporary PATH: the plan, idempotency, the exact argument arrays and JSON bodies, every refusal, and that no secret reaches stdout or stderr |
-| `wrangler-vars.test.mjs` | That a var declared only at the top level of `wrangler.jsonc` is reported for every environment that omits it — wrangler does not inherit `vars`, and the only other sign is a warning in a deploy log |
+| `bootstrap.test.mjs` | The bootstrap script against stub `npx`, `gh` and `pnpm` on a temporary PATH: the plan, idempotency, the exact argument arrays and stdin bodies, every refusal, and that no secret reaches stdout or stderr |
 | `eval-json.test.mjs` | That a model-backed `--json` run puts one JSON document on stdout and its preparation output on stderr, that `--out` writes that document itself and still gates on the exit code, with every provider credential stripped so it makes no paid request |
 
 `bootstrap.test.mjs` is the pattern to copy for anything that drives a cloud CLI: the stubs
@@ -99,7 +96,7 @@ exists, so it cannot erase the CLI fixtures mid-run.
   that a round table stores and reads back with its full ring of chairs, that a chair claims
   its cell only once somebody is sitting in it, and that two tables may meet end to end while
   the chairs at the join are empty but not once one of them is taken.
-- `use-cases-d1.test.ts` — the same use cases the unit tests cover, against real SQL, so a
+- `use-cases-sql.test.ts` — the same use cases the unit tests cover, against real SQL, so a
   divergence between the double and the adapter shows up.
 - The CLI surface: `AGENT_USER_EMAIL=member1@example.invalid AGENT_ORG_ID=org_acme pnpm action
   label-seat '{"tableId":"tbl_head","seat":3,"label":"…"}'` bumps the
@@ -112,26 +109,26 @@ That last one is the parity claim tested at its cheapest layer: the CLI is a dif
 `ctx.caller` reaching the same action.
 
 **What they prove:** the SQL, the atomicity, the version guards, and one non-browser surface.
-**What they cannot:** that the bundle boots on workerd.
+**What they cannot:** that the built server boots and serves.
 
-## Worker smoke
+## Smoke
 
-`pnpm verify:worker` builds the Worker, creates its **own** temporary D1 state, applies
-migrations, seeds, starts `wrangler dev`, runs `scripts/worker-smoke.mjs` against it and then
-removes only its own temporary state.
+The smoke runs against a deployed environment, and inside `pnpm test:e2e`'s global setup
+against the built server the browser suite is about to drive — so every browser run has already
+proved the wiring before the first spec opens a page.
 
-Playwright uses port 8787 by default. Set `E2E_PORT` to another unused loopback port when a
-separate local Worker already owns it, for example `E2E_PORT=8797 pnpm test:e2e:full`.
+Playwright uses port 8787 by default. Set `E2E_PORT` to another unused loopback port when
+something already owns it, for example `E2E_PORT=8797 pnpm test:e2e:full`.
 
 ```bash
-node scripts/worker-smoke.mjs --base-url http://127.0.0.1:8787 --mode local \
+node scripts/smoke.mjs --base-url http://127.0.0.1:8787 --mode local \
   --qa-email owner@example.invalid --qa-password "$SEED_PASSWORD" --expect-org-id org_acme
 ```
 
 | Check | local | staging | production |
 | --- | :-: | :-: | :-: |
 | `GET /_agent-native/ping` is 200 `{"message":"pong"}` | ✓ | ✓ | ✓ |
-| `GET /_agent-native/health` 200, `db === true`, `dialect === "d1"` | ✓ | ✓ | ✓ |
+| `GET /_agent-native/health` 200, `db === true`, the dialect the mode implies | ✓ | ✓ | ✓ |
 | `GET /api/ready` 200 with `applied === expected` | ✓ | ✓ | ✓ |
 | `GET /sign-in` 200 HTML | ✓ | ✓ | ✓ |
 | `GET /` is 200 — the static shell, never a 302 | ✓ | ✓ | ✓ |
@@ -146,19 +143,19 @@ node scripts/worker-smoke.mjs --base-url http://127.0.0.1:8787 --mode local \
 must not create rows in a client's database. Locally the agent-chat check expects the first
 event to be `missing_credentials`, which proves the runtime path without a provider key.
 
-**What it proves:** the built bundle boots on workerd, the framework's own migrations run, and a
-real authenticated action flow works end to end. **What it cannot:** that the UI wires any of it
+**What it proves:** the built server boots, the framework's own migrations run, and a real
+authenticated action flow works end to end. **What it cannot:** that the UI wires any of it
 up.
 
 ## Browser tests
 
-`pnpm test:e2e:full` builds the Worker and runs Playwright against it — one worker, Chromium,
-no mocks. `scripts/e2e-server.mjs` resets `.wrangler/state`, applies migrations, starts
-`wrangler dev`, waits for `ping`, requests `/_agent-native/health` once so the framework
-creates its tables, then applies the scenario SQL while the server keeps running. It generates
-its own Wrangler configuration in a temporary directory and sets
-`CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV=false`, so the suite is independent of any developer's
-`.dev.vars`.
+`pnpm test:e2e:full` builds the server and runs Playwright against it — one worker, Chromium,
+no mocks. `scripts/e2e-server.mjs` creates a SQLite file in a fresh temporary directory,
+applies migrations, starts the built server against it, waits for `ping`, requests
+`/_agent-native/health` once so the framework creates its tables, then applies the scenario SQL
+while the server keeps running. It strips anything credential-shaped out of the environment it
+passes on and supplies its own throwaway `BETTER_AUTH_SECRET`, so the suite is independent of
+any developer's `.env` and a real `ANTHROPIC_API_KEY` never reaches a test database.
 
 **Use `test:e2e:full`, not `test:e2e`, after touching anything under `app/`.** Playwright serves
 the built bundle in `dist/`, and the bare `pnpm test:e2e` does not rebuild it — so a UI change
@@ -195,13 +192,13 @@ The drag tests deserve a note, because the gesture is the feature. They drive
 assert on the `data-grid-x` / `data-grid-y` attributes the table renders, so the assertions are
 about grid cells rather than about where a div happened to land.
 
-Two teardown details, learned the hard way and easy to reintroduce: Wrangler's stdio is piped
+Two teardown details, learned the hard way and easy to reintroduce: the server's stdio is piped
 rather than inherited (a descendant holding Playwright's own handles hangs the run at
 teardown), and `playwright.config.ts` sets `gracefulShutdown: { signal: "SIGTERM" }` (the
-default `SIGKILL` cannot be caught, so the cleanup handler never ran and the detached Wrangler
+default `SIGKILL` cannot be caught, so the cleanup handler never ran and the detached server
 group survived).
 
-**What they prove:** the wiring, the real Worker, real cookies, real navigation, and parity.
+**What they prove:** the wiring, the real server, real cookies, real navigation, and parity.
 **What they cannot:** whether the model chooses the right action.
 
 ## Evals
@@ -261,7 +258,7 @@ Two things still need a person, and they are listed here so nobody assumes other
 
 - **The agent answering a real question** ("what's on this week") in the deployed UI, and the German
   or Norwegian round trip of the language picker. Both need a provider key or a human eye.
-- **A restore from a real production backup.** `scripts/restore-d1-check.sh` proves a dump
+- **A restore from a real production backup.** `docs/backups.md` § *Testing the restore* proves a backup
   imports and has plausible row counts; it cannot prove your production backup is the one you
   think it is. `docs/backups.md` asks for that quarterly, by hand, with the date and the counts
   written down.

@@ -11,8 +11,8 @@
  * - The repository objects are memoised. They are stateless closures over a
  *   way to reach the database, so building them per request would be waste.
  * - The executor is not. `getDbExec()` is called inside every repository
- *   method, because on Workers it resolves the D1 binding of the request being
- *   served; a cached executor would outlive its request and, worse, could be
+ *   method, because it resolves against the framework's current request
+ *   context; a cached executor would outlive its request and, worse, could be
  *   handed to the next one.
  */
 
@@ -22,17 +22,17 @@
 import { getDbExec } from "@agent-native/core/db";
 
 import type { Dependencies } from "../application/ports";
-import type { DbExecLike } from "./d1/atomic";
-import { createEventsRepository } from "./d1/events-repository";
-import { createIdempotencyStore } from "./d1/idempotency-store";
-import { createMembershipReader } from "./d1/membership-reader";
-import { createOperationsRepository } from "./d1/operations-repository";
-import { createSeatingTablesRepository } from "./d1/seating-tables-repository";
 import { randomIdGenerator } from "./random-ids";
+import type { DbExecLike } from "./sql/atomic";
+import { createEventsRepository } from "./sql/events-repository";
+import { createIdempotencyStore } from "./sql/idempotency-store";
+import { createMembershipReader } from "./sql/membership-reader";
+import { createOperationsRepository } from "./sql/operations-repository";
+import { createSeatingTablesRepository } from "./sql/seating-tables-repository";
 import { systemClock } from "./system-clock";
 
 /**
- * The executor for the request being served. `resolveExec` (see `d1/atomic.ts`)
+ * The executor for the request being served. `resolveExec` (see `sql/atomic.ts`)
  * takes care of the framework's lazy proxy; this only has to avoid holding on
  * to the result.
  */

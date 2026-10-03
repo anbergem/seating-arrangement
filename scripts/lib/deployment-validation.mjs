@@ -1,6 +1,3 @@
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-
 export function validateRunId(value) {
   if (!/^[1-9][0-9]*$/.test(value)) {
     throw new Error("staging_run_id must be a positive numeric GitHub run id");
@@ -52,20 +49,24 @@ export function validateDeploymentManifest(manifest, repository) {
   return { sha: manifest.sha, sourceCiRunId: String(manifest.sourceCiRunId) };
 }
 
-export function verifyPromotionArtifact(directory, expectedSha, checkoutSha) {
+/**
+ * Proves the commit checked out for a promotion is the commit staging proved (T20 step 2,
+ * D21: production never rebuilds a different tree).
+ *
+ * What is promoted changed with the platform. Cloudflare took a file — a Worker bundle
+ * built once and uploaded — so this used to compare its hash against the patch marker
+ * beside it. Clever Cloud takes a git push and builds from it, so what has to be proven is
+ * narrower and stronger: that the checkout is the commit the staging run deployed and
+ * smoked. The artifact chain (deployment manifest → source CI run → staging run)
+ * establishes which commit that is; this establishes that it is the one in hand.
+ *
+ * @param {string} expectedSha the commit the validated staging run deployed
+ * @param {string} checkoutSha the commit this job checked out
+ */
+export function verifyPromotedCommit(expectedSha, checkoutSha) {
+  if (!/^[0-9a-f]{40}$/.test(expectedSha))
+    throw new Error("the staging run SHA is not a full git commit id");
   if (expectedSha !== checkoutSha)
     throw new Error("checked-out commit does not match the staging run SHA");
-  const build = JSON.parse(
-    readFileSync(`${directory}/BUILD_INFO.json`, "utf8"),
-  );
-  if (build.sha !== expectedSha)
-    throw new Error("BUILD_INFO.json does not match the staging run SHA");
-  const marker = JSON.parse(
-    readFileSync(`${directory}/_worker.js/PATCHED.json`, "utf8"),
-  );
-  const worker = readFileSync(`${directory}/_worker.js/index.js`);
-  const actual = createHash("sha256").update(worker).digest("hex");
-  if (marker.sha256 !== actual)
-    throw new Error("PATCHED.json does not match the promoted Worker bundle");
-  return { sha: expectedSha, workerSha256: actual };
+  return { sha: expectedSha };
 }

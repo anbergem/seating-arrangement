@@ -1,8 +1,8 @@
 /**
  * Structured logging (blueprint B16, decision D17).
  *
- * One JSON object per line on stdout, which is what Cloudflare's log stream
- * and `wrangler tail` can filter on; nothing here formats for humans.
+ * One JSON object per line on stdout, which is what the platform's log stream
+ * and `clever logs` can filter on; nothing here formats for humans.
  *
  * What is deliberately absent matters more than what is present: no email, no
  * action arguments, no results, no row contents. A log line says *that*

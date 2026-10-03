@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-// Throws away every local database and rebuilds it from `migrations/` alone (D05).
+// Throws away the local database and rebuilds it from `migrations/` alone (D05).
 //
-// Both local runtimes are reset: the Node dev server's SQLite file under `data/`, and local
-// D1, whose state lives in `.wrangler/state`. Nothing else is deleted, and nothing outside
-// this repository is touched — `--local` never reaches Cloudflare.
+// One runtime now, not two: the Node server's SQLite file under `data/`. Local D1 and its
+// `.wrangler/state` went with Cloudflare (T28). Nothing outside this repository is touched,
+// and a remote `DATABASE_URL` is refused outright — this deletes files.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, rmSync } from "node:fs";
@@ -15,12 +15,15 @@ const repoRoot = path.resolve(
   "..",
 );
 
-const targets = [
-  "data/app.db",
-  "data/app.db-shm",
-  "data/app.db-wal",
-  ".wrangler/state",
-];
+const url = process.env.DATABASE_URL; // guard:allow-env-credential — checked for shape only, never logged
+if (url && !url.startsWith("file:")) {
+  console.error(
+    `db:reset: DATABASE_URL is not a local file (${url.split(":")[0]}:). This deletes data; refusing.`,
+  );
+  process.exit(1);
+}
+
+const targets = ["data/app.db", "data/app.db-shm", "data/app.db-wal"];
 
 for (const target of targets) {
   const absolute = path.join(repoRoot, target);
@@ -48,12 +51,3 @@ function runScript(script) {
 }
 
 runScript("db:migrate");
-
-// `wrangler d1 migrations apply` reads `wrangler.jsonc`, whose `main` points into `dist/`.
-if (existsSync(path.join(repoRoot, "dist"))) {
-  runScript("db:migrate:worker");
-} else {
-  console.log(
-    "db:reset: dist/ is absent, skipping local D1 — run `pnpm build:worker && pnpm db:migrate:worker`",
-  );
-}

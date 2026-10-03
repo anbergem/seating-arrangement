@@ -4,7 +4,7 @@
  * The unit suite proves the use cases against `tests/fixtures/in-memory.ts`,
  * whose `spaceIsTaken` is a hand-written mirror of the SQL. This is the half
  * that proves the mirror is honest — that the `NOT EXISTS` predicate in
- * `src/infrastructure/d1/sql.ts` really refuses an overlapping write, and
+ * `src/infrastructure/sql/sql.ts` really refuses an overlapping write, and
  * really refuses it *inside* the statement rather than before it.
  *
  * That last part is what the concurrency tests below are for. They do not
@@ -41,8 +41,8 @@ import {
   type SeatingTable,
   type TableShapeKind,
 } from "../../src/domain";
-import { createEventsRepository } from "../../src/infrastructure/d1/events-repository";
-import { createSeatingTablesRepository } from "../../src/infrastructure/d1/seating-tables-repository";
+import { createEventsRepository } from "../../src/infrastructure/sql/events-repository";
+import { createSeatingTablesRepository } from "../../src/infrastructure/sql/seating-tables-repository";
 import { ORG_ACME_ID, ORG_OTHER_ID, OWNER_EMAIL } from "../fixtures/scenario";
 
 const events = createEventsRepository(getDbExec);

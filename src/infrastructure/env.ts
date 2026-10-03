@@ -6,7 +6,7 @@
  * environment as an argument so it can be unit-tested without a process. This
  * file is the one line of impurity: it reads `APP_ENV` and hands it over.
  *
- * `APP_ENV` is set in `wrangler.jsonc` `vars` for every hosted environment and
+ * `APP_ENV` is set as an application variable on every hosted environment and
  * in `.env` locally. An unset value means the Node dev server (B13); a value
  * that is set but unknown is already rejected at startup by the environment
  * plugin (T03), so the fallback below only keeps this function total.

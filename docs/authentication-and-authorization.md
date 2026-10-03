@@ -50,7 +50,7 @@ client session gate still sends an anonymous visitor to `/sign-in`.
 
 ## Environment policies
 
-| | local | CI / local worker | staging | production |
+| | local | CI | staging | production |
 | --- | --- | --- | --- | --- |
 | Password sign-up | allowed | allowed | allowed (QA) | **refused** |
 | Password sign-in | seeded accounts | seeded accounts | seeded QA accounts | refused for members of a Google-required organization |
@@ -143,13 +143,14 @@ curl -s http://localhost:8080/_agent-native/google/auth-url
 A mismatch is rejected by Google with `redirect_uri_mismatch` and no other symptom, so it is
 worth the thirty seconds.
 
-Then set the credentials as Worker secrets per environment — `scripts/bootstrap.mjs` does this,
+Then set the credentials as application settings per environment — `scripts/bootstrap.mjs` does this,
 or by hand:
 
 ```bash
-pnpm exec wrangler secret put GOOGLE_SIGN_IN_CLIENT_ID --env production
-pnpm exec wrangler secret put GOOGLE_SIGN_IN_CLIENT_SECRET --env production
-pnpm exec wrangler secret put OAUTH_STATE_SECRET --env production   # 32+ chars, its own value
+node scripts/bootstrap.mjs --yes --only app-env     # reads them from .bootstrap.env
+# or one at a time, without putting a value on a command line:
+printf 'GOOGLE_SIGN_IN_CLIENT_ID=%s\n' "<id>" \
+  | clever env import-vars GOOGLE_SIGN_IN_CLIENT_ID --alias production
 ```
 
 `OAUTH_STATE_SECRET` signs the OAuth state envelope. It is deliberately separate from the
@@ -159,7 +160,7 @@ becomes a state-forgery capability. The framework falls back to `BETTER_AUTH_SEC
 unset, and throws in production if neither exists — set it explicitly.
 
 The redirect URI's origin comes from the request, and `APP_URL` is the canonical public origin
-for everything else the framework builds. Set it per environment in `wrangler.jsonc`; a wrong
+for everything else the framework builds. Set it per environment as an application setting; a wrong
 value shows up as a sign-in loop.
 
 ## Adding another provider
@@ -173,7 +174,7 @@ configuration, not code:
    path under the mounted base path, `<APP_URL>/_agent-native/auth/ba/callback/<provider>` —
    verify it the same way you verified Google's, against the installed source, before you
    register it.
-2. Set the two credentials as Worker secrets for the environment.
+2. Set the two credentials as application settings for the environment.
 3. Decide the membership rule. A new provider changes *how* somebody proves who they are; it
    does not give them a membership row. `AUTO_CREATE_DEFAULT_ORG=0` still means they get
    nothing until an owner or admin invites them, which is the property you want to keep.
@@ -203,7 +204,7 @@ is none. With one membership per user — the expected shape for a single-compan
 the membership *is* the active organization.
 
 Role lookup inside an action is a query, not a claim: there is no role on `ctx`.
-`src/infrastructure/d1/membership-reader.ts` runs
+`src/infrastructure/sql/membership-reader.ts` runs
 `SELECT role FROM org_members WHERE org_id = ? AND LOWER(email) = LOWER(?) LIMIT 1` on every
 call. So demoting somebody takes effect on their next action, not on their next sign-in.
 
@@ -273,7 +274,7 @@ owner or admin only). Afterwards, password sign-in by a member of that organizat
 with HTTP 403.
 
 Two things to know before clicking: **it revokes every current session** in the organization,
-and it is per organization, not per deployment. Production's Worker var closes sign-*up*; this
+and it is per organization, not per deployment. Production's application setting closes sign-*up*; this
 setting closes sign-*in*. Both, together, are what "Google only" means.
 
 ## QA accounts
@@ -293,7 +294,7 @@ The password is `SEED_PASSWORD`, default `Example-Seed-Password-2026`. It is 16+
 because the framework enforces a minimum and returns HTTP 400 below it.
 
 `outsider@example.invalid` exists for one purpose: to prove that organization isolation holds.
-It is used by `tests/e2e/isolation.spec.ts`, the integration suite and the Worker smoke.
+It is used by `tests/e2e/isolation.spec.ts`, the integration suite and the smoke.
 
 On staging these accounts are real accounts with a real password, so `SEED_PASSWORD` is a
 staging **secret** and the staging deployment resets the QA scenario on every run. Production

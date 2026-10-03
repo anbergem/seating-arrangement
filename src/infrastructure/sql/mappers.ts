@@ -2,7 +2,7 @@
  * Database rows in, domain objects out (blueprint B11).
  *
  * Rows arrive as plain objects with snake_case keys and driver-dependent value
- * types — D1 and libsql agree on strings but not always on how an INTEGER
+ * types — PostgreSQL and SQLite agree on strings but not always on how an INTEGER
  * comes back — so every field goes through a coercion that states what the
  * column is, rather than being trusted and cast. A row that cannot produce a
  * valid domain object is a bug in a migration or a writer, and `text()` and

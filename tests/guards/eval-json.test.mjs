@@ -34,7 +34,21 @@ const PROVIDER_KEYS = [
 ];
 
 function runModelEvals(args = ["--json"]) {
-  const env = { ...process.env, RUN_MODEL_EVALS: "1" };
+  // Only one engine is registered, and it is one that needs a key. Left to itself,
+  // `detectEngineFromEnv()` walks the whole registry and reaches `ai-sdk:ollama`, which
+  // needs no API key and therefore looks available — then every eval waits out a connect
+  // timeout against a local Ollama that is not running, taking this file from 2 seconds to
+  // 910. Pinning `AGENT_ENGINE` is not enough: an AI-SDK engine with no key retries against
+  // the real API and still costs a minute per eval. Narrowing the registry is what makes
+  // `resolveEngine` refuse before any request exists.
+  //
+  // The value is a comma-separated list despite the framework documenting the option as
+  // `["ai-sdk:openai"]`.
+  const env = {
+    ...process.env,
+    RUN_MODEL_EVALS: "1",
+    AGENT_BUILT_IN_ENGINES: "anthropic",
+  };
   for (const key of PROVIDER_KEYS) delete env[key];
   const result = spawnSync("node", ["scripts/run-evals.mjs", ...args], {
     cwd: root,

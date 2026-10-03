@@ -1,8 +1,8 @@
 // Typed mirror of the app-owned tables in `migrations/` (blueprint B10).
 //
 // This file is NOT the source of truth for the schema and it never creates or alters a
-// table: `migrations/*.sql` is applied by `wrangler d1 migrations apply` on D1 and by
-// `scripts/migrate-local.mjs` on the local SQLite file (D05). Repositories issue raw
+// table: `migrations/*.sql` is applied by `scripts/migrate.mjs`, in whichever dialect
+// `DATABASE_URL` names (D05). Repositories issue raw
 // parameterized SQL through `getDbExec()` rather than Drizzle (D07).
 //
 // It exists for two reasons: `createGetDb(schema)` in `./index.ts` needs a schema object,

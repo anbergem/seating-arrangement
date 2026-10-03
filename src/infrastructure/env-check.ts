@@ -57,8 +57,8 @@ function isEnvironmentClass(candidate: string): candidate is EnvironmentClass {
  * The environment class this configuration describes.
  *
  * An unset `APP_ENV` is `local`: the Node dev server is the only place that
- * legitimately runs without one, because every hosted environment sets it in
- * `wrangler.jsonc` `vars`.
+ * legitimately runs without one, because every hosted environment sets it as
+ * an application variable.
  */
 export function resolveEnvironmentClass(
   env: Record<string, string | undefined>,
@@ -139,9 +139,20 @@ export function validateEnvironment(
         "AGENT_PROD_CODE_EXECUTION must not be enabled in production; the agent runs actions, not code",
       );
     }
-    if (isPresent(env, "DATABASE_URL")) {
+    // T28 inverted this rule with the platform. Production used to reach its
+    // database through a Cloudflare binding, so a `DATABASE_URL` there meant
+    // somebody had pointed production somewhere by hand. A managed PostgreSQL
+    // add-on is reached through the connection string, so now its *absence* is
+    // the misconfiguration — and a `file:` URL is worse than absence, because
+    // production would come up on a SQLite file inside a container that is
+    // replaced on every deploy, losing every write with it.
+    if (!isPresent(env, "DATABASE_URL")) {
       violations.push(
-        "DATABASE_URL must not be set in production; the Worker reaches D1 through its binding",
+        "DATABASE_URL must be set in production; server/plugins/00-database-url.ts maps it from POSTGRESQL_ADDON_URI, so an unset one means no database add-on is linked",
+      );
+    } else if (value(env, "DATABASE_URL").startsWith("file:")) {
+      violations.push(
+        "DATABASE_URL must not be a file: URL in production; a container's SQLite file is lost on every deploy",
       );
     }
   }

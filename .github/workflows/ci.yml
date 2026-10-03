@@ -22,31 +22,25 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test:integration
-  worker:
-    needs: verify
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm verify:worker
+      - run: pnpm build
+      # The browser suite runs this exact output, and so does the promotion: CI
+      # builds once (D21). `.output/` is the Nitro Node server — there is no
+      # Worker bundle any more, and no hidden asset-manifest file to carry.
       - uses: actions/upload-artifact@v4
         with:
-          name: worker-bundle
-          path: dist/
-          retention-days: 7
-          # `dist/.assetsignore` keeps the Worker script out of the asset
-          # manifest, so the bundle is only complete with hidden files.
+          name: server-build
+          path: .output/
+          # `.output` is a dotfile, and upload-artifact@v4 skips hidden paths
+          # unless told otherwise: without this the step only warns ("No files
+          # were found") and the e2e job fails one step later, downloading an
+          # artifact that was never made.
           include-hidden-files: true
+          # Nothing downstream rebuilds this, so a missing build must fail the
+          # job that was supposed to make it, not the one that reads it.
+          if-no-files-found: error
+          retention-days: 7
   e2e:
-    # The browser suite runs the exact bundle the `worker` job built and
-    # verified: CI builds the Worker once (D21).
-    needs: worker
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -59,11 +53,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - uses: actions/download-artifact@v4
         with:
-          name: worker-bundle
-          path: dist
+          name: server-build
+          path: .output
       - run: pnpm exec playwright install --with-deps chromium
-      # The e2e server migrates local D1, seeds the scenario and runs the
-      # Worker smoke from the global setup (B18, B20).
+      # The e2e server migrates a private SQLite file, seeds the scenario and
+      # runs the smoke from the global setup (B18, B20).
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()

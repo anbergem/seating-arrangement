@@ -25,10 +25,10 @@ When the starter becomes a real deployed application, the customer or company sh
 | Thing | Why it matters that they own it |
 | --- | --- |
 | The GitHub organization and the private repository | The source of their business logic; access outlives any contract |
-| The Cloudflare account | The Workers, the D1 databases, the API tokens |
+| The Clever Cloud account | The applications, the databases, the billing |
 | The domain and DNS | Losing DNS is losing the application |
 | The Google Cloud project and OAuth client | Their employees' identities |
-| The production D1 data | Obviously, and it is not portable out of an account you cannot log into |
+| The production data | Obviously, and it is not portable out of an account you cannot log into |
 | R2 or any other object storage | Same |
 | The backup destination | A backup inside somebody else's account is not a backup |
 | The LLM and API billing accounts | Where practical: the spend is theirs and so is the rate limit |
@@ -43,7 +43,7 @@ than at the end, when it costs a migration.
 
 Practical version, at the start of an engagement:
 
-1. The customer creates the GitHub organization, the Cloudflare account and the Google Cloud
+1. The customer creates the GitHub organization, the Clever Cloud account and the Google Cloud
    project, with their own billing.
 2. They add the developer as an admin/owner of each.
 3. The developer runs `docs/bootstrap.md` inside those accounts.
@@ -135,7 +135,6 @@ Then, before merging the port:
 pnpm install                   # if the patch touched package.json
 pnpm check
 pnpm test:integration
-pnpm verify:worker             # if it touched the Worker, the build or the runtime
 ```
 
 A ported patch is a change to your application, and it gets the same review as any other.
@@ -153,7 +152,7 @@ Two habits that make this much less painful:
 | Kind of change | Port it? |
 | --- | --- |
 | A security fix, or a fix to `runAppAction`, the boundary checker, the promotion validators | **Yes**, promptly |
-| A framework compatibility patch (`scripts/patch-worker-bundle.mjs`) | **Yes**, together with the framework version bump |
+| A framework patch (`patches/@agent-native__core@*.patch`) | **Yes**, together with the framework version bump |
 | A workflow or script improvement | Usually, if you have not diverged there |
 | A documentation improvement | Cheap, and the documents are what keep a coding agent producing the right shape of code |
 | Anything touching the sample domain | **No.** Your domain is not this one. |

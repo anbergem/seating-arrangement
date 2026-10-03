@@ -7,14 +7,14 @@ have different privacy properties.
 | --- | --- | --- | --- |
 | **The audit trail** (`agent_audit_log`) | The framework | who, when, which surface, which target, redacted input, status | "Who moved that table, and from where?" |
 | **The operation ledger** (`operations`) | This application | versions, classification, the inverse, the payload | "Can this still be undone, and how?" |
-| **Structured logs** (Workers Logs) | Cloudflare | action name, outcome, error code, caller, `orgId`, duration | "Is the system healthy, and what is failing?" |
+| **Structured logs** | Clever Cloud | action name, outcome, error code, caller, `orgId`, duration | "Is the system healthy, and what is failing?" |
 
 The rule that keeps them apart: **a log line never contains a value.** Not an email, not an
 argument, not a result, not a row. If you want to know what the data was, that is the audit
 trail's job, and reading it requires being signed in as an owner or admin of that organization.
 
 - [The action log line](#the-action-log-line)
-- [Workers Logs](#workers-logs)
+- [Platform logs](#platform-logs)
 - [The audit trail](#the-audit-trail)
 - [The observability page](#the-observability-page)
 - [Health and readiness](#health-and-readiness)
@@ -73,33 +73,33 @@ the only record of what actually broke; the caller sees `INTERNAL` and the const
 A recoverable inconsistency the process carried on past with a degraded value. `details` is
 identifiers only — the row and column somebody should look at, never the stored value.
 
-## Workers Logs
+## Platform logs
 
-Enabled by `observability: { "enabled": true, "head_sampling_rate": 1 }` in `wrangler.jsonc`,
+Nothing to enable: the platform captures the application's stdout and stderr,
 inherited by every environment. Sampling is 1 because the request volume this starter is built
 for is small enough that sampling would only lose the one interesting request.
 
 ```bash
 # live
-pnpm exec wrangler tail --env production --format pretty
+clever logs --alias production
 
 # failures only
-pnpm exec wrangler tail --env production --status error
+clever logs --alias production | grep '"level":"error"'
 
 # our action lines, as JSON
-pnpm exec wrangler tail --env production --format json --search '"event":"action"'
+clever logs --alias production | grep '"event":"action"'
 
 # one action
-pnpm exec wrangler tail --env production --search '"action":"archive-event"'
+clever logs --alias production | grep '"action":"archive-event"'
 ```
 
-The dashboard equivalent — **Workers & Pages** → the Worker → **Logs** — is where retained logs
-are queryable. `wrangler tail` is live only: it shows what happens while you are watching, so
+The console equivalent — the application's **Logs** tab — is where retained logs are
+queryable. `clever logs` without `--since` is live only: it shows what happens while you are watching, so
 it is the tool for reproducing something, not for investigating something that happened an hour
 ago.
 
-Retention and volume limits are Cloudflare's and depend on the plan:
-<https://developers.cloudflare.com/workers/observability/logs/workers-logs/>.
+Retention and volume limits are Clever Cloud's and depend on the plan. The `xxs_sml` database
+add-on includes logs; the application's own logs are kept regardless.
 
 ## The audit trail
 
@@ -167,10 +167,10 @@ Two endpoints, two questions. Both are public, because a probe that needs a sess
 
 ```bash
 curl -s https://<host>/_agent-native/ping
-# {"message":"pong"}                     — the Worker is running
+# {"message":"pong"}                     — the application is running
 
 curl -s https://<host>/_agent-native/health
-# {"ok":true,"ready":true,"db":true,"database":{"dialect":"d1"},…}
+# {"ok":true,"ready":true,"db":true,"database":{"dialect":"postgres"},…}
 #                                        — the framework is up and can reach the database
 
 curl -s https://<host>/api/ready
@@ -178,13 +178,13 @@ curl -s https://<host>/api/ready
 #                                        — the schema is what this build expects; 503 if not
 ```
 
-Point an uptime check at `/api/ready`, not at `/`. `/` is a static asset served by the
-`ASSETS` binding before the Worker runs, so it returns 200 even when the Worker is broken.
-`/api/ready` returns 503 when the database is behind, which is exactly the state you want to be
-paged about after a partial deploy.
+Point an uptime check at `/api/ready`, not at `/`. `/` is the static shell and returns 200 as
+soon as the process is listening, whether or not the database behind it answers. `/api/ready`
+returns 503 when the database is behind, which is exactly the state you want to be paged about
+after a partial deploy.
 
-Under `wrangler dev` the health endpoint reports `auth.hostMismatch: true` (`localhost` versus
-`127.0.0.1`). Harmless locally.
+Against the local dev server the health endpoint reports `auth.hostMismatch: true` (`localhost`
+versus `127.0.0.1`). Harmless there.
 
 ## What to alert on
 
@@ -222,7 +222,8 @@ If you decide you want it:
 1. Remove `SENTRY_DSN` from `FORBIDDEN_KEYS` in `scripts/check-config-hygiene.mjs`, and add the
    Sentry ingest origin to the Playwright no-phone-home allowance. Both will fail otherwise,
    which is the design working.
-2. Set `SENTRY_DSN` as a Worker secret per environment.
+2. Set `SENTRY_DSN` as an application variable per environment, with
+   `clever env set SENTRY_DSN <dsn> --alias <environment>`.
 3. Configure Sentry's own scrubbing before you send anything: deny-list the fields, turn off
    request-body capture, and check what a real exception actually contains.
 4. Write down, in this file, what you decided and why. The next person needs to know it was a
@@ -242,8 +243,8 @@ Nothing phones home. Concretely:
 Two independent checks keep it that way, and they check different things:
 
 - **Configuration**: `scripts/check-config-hygiene.mjs` (in `pnpm check` and in CI) fails if any
-  of those key names appears in `.env.example`, `.dev.vars.example`, `.bootstrap.env.example`,
-  `agent-native.config.ts` or any `wrangler.jsonc` `vars` block.
+  of those key names appears in `.env.example`, `.bootstrap.env.example` or
+  `agent-native.config.ts`.
 - **Behaviour**: every Playwright page fixture fails the test on any request whose origin
   differs from `baseURL`. So a dependency that starts calling an analytics endpoint fails the
   browser suite even if no configuration changed — which is the only place that could catch it.

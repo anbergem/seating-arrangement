@@ -66,7 +66,15 @@ CREATE TABLE seating_tables (
   rotation INTEGER NOT NULL CHECK (rotation IN (0, 90, 180, 270)),
   grid_x INTEGER NOT NULL CHECK (grid_x >= 0),
   grid_y INTEGER NOT NULL CHECK (grid_y >= 0),
-  seats TEXT NOT NULL CHECK (json_valid(seats)),
+  -- Portable, not complete. This was `CHECK (json_valid(seats))`, which is SQLite's and does
+  -- not exist in PostgreSQL, so the whole file failed there (T28; DISCREPANCIES.md,
+  -- 2026-09-25). No JSON-validity expression is shared by both dialects. The column is only
+  -- ever written as `JSON.stringify` of an array and `mappers.ts` parses and shape-checks it on
+  -- every read, so what the schema can still refuse cheaply is anything that is not even
+  -- array-shaped. Edited in place rather than in a new migration because PostgreSQL cannot get
+  -- past this file to reach a later one; no deployed PostgreSQL database had applied it, and a
+  -- SQLite file that already has it keeps the stricter check, which is harmless.
+  seats TEXT NOT NULL CHECK (seats LIKE '[%]'),
   status TEXT NOT NULL CHECK (status IN ('active', 'archived')),
   version INTEGER NOT NULL CHECK (version >= 1),
   created_by TEXT NOT NULL,

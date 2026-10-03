@@ -1,3 +1,8 @@
+# `workerd` is not ours and is not a leftover: it arrives as an optional
+# transitive dependency of the framework's Cloudflare support (miniflare,
+# wrangler) and is still resolved into the lockfile. Removing it from this list
+# fails `pnpm install` with ERR_PNPM_IGNORED_BUILDS, so it stays until the
+# framework stops resolving it (T28).
 allowBuilds:
   tesseract.js: true
   node-pty: true
@@ -61,3 +66,6 @@ minimumReleaseAgeExclude:
   - "@modelcontextprotocol/node"
   - "@modelcontextprotocol/core"
   - "@modelcontextprotocol/client"
+
+patchedDependencies:
+  "@agent-native/core@0.176.5": patches/@agent-native__core@0.176.5.patch

@@ -18,7 +18,7 @@ Each of these is enforced by something that fails, not only by this document.
 | Agents and humans invoke the same actions             | `actions/`                                                  | `tests/e2e/parity.spec.ts`                                                        |
 | Domain code is framework-independent                  | `src/domain/`                                               | `scripts/check-boundaries.mjs`: `src/domain` may import `src/domain` only         |
 | Infrastructure implements ports                       | `src/application/ports.ts` → `src/infrastructure/`          | `scripts/check-boundaries.mjs`; `src/application` may not import the framework    |
-| No cross-organization access                          | every statement in `src/infrastructure/d1/sql.ts`           | `tests/unit/infrastructure/sql-scoping.test.ts`, `tests/e2e/isolation.spec.ts`    |
+| No cross-organization access                          | every statement in `src/infrastructure/sql/sql.ts`          | `tests/unit/infrastructure/sql-scoping.test.ts`, `tests/e2e/isolation.spec.ts`    |
 | No frontend-only authorization                        | `src/application/authorization.ts`                          | `tests/unit/application/authorization.test.ts`, `tests/e2e/authorization.spec.ts` |
 | No generic database tools for the agent               | `server/plugins/agent-chat.ts` (`database: "off"`)          | Review; `pnpm agent-native:doctor`                                                |
 | No production data in tests                           | `tests/fixtures/scenario.ts`                                | Fixed ids only; no test reaches a cloud resource                                  |
@@ -86,7 +86,7 @@ Answer all nine, in the pull request, for every command that writes:
 3. **What are the domain invariants?** Which statuses it is allowed from, and what it throws
    otherwise.
 4. **Is it transactional?** Multi-statement writes go through `runAtomic`
-   (`src/infrastructure/d1/atomic.ts`) as one batch. A partial write is a bug, not a race.
+   (`src/infrastructure/sql/atomic.ts`) as one batch. A partial write is a bug, not a race.
 5. **How is it audited?** The `audit.target` and `audit.summary`, plus the operation row.
 6. **Is it reversible, compensatable or irreversible?** And what exactly the inverse restores.
 7. **What happens if the resource changed concurrently?** Every write is guarded on the version
@@ -101,15 +101,15 @@ Answer all nine, in the pull request, for every command that writes:
 ## Database changes
 
 - **Always a migration.** A new numbered file in `migrations/`. Never edit an applied one:
-  `wrangler d1 migrations apply` records file names, so an edited file is silently skipped in
+  `scripts/migrate.mjs` records file names, so an edited file is silently skipped in
   every environment that already ran it.
-- **Never modify a production schema by hand.** `wrangler d1 execute --remote` against
+- **Never modify a production schema by hand.** A `psql` session against
   production is for reading and for a documented incident procedure, not for DDL.
 - **No destructive push.** `drizzle-kit push` exists and is forbidden; the
   `no-drizzle-push` guard in `pnpm agent-native:doctor` fails the build if it appears in a
   build or deploy hook.
 - **Migrations run before the deploy**, so every migration must be backwards compatible with
-  the Worker version still serving traffic. Expand first, contract in a later release.
+  the version still serving traffic. Expand first, contract in a later release.
 - **Update the seed and the fixtures.** `tests/fixtures/scenario.ts` is the executable form of
   the deterministic scenario; a new NOT NULL column needs a value there.
 - **Remember there are two schema owners.** The framework creates and migrates its own ~50
@@ -122,15 +122,14 @@ Answer all nine, in the pull request, for every command that writes:
 A feature is not complete when only the UI works. Put each test at the layer that can actually
 prove the thing you care about.
 
-| Layer        | Directory                  | Command                 | What it proves                                                                      |
-| ------------ | -------------------------- | ----------------------- | ----------------------------------------------------------------------------------- |
-| Domain       | `tests/unit/domain`        | `pnpm test:unit`        | Transitions and invariants, with no I/O                                             |
-| Application  | `tests/unit/application`   | `pnpm test:unit`        | Use cases against in-memory doubles: authorization, scoping, undo, conflicts        |
-| Guards       | `tests/guards`             | `pnpm test:guards`      | The scripts themselves: boundaries, worker patches, promotion validation, bootstrap |
-| Integration  | `tests/integration`        | `pnpm test:integration` | Real parameterized SQL, real atomic batches, the CLI surface                        |
-| Worker smoke | `scripts/worker-smoke.mjs` | `pnpm verify:worker`    | The built bundle boots on workerd and answers a real action flow                    |
-| Browser      | `tests/e2e`                | `pnpm test:e2e:full`    | The real UI against the real Worker on a throwaway D1                               |
-| Evals        | `evals/`                   | `pnpm eval`             | Whether the model picks the right action. Release evidence, not a pull-request gate |
+| Layer       | Directory                | Command                 | What it proves                                                                      |
+| ----------- | ------------------------ | ----------------------- | ----------------------------------------------------------------------------------- |
+| Domain      | `tests/unit/domain`      | `pnpm test:unit`        | Transitions and invariants, with no I/O                                             |
+| Application | `tests/unit/application` | `pnpm test:unit`        | Use cases against in-memory doubles: authorization, scoping, undo, conflicts        |
+| Guards      | `tests/guards`           | `pnpm test:guards`      | The scripts themselves: boundaries, the core patch, promotion validation, bootstrap |
+| Integration | `tests/integration`      | `pnpm test:integration` | Real parameterized SQL, real atomic batches, the CLI surface                        |
+| Browser     | `tests/e2e`              | `pnpm test:e2e:full`    | The real UI against the built server on a throwaway database                        |
+| Evals       | `evals/`                 | `pnpm eval`             | Whether the model picks the right action. Release evidence, not a pull-request gate |
 
 At minimum, a meaningful feature has a domain or application test, an authorization test, an
 organization-isolation test when it touches scoped data, and a Playwright happy path when it is
@@ -174,9 +173,9 @@ Concretely:
 - `ARCHITECTURE.md` section 14 lists what was considered and rejected, with the reason. A pull
   request that wants one of those has to argue with that section.
 - Never commit a secret. Only `*.example` files are committed and they carry names, never
-  values. `.env`, `.dev.vars` and `.bootstrap.env` are git-ignored and
+  values. `.env` and `.bootstrap.env` are git-ignored and
   `scripts/check-config-hygiene.mjs` asserts it.
-- Never touch a Cloudflare, Google or GitHub production resource from a change. Deployment
+- Never touch a Clever Cloud, Google or GitHub production resource from a change. Deployment
   happens through the workflows, with a required reviewer.
 
 ## Framework facts: how to look things up
@@ -203,7 +202,7 @@ pnpm action --help              # lists every action this app exposes
 
 Useful doc slugs: `actions-defining`, `actions-run-context`, `actions-access-control`,
 `audit-log`, `authentication`, `organizations-teams-permissions`, `multi-tenancy`,
-`server-database`, `cloudflare`, `cloudflare-d1`, `doctor`, `evals`, `internationalization`,
+`server-database`, `doctor`, `evals`, `internationalization`,
 `deployment-environment-variables`, `security`, `observability`.
 
 There is no per-action `--help` at 0.176.5: `pnpm action --help` lists the actions, and an
@@ -218,10 +217,9 @@ same change, and say so in the pull request.
 ```bash
 pnpm check              # lint, typecheck, doctor, boundaries, config hygiene, unit, guards, i18n
 pnpm test:integration
-pnpm verify:worker      # when you touched the Worker, the build or the runtime
 pnpm test:e2e:full      # when you touched the UI or an action's contract
 ```
 
 Paste the output into the pull request. `pnpm check` plus `pnpm test:integration` is what CI's
-`verify` job runs; `CI / verify`, `CI / worker` and `CI / e2e` are the required checks on
+`verify` job runs; `CI / verify` and `CI / e2e` are the required checks on
 `main`.

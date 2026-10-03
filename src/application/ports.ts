@@ -2,7 +2,7 @@
  * Outbound ports the application layer depends on (blueprint B7).
  *
  * Every port here is an interface with no framework or I/O detail leaking
- * through. `src/infrastructure/d1` (T07) implements them against D1;
+ * through. `src/infrastructure/sql` (T07) implements them against SQL;
  * `tests/fixtures/in-memory.ts` implements them in memory for unit tests.
  * `Dependencies` is the one bag every use case takes, so a use case's only
  * inputs are `(deps, actor, input)`.

@@ -78,7 +78,7 @@ try {
   // not.
   // guard:allow-env-credential — test-only run switch, not a credential
   if (process.env.RUN_MODEL_EVALS === "1") {
-    if (!run(["exec", "node", "scripts/migrate-local.mjs"], { stdout: 2 }))
+    if (!run(["exec", "node", "scripts/migrate.mjs"], { stdout: 2 }))
       process.exit();
     if (!run(["exec", "tsx", "tests/fixtures/seed-sql-only.ts"], { stdout: 2 }))
       process.exit();

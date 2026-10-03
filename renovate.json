@@ -13,13 +13,8 @@
       "labels": ["framework-upgrade"]
     },
     {
-      "matchPackageNames": ["wrangler"],
-      "groupName": "wrangler",
-      "automerge": false
-    },
-    {
       "matchUpdateTypes": ["minor", "patch"],
-      "matchPackageNames": ["!/^@agent-native\\//", "!wrangler"],
+      "matchPackageNames": ["!/^@agent-native\\//"],
       "groupName": "minor and patch",
       "automerge": false
     },

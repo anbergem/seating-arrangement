@@ -13,7 +13,7 @@ import {
   OUTSIDER_EMAIL,
   OWNER_EMAIL,
 } from "../fixtures/scenario";
-import { WORKER_STATE_FILE } from "./worker-state";
+import { SERVER_STATE_FILE } from "./server-state";
 
 const authDirectory = path.resolve("tests/e2e/.auth");
 const users = [
@@ -32,7 +32,7 @@ const users = [
 async function waitForSeededServer(baseURL: string): Promise<void> {
   let lastStatus = "unreachable";
   for (let attempt = 0; attempt < 240; attempt += 1) {
-    if (existsSync(WORKER_STATE_FILE)) {
+    if (existsSync(SERVER_STATE_FILE)) {
       try {
         const response = await fetch(
           `${baseURL}/_agent-native/actions/list-events`,
@@ -95,7 +95,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   execFileSync(
     process.execPath,
     [
-      "scripts/worker-smoke.mjs",
+      "scripts/smoke.mjs",
       "--base-url",
       baseURL,
       "--mode",

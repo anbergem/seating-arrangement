@@ -1,13 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
-import {
-  mkdtempSync,
-  mkdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 
@@ -16,7 +8,7 @@ import {
   validateDeploymentManifest,
   validateRunId,
   validateStagingRun,
-  verifyPromotionArtifact,
+  verifyPromotedCommit,
 } from "../../scripts/lib/deployment-validation.mjs";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -81,33 +73,20 @@ test("ties the immutable deployment manifest to repository, SHA, and CI run", ()
   );
 });
 
-test("verifies build provenance and the patched Worker hash", () => {
-  const directory = mkdtempSync(path.join(tmpdir(), "promotion-artifact-"));
-  try {
-    mkdirSync(path.join(directory, "_worker.js"));
-    const worker = "export default {};";
-    const hash = createHash("sha256").update(worker).digest("hex");
-    writeFileSync(
-      path.join(directory, "BUILD_INFO.json"),
-      JSON.stringify({ sha: SHA }),
-    );
-    writeFileSync(path.join(directory, "_worker.js", "index.js"), worker);
-    writeFileSync(
-      path.join(directory, "_worker.js", "PATCHED.json"),
-      JSON.stringify({ sha256: hash }),
-    );
-    assert.equal(
-      verifyPromotionArtifact(directory, SHA, SHA).workerSha256,
-      hash,
-    );
-    writeFileSync(
-      path.join(directory, "_worker.js", "PATCHED.json"),
-      JSON.stringify({ sha256: "wrong" }),
-    );
-    assert.throws(() => verifyPromotionArtifact(directory, SHA, SHA));
-  } finally {
-    rmSync(directory, { recursive: true, force: true });
-  }
+// What is promoted is a commit, not a file: Clever Cloud builds from the git history it is
+// pushed, so there is no uploaded bundle to hash. The chain that proves *which* commit
+// staging proved is the manifest and the run ids, asserted above; this proves the checkout
+// is that commit and nothing else (T28).
+test("verifies the promoted commit is the one staging proved", () => {
+  assert.equal(verifyPromotedCommit(SHA, SHA).sha, SHA);
+  assert.throws(
+    () => verifyPromotedCommit(SHA, "b".repeat(40)),
+    /does not match the staging run SHA/,
+  );
+  assert.throws(
+    () => verifyPromotedCommit("not-a-sha", "not-a-sha"),
+    /not a full git commit id/,
+  );
 });
 
 test("deployment workflows keep provenance gates and non-cancelling serialization", () => {
@@ -127,6 +106,6 @@ test("deployment workflows keep provenance gates and non-cancelling serializatio
   assert.match(staging, /validate-ci-run\.mjs/);
   assert.match(staging, /deployment-manifest/);
   assert.match(production, /validate-staging-run\.mjs/);
-  assert.match(production, /verify-promotion-artifact\.mjs/);
+  assert.match(production, /verify-promoted-commit\.mjs/);
   assert.doesNotMatch(production, /pnpm build:worker/);
 });

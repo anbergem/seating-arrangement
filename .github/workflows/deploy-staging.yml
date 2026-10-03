@@ -20,40 +20,35 @@ jobs:
        github.event.workflow_run.head_repository.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     environment: staging
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLEVER_TOKEN: ${{ secrets.CLEVER_TOKEN }}
+      CLEVER_SECRET: ${{ secrets.CLEVER_SECRET }}
       SEED_PASSWORD: ${{ secrets.SEED_PASSWORD }}
       STAGING_URL: ${{ vars.STAGING_URL }}
+      CLEVER_APP_NAME: ${{ vars.CLEVER_APP_NAME }}
       DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
       # First, and before install or build: this is the only step that needs no
-      # repository, and it exercises the exact pairing that a wrong credential
-      # breaks — this token, on this account, against D1. A stale token sent the
-      # first real deployment through three minutes of install, build and two
-      # artifact uploads before failing on `d1 migrations apply` with a bare
-      # "[code: 7403]" (DISCREPANCIES.md, 2026-09-14). Only the API's own error
-      # lines are printed; the response body is never echoed.
-      - name: Preflight — Cloudflare credentials reach D1
-        shell: bash
+      # repository, and it exercises the exact pairing a wrong credential
+      # breaks. A stale Cloudflare token once sent the first real deployment
+      # through three minutes of install, build and two artifact uploads before
+      # failing with a bare "[code: 7403]" (DISCREPANCIES.md, 2026-09-14); the
+      # platform changed, the lesson did not.
+      - name: Preflight — the Clever Cloud credentials work
         run: |
-          body="$RUNNER_TEMP/d1-preflight.json"
-          status=$(curl -sS -o "$body" -w '%{http_code}' \
-            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database?per_page=1")
-          if [[ "$status" != "200" ]]; then
-            echo "::error::Cloudflare credentials cannot reach D1 on this account (HTTP $status)"
-            jq -r '.errors[]? | "  [\(.code)] \(.message)"' "$body" 2>/dev/null || true
-            echo "CLOUDFLARE_API_TOKEN needs D1 Edit (the \"Edit Cloudflare Workers\" template does not include it),"
-            echo "and CLOUDFLARE_ACCOUNT_ID must be the account that token belongs to."
+          if ! npx --yes clever-tools@latest profile > /dev/null 2>&1; then
+            echo "::error::CLEVER_TOKEN / CLEVER_SECRET are not accepted by Clever Cloud."
             echo "Re-set them with: node scripts/bootstrap.mjs --yes --only github-secrets"
             exit 1
           fi
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.DEPLOY_SHA }}
+          # `clever deploy` pushes this repository to the platform's git remote,
+          # which needs the commit's ancestry, not just its tree.
+          fetch-depth: 0
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -86,33 +81,31 @@ jobs:
         env:
           SOURCE_CI_RUN_ID: ${{ steps.ci.outputs.run_id }}
         run: node scripts/write-deployment-manifest.mjs
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm build:worker
-      - uses: actions/upload-artifact@v4
-        with:
-          name: worker-bundle-${{ env.DEPLOY_SHA }}
-          path: dist/
-          retention-days: 90
       - uses: actions/upload-artifact@v4
         with:
           name: deployment-manifest
           path: ${{ env.DEPLOYMENT_MANIFEST }}
           retention-days: 90
-      - run: pnpm db:migrate:staging
-      - run: pnpm deploy:staging
+      - run: pnpm install --frozen-lockfile
+      - name: Link this checkout to the staging application
+        run: npx --yes clever-tools@latest link "$CLEVER_APP_NAME" --alias staging
+      # Before the deploy, not after: a migration that fails must fail the
+      # deployment rather than take a running application down with it. The
+      # connection string is fetched in-process by `--addon` and never reaches a
+      # log, a command line or a GitHub variable.
+      - name: Apply migrations
+        run: node scripts/migrate.mjs --addon "$CLEVER_APP_NAME-db"
+      - name: Deploy
+        run: >-
+          npx --yes clever-tools@latest deploy --alias staging
+          --same-commit-policy restart
       - name: Reset QA scenario
         run: >-
-          node scripts/seed.mjs --target d1-remote --env staging --reset
+          node scripts/seed.mjs --addon "$CLEVER_APP_NAME-db" --reset
           --base-url "$STAGING_URL"
-      # A remote smoke is not a local one: every request crosses the internet to
-      # the Worker and then to remote D1, where the local runs this default was
-      # calibrated against answer from a file in 0-2ms. 120s (the script's
-      # default) was exhausted by the eighth check on the first real staging
-      # smoke (DISCREPANCIES.md, 2026-09-14), including a cold start on the
-      # first request after a fresh deploy.
       - name: Smoke staging
         run: >-
-          node scripts/worker-smoke.mjs --base-url "$STAGING_URL" --mode staging
+          node scripts/smoke.mjs --base-url "$STAGING_URL" --mode staging
           --qa-email owner@example.invalid --qa-password "$SEED_PASSWORD"
           --expect-org-id org_acme --timeout-ms 300000
       - name: Record deployment
@@ -125,6 +118,6 @@ jobs:
             echo "### Staging deployment"
             echo "- Commit: \`$DEPLOY_SHA\`"
             echo "- Source CI run: \`$SOURCE_CI_RUN_ID\`"
-            echo "- Promotion artifact: \`worker-bundle-$DEPLOY_SHA\`"
+            echo "- Promotion artifact: \`server-build\` from that run"
             echo "- Deploy and smoke: $JOB_STATUS"
           } >> "$GITHUB_STEP_SUMMARY"

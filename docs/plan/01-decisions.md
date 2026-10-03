@@ -296,3 +296,42 @@ client, the Renovate app, the first sign-in.
 Consequences: `docs/bootstrap.md` documents the script first and the manual steps second; a
 guard test drives the script against stub `wrangler`/`gh` executables so it is verified without
 cloud access.
+
+## D29 — Leave Cloudflare Workers for Clever Cloud and PostgreSQL (2026-09-24)
+
+Supersedes D02, D03 and D04; revises D05 and D28. Taken in the template this application was
+built from, and adopted here with its evidence; the template's own D29 has the measurements.
+
+Context: three defects, all in framework code, all the same mismatch — code written for an
+always-on server with a local database, running where every such call is a network call that
+can fail to return. The Cloudflare build stubs `@anthropic-ai/sdk` to an empty class, so agent
+chat had never worked on a Worker; `ai-sdk:*` engines are then refused because their
+availability gate calls `require.resolve`, which cannot see inside a bundle; and
+`ensureAuditTables()` memoizes seventeen sequential DDL statements in a promise that only
+resets on rejection, which against remote D1 intermittently never settles, wedging every later
+request on that isolate.
+
+Decision: one always-on Node process per environment on Clever Cloud (Paris), with a managed
+PostgreSQL add-on per environment on the `xxs_sml` plan. The free `dev` plan cannot run this
+application at all: it allows five connections and the framework opens a pool of twenty.
+
+Evidence it was the platform and not the application: the move needed **two** changes in this
+repository's SQL — `INSERT OR IGNORE` became `ON CONFLICT DO NOTHING` in the seeded scenario,
+and the migration's `CHECK (json_valid(seats))`, which is SQLite's, became a portable
+`LIKE '[%]'` check. This record first said one; both were found only when staging was
+migrated, a day later (DISCREPANCIES.md, 2026-09-25). The rest held because nothing under
+`src/` or `server/` imports a platform type or calls a platform API, and the framework's
+executor rewrites `?` placeholders for PostgreSQL itself. `src/infrastructure/d1/` was a
+directory name, not a dependency, and is now `src/infrastructure/sql/`.
+
+Consequences: `wrangler.jsonc`, the Worker build, both bundle patches, the D1 backup and
+restore scripts, the uninherited-vars rule, the bundle-size guard and `wrangler` itself are
+deleted. Backups are the add-on's, so the `production-backup` environment goes with them. One
+framework patch is kept (`patches/@agent-native__core@0.176.5.patch`, which bounds the audit
+write and adds a statement deadline) and is guarded so an upgrade has to look at it. What is
+promoted is a commit rather than a bundle — a narrower guarantee, stated as such in
+`ARCHITECTURE.md`.
+
+One rule inverted with the platform rather than merely going stale: production refused to boot
+when `DATABASE_URL` was set, which is the opposite of right against an add-on. See
+`DISCREPANCIES.md`, 2026-09-24.

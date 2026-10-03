@@ -5,18 +5,19 @@ with a staging and a production environment. It covers the seventeen setup steps
 specification asks for, and it says for each one whether `scripts/bootstrap.mjs` does it or
 you do.
 
-Most of it is automated. The script performs every step that is a machine operation — D1
-databases, Wrangler ids, Worker secrets, GitHub environments, secrets, variables, branch
-protection — from one git-ignored input file. What is left for you is the handful of things
-that need a browser, a payment method or a human decision.
+Most of it is automated. The script performs every step that is a machine operation —
+applications, databases, the link between them, every application setting, GitHub
+environments, secrets, variables, branch protection — from one git-ignored input file. What is
+left for you is the handful of things that need a browser, a payment method or a human
+decision.
 
 Two rules the script follows, so you can trust it:
 
 - **It never creates anything without `--yes`.** The default is `--plan`, which makes only
   read-only calls and prints what it would do. Run the plan first, read it, then apply it.
 - **No secret ever reaches your shell history, your terminal or a log.** Values come from the
-  input file or the process environment and are handed to `wrangler` and `gh` on standard
-  input or through the child environment. Every line the script prints is filtered, so a value
+  input file or the process environment and are handed to `clever` and `gh` on standard
+  input. Every line the script prints is filtered, so a value
   shows as `<redacted>`.
 
 Where a step is automated the table below names the script step, which you can run on its own
@@ -26,57 +27,59 @@ with `--only <step>`.
 | --- | --- | --- |
 | 1 | Rename the application | You: `scripts/rename-app.mjs` (step 5 below) |
 | 2 | Update package metadata | You: same script, plus the `description` field |
-| 3 | Configure the Cloudflare account | You: Paid plan and API token (steps 1–2) |
-| 4 | Create staging D1 in the EU jurisdiction | Script: `d1` |
-| 5 | Create production D1 in the EU jurisdiction | Script: `d1` |
-| 6 | Configure Worker bindings | Script: `d1` (writes `database_id` and `APP_URL`) |
-| 7 | Configure staging/production secrets | Script: `worker-secrets` |
-| 8 | Configure the Better Auth secret | Script: `worker-secrets` (generated per environment) |
+| 3 | Configure the Clever Cloud account | You: account, payment method, `clever login` (steps 1–2) |
+| 4 | Create the staging application and database | Script: `apps`, `postgres` |
+| 5 | Create the production application and database | Script: `apps`, `postgres` |
+| 6 | Link each database to its application | Script: `postgres` |
+| 7 | Configure staging/production settings | Script: `app-env` |
+| 8 | Configure the Better Auth secret | Script: `app-env` (generated per environment) |
 | 9 | Configure Google OAuth | You create the client (step 3); the script stores it |
 | 10 | Configure GitHub environments | Script: `github-environments` |
-| 11 | Configure staging and production URLs | Script: `d1` and `github-secrets` |
-| 12 | Configure the backup destination | You create the bucket; the script stores the keys |
-| 13 | Run migrations | You: `pnpm db:migrate:staging`; production runs in the workflow |
+| 11 | Configure staging and production URLs | Script: read back from the platform |
+| 12 | Configure backups | Nothing to do: the database plan includes them |
+| 13 | Run migrations | The deploy workflow, before every deploy |
 | 14 | Run the local seed | You: `pnpm db:seed` (step 6) |
 | 15 | Run the whole CI suite | You: `pnpm check` and friends (step 7) |
 | 16 | First staging deployment | Script: `deploy`; every later one comes from CI |
 | 17 | First production deployment | You: dispatch the workflow (step 15) |
 
-Deployments come from GitHub Actions only: this repository does not use Cloudflare's
-"Connect to GitHub" / Workers Builds integration, because production must deploy the exact
-artifact that a staging run already verified (D21), and a build triggered inside Cloudflare
-cannot be tied to that artifact.
+Deployments come from GitHub Actions only: this repository does not use a platform-side git
+integration, because production must deploy the exact commit that a staging run already
+verified (D21), and a build triggered inside the platform cannot be tied to that run.
 
 ---
 
 ## Prerequisites
 
-### 1. Enable the Workers Paid plan
+### 1. Create a Clever Cloud account
 
-The Worker bundle is about 4 MB compressed. The Workers Free plan allows 3 MB, the Paid plan
-10 MB (D04), so the starter requires Paid — 5 USD per month at the time of writing.
+<https://console.clever-cloud.com/> — and add a payment method, because the PostgreSQL plan
+this starter uses is not free.
 
-Cloudflare dashboard → **Workers & Pages** → **Plans** → Workers Paid.
+**The free `dev` plan cannot run this application.** It allows five connections; the framework
+opens a pool of twenty on a long-lived Node server, hardcoded, with no environment variable and
+no configuration hook. The failure is `too many connections for role` before the first request
+is served. `xxs_sml` is the smallest plan that works — 5.25 EUR per month per environment at
+the time of writing, with daily backups and seven-day retention.
 
-Note the account id while you are there: **Workers & Pages** → the right-hand sidebar, under
-**Account details** → **Account ID**. It is `CLOUDFLARE_ACCOUNT_ID`.
+### 2. Log the CLI in, once
 
-### 2. Create a Cloudflare API token
+```bash
+npx clever-tools login
+```
 
-Cloudflare dashboard → **My Profile** → **API Tokens** → **Create Token** → use the
-**Edit Cloudflare Workers** template, then add one more permission:
-
-- **Account** → **D1** → **Edit**
-
-The template already grants Workers Scripts:Edit and Workers Routes:Edit. Scope the token to
-the one account you just noted. Copy the value once — Cloudflare will not show it again. It is
-`CLOUDFLARE_API_TOKEN`.
+It opens a browser, you approve, and the CLI stores a profile in `~/.config/clever-cloud/`.
+That is the only Clever Cloud credential involved: the bootstrap script reads it for its own
+calls and copies it into the two GitHub secrets CI deploys with, so **nothing goes in
+`.bootstrap.env`** and no token is ever pasted anywhere.
 
 ### 3. Create the Google OAuth client
 
-You need the public origins of your two environments before this step, because the redirect
-URIs contain them. Pick them now (for example `https://staging.example.com` and
-`https://app.example.com`) and use the same values in the input file.
+This step needs the public origins of your two environments, and you do not have them yet:
+Clever Cloud assigns a `cleverapps.io` domain when it creates each application, and the
+bootstrap script reads it back. So **do the bootstrap run first** (steps 9–11), then come back
+here with the two URLs it printed — or, if you already own a domain and have pointed it at the
+applications, set `STAGING_URL` and `PRODUCTION_URL` in the input file and use those.
 
 Google Cloud console → **APIs & Services**:
 
@@ -160,20 +163,12 @@ pnpm db:reset
 pnpm dev
 ```
 
-`.dev.vars` is optional here, and worth understanding before you reach step 7. It is where
-Wrangler reads secrets for the Worker (`pnpm dev:worker`), but when it is absent Wrangler falls
-back to `.env`, so a fresh clone with only `.env` runs the Worker fine. Copy
-`.dev.vars.example` to `.dev.vars` when you want the Worker to use *different* values from the
-Node dev server — a separate `ANTHROPIC_API_KEY` or `SEED_PASSWORD`, say. `pnpm verify:worker`
-and `pnpm test:e2e:full` need neither file: each injects its own throwaway `BETTER_AUTH_SECRET`
-and runs on its own temporary state.
+One database, one seed: both `pnpm dev` and `pnpm start` read `DATABASE_URL`, which defaults to
+`data/app.db`. A sign-in page that rejects every password usually means that database is empty
+rather than the password wrong.
 
-What does matter before step 7 is that the two local runtimes have **separate databases, and
-separate seeds**. `pnpm dev` serves `data/app.db` and is seeded by `pnpm db:seed`;
-`pnpm dev:worker` serves the local D1 under `.wrangler/` and is seeded by
-`pnpm db:seed:worker`. Seeding one does nothing for the other, and the symptom is confusing: a
-sign-in page that rejects every password usually means the database behind it is empty rather
-than the password wrong. `README.md` has the one-line query that tells those apart.
+`pnpm test:e2e` needs no `.env` at all: it starts the built server on its own temporary
+database with its own throwaway `BETTER_AUTH_SECRET`.
 
 Leave `pnpm dev` running and, in a second terminal:
 
@@ -194,13 +189,12 @@ Everything CI runs, in the order CI runs it:
 ```bash
 pnpm check              # lint, typecheck, framework doctor, boundaries, config, unit, guards, i18n
 pnpm test:integration   # the repositories and the CLI surface against a real SQLite file
-pnpm verify:worker      # builds the Worker and smokes it on its own temporary D1
-pnpm test:e2e:full      # builds the Worker and runs the browser suite against it
+pnpm test:e2e:full      # builds the server and runs the browser suite against it
 ```
 
-All four must pass before you deploy anything. `pnpm test:e2e:full` needs Chromium once:
-`pnpm exec playwright install --with-deps chromium`. The last two build and boot the real
-Worker on their own temporary D1, so they depend on neither `.env` nor `.dev.vars`.
+All three must pass before you deploy anything. `pnpm test:e2e:full` needs Chromium once:
+`pnpm exec playwright install --with-deps chromium`. It builds and boots the real server on its
+own temporary database, so it depends on no local file.
 
 ### 8. Push the repository
 
@@ -224,12 +218,9 @@ carries names only. Every key is documented in the example itself. The required 
 
 | Key | Where it comes from |
 | --- | --- |
-| `APP_NAME` | The kebab name from step 5. Must equal the top-level `name` in `wrangler.jsonc`. |
+| `APP_NAME` | The kebab name from step 5. Must equal `app.id` in `server/plugins/config.ts`. |
 | `GITHUB_REPO` | `owner/name` of the repository from step 8. |
-| `STAGING_URL`, `PRODUCTION_URL` | The two https origins from step 3, no trailing slash. |
-| `CLOUDFLARE_ACCOUNT_ID` | Step 1. |
-| `CLOUDFLARE_API_TOKEN` | Step 2. |
-| `GOOGLE_SIGN_IN_CLIENT_ID`, `GOOGLE_SIGN_IN_CLIENT_SECRET` | Step 3. |
+| `GOOGLE_SIGN_IN_CLIENT_ID`, `GOOGLE_SIGN_IN_CLIENT_SECRET` | Step 3 — which you may not have done yet; see the note there. |
 | `ANTHROPIC_API_KEY` | <https://console.anthropic.com/> → API keys. The embedded agent uses it (D15). |
 | `SEED_PASSWORD` | Invent one, 16 characters or more. Staging QA accounts only. |
 
@@ -239,7 +230,11 @@ Optional but recommended:
   promotion. Without at least one, the script refuses to create the `production` environment
   unless you pass `--allow-unprotected-production`.
 - `TEMPLATE_REPOSITORY=1` — only if this copy is itself meant to be a template.
-- The `BACKUP_*` keys — see step 16.
+- `CLEVER_REGION` — default `par` (Paris). European alternatives: `parhds`, `rbx`, `rbxhds`,
+  `grahds`, `wsw`, `ldn`.
+- `POSTGRES_PLAN` — default `xxs_sml`. Larger: `xs_sml`, `s_sml`, `m_sml`. `dev` is refused.
+- `STAGING_URL`, `PRODUCTION_URL` — only for a custom domain you already own. Left empty, the
+  script reads back the domain the platform assigned.
 
 ### 10. Read the plan
 
@@ -247,25 +242,28 @@ Optional but recommended:
 node scripts/bootstrap.mjs --plan
 ```
 
-This makes read-only calls only: `wrangler --version`, `wrangler whoami`, `wrangler d1 list`,
-`wrangler deployments list`, `wrangler secret list`, `gh auth status`, `gh repo view`, and GET
-requests for the GitHub environments and the branch protection. It prints one line per thing
-it would do, with the exact command underneath and every secret shown as `<redacted>`.
+This makes read-only calls only: `clever version`, `clever profile`, `clever applications`,
+`clever addon list`, `gh auth status`, `gh repo view`, and GET requests for the GitHub
+environments and the branch protection. It prints one line per thing it would do, with the
+exact command underneath and every secret shown as `<redacted>`.
 
 Read it. In particular:
 
-- It will create two D1 databases in the **EU** jurisdiction. Jurisdiction cannot be changed
-  later; if you need another one, edit the `--jurisdiction` argument in
-  `scripts/bootstrap.mjs` first.
-- It will run `pnpm build:worker` and `wrangler deploy` once per environment, because
-  `wrangler secret put` requires the Worker to exist. That first deployment is the only one
-  that ever happens from a laptop; every later one comes from GitHub Actions.
-- It will rewrite `wrangler.jsonc` in place, filling in `env.staging` and `env.production`
-  `database_id` and `vars.APP_URL`. Comments and formatting are preserved.
+- It will create **two applications and two PostgreSQL add-ons** in the region
+  `CLEVER_REGION` names, defaulting to Paris, on the plan `POSTGRES_PLAN` names, defaulting to
+  `xxs_sml`. That plan is not free. `dev` is refused, and the refusal explains why.
+- It will give each application a **dedicated M build instance**. The default builder shares
+  the application's own instance and is killed installing a thousand packages. It is billed per
+  build minute, not continuously.
+- It will **deploy once per environment**, because the seed and the smoke both need a running
+  application. That first deployment is the only one that ever happens from a laptop; every
+  later one comes from GitHub Actions.
+- It changes **nothing in this repository**. The applications, their databases and their
+  settings all live on the platform; there is no configuration file to commit afterwards.
 
 If a key is missing the script says which and exits 0 without calling anything. If `APP_NAME`
-disagrees with `wrangler.jsonc`, or `PRODUCTION_REVIEWERS` is empty, or a URL is not an https
-origin, it refuses and explains.
+disagrees with `server/plugins/config.ts`, or the CLI is not logged in, or
+`PRODUCTION_REVIEWERS` is empty, it refuses and explains.
 
 ### 11. Apply it
 
@@ -275,35 +273,34 @@ node scripts/bootstrap.mjs --yes
 
 Every step reports `created`, `already present` or `skipped`, so a re-run after a failure is
 safe and tells you what it did not have to repeat. Run a single step with, for example,
-`--only worker-secrets`.
+`--only app-env`.
 
-Then commit the file it changed — the deployment workflows read `wrangler.jsonc` from git, so
-an id that exists only on your laptop deploys nothing:
-
-```bash
-git add wrangler.jsonc
-git commit -m "chore: staging and production D1 ids and URLs"
-```
+Nothing in the repository changed, so there is nothing to commit.
 
 What the run leaves behind:
 
-- Two D1 databases, EU jurisdiction, named `<APP_NAME>-staging` and `<APP_NAME>-production`.
-- One Worker per environment, deployed once.
-- Worker secrets per environment: `BETTER_AUTH_SECRET` and `OAUTH_STATE_SECRET`, generated
-  separately for each environment from 32 random bytes and never written to any file; the two
-  Google credentials; `ANTHROPIC_API_KEY`; and `SEED_PASSWORD` on staging only, because
-  production is never seeded.
-- Three GitHub environments: `staging` (no reviewers), `production` (required reviewers),
-  `production-backup` (no reviewers, so the nightly export runs unattended — see
-  `docs/repository-settings.md` for why the split exists).
-- GitHub secrets and variables per environment, exactly the set the workflows read.
-- Branch protection on `main`: pull requests required, the `CI / verify`, `CI / worker` and
-  `CI / e2e` checks required, no force pushes, no deletions.
+- Two Node applications, `<APP_NAME>-staging` and `<APP_NAME>-production`, each with a
+  dedicated M build instance and a domain the platform assigned.
+- Two PostgreSQL add-ons, `<APP_NAME>-staging-db` and `<APP_NAME>-production-db`, each linked
+  to its application so `POSTGRESQL_ADDON_URI` is injected. The connection string is recorded
+  nowhere else.
+- Every application setting per environment, including `BETTER_AUTH_SECRET` and
+  `OAUTH_STATE_SECRET` generated separately for each from 32 random bytes and never written to
+  any file; the two Google credentials; `ANTHROPIC_API_KEY`; and `SEED_PASSWORD` on staging
+  only, because production is never seeded.
+- Two GitHub environments: `staging` (no reviewers) and `production` (required reviewers).
+- GitHub secrets and variables per environment, exactly the set the workflows read —
+  `CLEVER_TOKEN` and `CLEVER_SECRET` from the CLI profile, and `CLEVER_APP_NAME` so a workflow
+  can link a checkout to the right application.
+- Branch protection on `main`: pull requests required, the `CI / verify` and `CI / e2e` checks
+  required, no force pushes, no deletions.
 
 An existing GitHub environment is reported `already present` and left exactly as it is, so a
-reviewer list you curated by hand is never overwritten. To replace secrets that already exist,
-pass `--rotate` — and note that rotating `BETTER_AUTH_SECRET` or `OAUTH_STATE_SECRET` signs
-every user of that environment out.
+reviewer list you curated by hand is never overwritten. To replace the generated signing
+secrets, pass `--rotate` — and note that doing so signs every user of that environment out.
+
+**Write down the two URLs it printed.** They are what the Google OAuth client's redirect URIs
+need (step 3), and what `APP_URL` was set to.
 
 Delete `.bootstrap.env` when you are done.
 
@@ -314,10 +311,13 @@ Delete `.bootstrap.env` when you are done.
 ### 12. Migrate staging
 
 ```bash
-CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm db:migrate:staging
+node scripts/migrate.mjs --addon <APP_NAME>-staging-db
 ```
 
-This applies `migrations/*.sql` to the staging D1. The framework's own tables are not in there
+This applies `migrations/*.sql` to the staging database. `--addon` resolves the connection
+string through the Clever Cloud CLI in-process, so it never appears in a log or a command line.
+Every later migration runs inside the deploy workflow, before the deploy — this one is by hand
+only because nothing has deployed yet. The framework's own tables are not in there
 and are not your job: it creates them itself on the first request that touches the database
 (D06).
 
@@ -331,8 +331,8 @@ curl -s https://<staging host>/api/ready
 ### 13. Let CI deploy staging
 
 From here on staging deploys itself. Merge to `main`; `CI` runs; when it succeeds
-`deploy-staging.yml` builds the Worker, uploads the promotion artifact, migrates, deploys,
-resets the QA scenario and runs the staging smoke.
+`deploy-staging.yml` writes the promotion manifest, migrates, deploys, resets the QA scenario
+and runs the staging smoke.
 
 ```bash
 gh run list --workflow=deploy-staging.yml --limit 5
@@ -351,12 +351,12 @@ first membership row.
 2. Create the organization and that person's owner membership:
 
    ```bash
-   CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... \
-     node scripts/bootstrap-org.mjs --env staging \
-       --name "Acme Services" --owner owner@acme.example
+   node scripts/bootstrap-org.mjs --env staging \
+     --name "Acme Services" --owner owner@acme.example
    ```
 
-   `--dry-run` prints the exact command and SQL first. The script refuses to run without
+   It reaches the database through the add-on, with bound parameters, and prints the SQL but
+   never the connection string. `--dry-run` prints the statements first. The script refuses to run without
    `--env`, and re-running it with the same name inserts nothing.
 3. Reload the app. The Team page now shows the organization, and the owner can invite the
    rest of the team from there.
@@ -373,23 +373,22 @@ sign-in for its members. Only do it once Google sign-in has actually worked (ste
 
 Production additionally sets `AUTH_REQUIRE_EMAIL_VERIFICATION=1` with no email provider
 configured, which is what makes the framework refuse password sign-up there at all (D11). The
-two mechanisms are complementary: the Worker var closes sign-up, the organization setting
-closes sign-in.
+two mechanisms are complementary: the application setting closes sign-up, the organization
+setting closes sign-in.
 
-### 16. Configure the backup destination
+### 16. Check the backups exist
 
-The nightly export works without this — it keeps the dump as a GitHub artifact for 30 days —
-but an artifact in the same account as the code is not a backup destination. Create an
-S3-compatible bucket in a **different account or provider**, then add the keys to
-`.bootstrap.env` and re-run just that step:
+Nothing to configure: the `xxs_sml` plan takes a daily backup with seven-day retention. Confirm
+it rather than assume it:
 
 ```bash
-node scripts/bootstrap.mjs --plan --only github-secrets
-node scripts/bootstrap.mjs --yes  --only github-secrets
+clever addon list                               # find the production add-on's id
+clever database backups <addon-id>
 ```
 
-Set `BACKUP_AGE_RECIPIENT` too: the dump is every application row and every user record in plain
-SQL. `docs/backups.md` covers the strategy, the retention rules and the tested restore.
+If that list is empty the morning after the first deploy, something is wrong with the plan
+rather than with this repository. `docs/backups.md` covers what is and is not covered, and how
+to test a restore against staging before you need one for real.
 
 ### 17. Deploy production
 
@@ -418,8 +417,8 @@ never rebuilds.
    the logins from `PRODUCTION_REVIEWERS`.
 
 The run validates the staging run and its deployment manifest, checks out that exact commit,
-downloads that exact bundle, records a D1 Time Travel bookmark, migrates, deploys and runs the
-read-only production smoke. `docs/deployment.md` explains each of those checks and
+verifies it is the one staging proved, records the database backups that exist, migrates,
+deploys and runs the read-only production smoke. `docs/deployment.md` explains each of those checks and
 `docs/runbook.md` is what to do when one of them fails.
 
 ---
@@ -428,13 +427,13 @@ read-only production smoke. `docs/deployment.md` explains each of those checks a
 
 Delete:
 
-- **`.bootstrap.env`.** It holds four secrets in one file and has done its job.
+- **`.bootstrap.env`.** It holds three secrets in one file and has done its job.
 - **The seating domain**, when you are ready to build your own: `src/domain/event.ts`,
   `src/domain/seating-table.ts`, their use cases, actions, migrations, UI routes and tests. Keep the
   shapes — `docs/adding-a-feature.md` is written around them.
 - **The seeded QA users on staging**, if you would rather not have password accounts there at
-  all: unset `SEED_ENABLED` and `SEED_PASSWORD` in `wrangler.jsonc` and the staging
-  environment, and drop the seed and smoke steps from `deploy-staging.yml`. You lose the
+  all: remove `SEED_ENABLED` and `SEED_PASSWORD` from the staging application's settings and
+  from `scripts/bootstrap.mjs`, and drop the seed and smoke steps from `deploy-staging.yml`. You lose the
   staging smoke's authenticated half.
 - **`docs/plan/`**, once you have read what you need from it. It is the implementation plan
   for the template, not documentation for your application.

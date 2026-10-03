@@ -6,12 +6,12 @@ import test from "node:test";
 import {
   assertPortAvailable,
   terminateProcessGroup,
-} from "../../scripts/verify-worker.mjs";
+} from "../../scripts/lib/process.mjs";
 import {
   parseOptions,
   readSseEvidence,
   runSmoke,
-} from "../../scripts/worker-smoke.mjs";
+} from "../../scripts/smoke.mjs";
 
 /**
  * Waits until `process.kill(pid, 0)` reports `ESRCH`, then asserts it. Fails with the same
@@ -67,7 +67,7 @@ test("production smoke performs no authenticated or application writes", async (
     if (url.pathname.endsWith("/ping"))
       return Response.json({ message: "pong" });
     if (url.pathname.endsWith("/health"))
-      return Response.json({ db: true, database: { dialect: "d1" } });
+      return Response.json({ db: true, database: { dialect: "postgres" } });
     if (url.pathname === "/api/ready")
       return Response.json({ migrations: { applied: 1, expected: 1 } });
     if (url.pathname === "/sign-in" || url.pathname === "/")

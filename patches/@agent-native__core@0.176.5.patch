@@ -1,0 +1,171 @@
+diff --git a/dist/action.js b/dist/action.js
+index 2a298f43b13c9355d7fa6cffedc79018ceacc9e4..121c47f201820bbcefa518afced78713dd0c42f0 100644
+--- a/dist/action.js
++++ b/dist/action.js
+@@ -365,14 +365,53 @@ function wrapRunWithAudit(run, auditConfig) {
+             error = err;
+             threw = true;
+         }
+-        try {
++        // PATCH: wait for the audit write, but only briefly.
++        //
++        // On Cloudflare D1 an unbounded await here is where mutating actions go to
++        // die. The recorder's first call per isolate runs `ensureAuditTables()`, which
++        // issues a CREATE TABLE, ten ALTER TABLE ADD COLUMN statements that are
++        // *expected* to throw on every boot after the first, and six CREATE INDEX —
++        // seventeen sequential round trips memoized as one shared `_initPromise` that
++        // only resets in `.catch`. Against remote D1 that sequence intermittently never
++        // settles, and every later request on the isolate then awaits the same
++        // never-settling promise. Measured on deployed staging: authenticated commands
++        // answered 4 times out of 30 and degraded to 0 of 15, while reads answered 100%
++        // throughout — exactly the line `resolveAuditAttach()` draws. Setting
++        // AGENT_NATIVE_AUDIT_ENABLED=false, changing nothing else, took the same three
++        // calls to 10/10 each. The `try/catch` cannot help: it catches rejections, and
++        // this is silence.
++        //
++        // Detaching it entirely answers fast but drops the ordering guarantee that
++        // `wrapRunWithAudit` is *for*: two e2e tests assert the audit row exists the
++        // moment the action returns, and they failed, correctly. So the await stays and
++        // gains a ceiling. The row lands before the reply on every healthy path — it
++        // costs single-digit milliseconds — and a stalled bootstrap delays the reply by
++        // at most AGENT_NATIVE_AUDIT_WAIT_MS instead of forever.
++        const auditTask = (async () => {
+             const { recordActionAudit } = await import("./audit/record.js");
+             await recordActionAudit(threw
+                 ? { config: auditConfig, args, ctx, status: "error", error }
+                 : { config: auditConfig, args, ctx, status: "success", result });
+-        }
+-        catch {
++        })().catch(() => {
+             // Recorder failed to load/run — never affect the action.
++        });
++        const auditWaitRaw = Number(process.env.AGENT_NATIVE_AUDIT_WAIT_MS);
++        const auditWaitMs = Number.isFinite(auditWaitRaw) && auditWaitRaw >= 0
++            ? auditWaitRaw
++            : 1000;
++        if (auditWaitMs === 0) {
++            // Opt out of waiting altogether.
++        }
++        else {
++            let graceTimer;
++            await Promise.race([
++                auditTask,
++                new Promise((resolve) => {
++                    graceTimer = setTimeout(resolve, auditWaitMs);
++                }),
++            ]);
++            if (graceTimer !== undefined)
++                clearTimeout(graceTimer);
+         }
+         if (threw)
+             throw error;
+diff --git a/dist/db/client.js b/dist/db/client.js
+index 2d9968e96e278220b7a503da29dcdef7584f66ab..a01ee285ac41726a316b7c0d7a170dfbfd9f195c 100644
+--- a/dist/db/client.js
++++ b/dist/db/client.js
+@@ -1848,9 +1848,89 @@ export function annotateMissingTable(err, sql) {
+             (statement ? `\n  Statement: ${statement.slice(0, 200)}` : "");
+     return err;
+ }
++
++// ── PATCH: bound every statement so a stalled one cannot wedge an isolate ──────
++//
++// The framework creates its own tables at runtime on first use. For the audit log
++// that is `CREATE TABLE IF NOT EXISTS`, then ten `ALTER TABLE ... ADD COLUMN`
++// statements that are expected to throw on every boot after the first, then six
++// `CREATE INDEX IF NOT EXISTS` — seventeen sequential round trips before the first
++// mutating action of an isolate can answer. Against local SQLite that is free.
++// Against remote D1 a statement in that sequence intermittently never returns, and
++// because each bootstrap memoizes its work as one shared `_initPromise`, every
++// later request on that isolate awaits the same never-settling promise. Measured on
++// deployed staging: authenticated commands answered 4 times out of 30, degrading to
++// 0 out of 15 on a poisoned isolate, while reads and unauthenticated POSTs answered
++// 100% throughout. Disabling the audit log alone took it to 30 of 30.
++//
++// A rejection is all those call sites need: each `_initPromise` already resets
++// itself in a `.catch`, so a bounded failure self-heals on the next request, and
++// `recordActionAudit` swallows it entirely — "auditing must never break the audited
++// action", as its own comment puts it. Only a hang defeats them.
++//
++// This is deliberately at the single funnel every statement passes through rather
++// than in ~20 store modules that each repeat the pattern. 0 disables the bound.
++// See docs/plan/upstream-issues/runtime-ddl-wedges-d1-isolates.md.
++const DEFAULT_STATEMENT_TIMEOUT_MS = 5000;
++function statementTimeoutMs() {
++    const raw = process.env.AGENT_NATIVE_DB_STATEMENT_TIMEOUT_MS;
++    if (raw === undefined || raw === "")
++        return DEFAULT_STATEMENT_TIMEOUT_MS;
++    const parsed = Number(raw);
++    if (!Number.isFinite(parsed) || parsed < 0)
++        return DEFAULT_STATEMENT_TIMEOUT_MS;
++    return parsed;
++}
++// Installed in place rather than behind a Proxy. A Proxy that rebinds every function
++// property looked tidy and wedged the client outright — create-job logged
++// `outcome success` and then never answered, on a local file database with nothing
++// to stall. Two assignments on the real object keep its identity and every other
++// behaviour untouched.
++const DEADLINE_INSTALLED = Symbol.for("agent-native.statement-deadline");
++function installStatementDeadline(client) {
++    if (!client || typeof client.execute !== "function" || client[DEADLINE_INSTALLED])
++        return client;
++    const execute = client.execute.bind(client);
++    client.execute = (s) => withStatementDeadline(execute(s), s);
++    if (typeof client.atomicBatch === "function") {
++        const atomicBatch = client.atomicBatch.bind(client);
++        client.atomicBatch = (items) => withStatementDeadline(atomicBatch(items), undefined);
++    }
++    try {
++        Object.defineProperty(client, DEADLINE_INSTALLED, { value: true });
++    }
++    catch {
++        // Frozen client: the wrappers are already installed, which is what matters.
++    }
++    return client;
++}
++function withStatementDeadline(pending, statement) {
++    const ms = statementTimeoutMs();
++    if (ms === 0)
++        return pending;
++    let timer;
++    const deadline = new Promise((_resolve, reject) => {
++        timer = setTimeout(() => {
++            const sql = typeof statement === "string" ? statement : statement?.sql;
++            console.error(`[agent-native] DB DEADLINE ${ms}ms: ${String(sql ?? "(batch)").replace(/\s+/g, " ").trim().slice(0, 100)}`);
++            reject(new Error(`[agent-native] database statement did not answer within ${ms}ms` +
++                (sql ? `: ${String(sql).replace(/\s+/g, " ").trim().slice(0, 120)}` : "")));
++        }, ms);
++    });
++    // The loser of a race still settles. If `pending` rejects after the deadline has
++    // already won, nothing is listening, and an unhandled rejection takes down the
++    // request context on workerd — turning a bounded failure back into the hang this
++    // is here to prevent. Observed directly: with the bound set to 1ms, an action
++    // logged `outcome success` and then never answered.
++    pending.catch(() => { });
++    return Promise.race([pending, deadline]).finally(() => {
++        if (timer !== undefined)
++            clearTimeout(timer);
++    });
++}
+ export function getDbExec() {
+     if (_exec)
+-        return _exec;
++        return installStatementDeadline(_exec);
+     // Sanitize args: replace undefined with null (libsql rejects undefined)
+     function sanitize(sql) {
+         if (typeof sql === "object" && sql.args) {
+@@ -1861,7 +1941,7 @@ export function getDbExec() {
+     async function execAnnotated(s) {
+         assertSchemaMutationAllowed(s);
+         try {
+-            return await _exec.execute(sanitize(s));
++            return await withStatementDeadline(_exec.execute(sanitize(s)), s);
+         }
+         catch (err) {
+             throw annotateMissingTable(err, s);
+diff --git a/src/eject/catalog-wrappers.spec.ts b/src/eject/catalog-wrappers.spec.ts
+deleted file mode 100644
+index 1ec0b6552639190d5bd9cfc993a5bf095554b445..0000000000000000000000000000000000000000
+diff --git a/src/integrations/eject/slack.spec.ts b/src/integrations/eject/slack.spec.ts
+deleted file mode 100644
+index 2581340d41a2f571f62ebb069f36168e590681cd..0000000000000000000000000000000000000000

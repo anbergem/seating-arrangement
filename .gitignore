@@ -33,9 +33,6 @@ dist-ssr
 .env
 .env.*
 !.env.example
-.dev.vars
-.dev.vars.*
-!.dev.vars.example
 # Bootstrap input (T24): one file holding the Cloudflare API token, the Google client secret,
 # the provider key and the QA password. Only the names-only example is committed.
 .bootstrap.env
@@ -50,9 +47,6 @@ data/*.db-wal
 data/uploads/
 data/settings.json
 data/.sessions.json
-
-# Cloudflare / Wrangler
-.wrangler/
 
 # Database backups and restore reports (T21) — never commit customer or user rows
 backups/
@@ -75,3 +69,21 @@ learnings.md
 .agent-native/
 
 .pnpm-store/
+
+# Curl cookie jars. `docs/runbook.md` and `docs/observability.md` tell an operator to
+# sign in with `-c cookies.txt`, and a jar holds a live session cookie.
+cookies.txt
+cookies*.txt
+
+# Private state written by the e2e launcher.
+.e2e/
+
+# Clever Cloud application ids, written by `clever create`/`clever link`.
+.clever.json
+
+# Local secrets and leftover Wrangler state. `.dev.vars` was Wrangler's secrets file and
+# nothing reads it any more, but a machine that ran the Cloudflare version still has both —
+# and removing these lines while they exist on disk is how they got committed once.
+.dev.vars
+.dev.vars.*
+.wrangler/

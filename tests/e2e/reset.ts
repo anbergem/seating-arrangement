@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { ORG_ACME_ID, ORG_OTHER_ID } from "../fixtures/scenario";
-import { WORKER_STATE_FILE } from "./worker-state";
+import { SERVER_STATE_FILE } from "./server-state";
 
 const repoRoot = path.resolve(import.meta.dirname, "../..");
 
@@ -48,27 +48,20 @@ function scenarioSql(): ScenarioSql {
  * framework user/session tables. Browser sessions therefore remain real. */
 export function resetScenario(): void {
   // `scripts/e2e-server.mjs` deletes this file when it stops. Reading it with
-  // no explanation turned a dead Worker into 25 identical `ENOENT` lines naming
-  // a path, three times over (DISCREPANCIES.md, 2026-09-15). Say what absence
-  // means, and where the real cause is.
-  if (!existsSync(WORKER_STATE_FILE)) {
+  // no explanation turned a dead server into 25 identical `ENOENT` lines naming
+  // a path. Say what absence means, and where the real cause is.
+  if (!existsSync(SERVER_STATE_FILE)) {
     throw new Error(
-      `e2e state file is gone (${WORKER_STATE_FILE}). scripts/e2e-server.mjs removes it when it stops, so the Worker behind these tests is no longer running — look for "wrangler dev exited on its own" in the [WebServer] output above, not for a missing file.`,
+      `e2e state file is gone (${SERVER_STATE_FILE}). scripts/e2e-server.mjs removes it when it stops, so the server behind these tests is no longer running — look for "exited on its own" in the [WebServer] output above, not for a missing file.`,
     );
   }
-  const { configFile, persistTo } = JSON.parse(
-    readFileSync(WORKER_STATE_FILE, "utf8"),
-  ) as {
-    configFile?: unknown;
-    persistTo?: unknown;
-  };
-  if (
-    typeof configFile !== "string" ||
-    !path.isAbsolute(configFile) ||
-    typeof persistTo !== "string" ||
-    !path.isAbsolute(persistTo)
-  ) {
-    throw new Error("e2e state file does not contain absolute Worker paths");
+  const { databaseFile } = JSON.parse(
+    readFileSync(SERVER_STATE_FILE, "utf8"),
+  ) as { databaseFile?: unknown };
+  if (typeof databaseFile !== "string" || !path.isAbsolute(databaseFile)) {
+    throw new Error(
+      "e2e state file does not contain an absolute database path",
+    );
   }
   const scenario = scenarioSql();
   const directory = mkdtempSync(
@@ -81,22 +74,8 @@ export function resetScenario(): void {
       `${[AUDIT_RESET_SQL, ...scenario.resetSql, ...scenario.scenarioSql].join("\n")}\n`,
     );
     execFileSync(
-      "pnpm",
-      [
-        "exec",
-        "wrangler",
-        "d1",
-        "execute",
-        "seating-arrangement-local",
-        "--local",
-        "--persist-to",
-        persistTo,
-        "--config",
-        configFile,
-        "--yes",
-        "--file",
-        file,
-      ],
+      process.execPath,
+      ["scripts/lib/apply-sql.mjs", "--db", databaseFile, "--file", file],
       { cwd: repoRoot, stdio: "pipe" },
     );
   } finally {

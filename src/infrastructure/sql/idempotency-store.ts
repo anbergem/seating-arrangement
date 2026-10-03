@@ -1,5 +1,5 @@
 /**
- * `IdempotencyStore` against D1 / SQLite (blueprint B7, decision D14).
+ * `IdempotencyStore` against PostgreSQL / SQLite (blueprint B7, decision D14).
  *
  * Read-only, like the operations repository: a key is written by the same
  * atomic batch that creates the resource it points at, so it can never name a

@@ -148,7 +148,7 @@ The shape is the same in every command, in this order, and the order is not arbi
 
 Suppose you wanted "no two active events may share a name". You could read the event list here
 and refuse a collision — and it would be wrong, in a way that is easy to miss and impossible to
-see in a single-user test. D1 cannot hold a transaction open between that read and the write,
+see in a single-user test. Nothing holds a transaction open between that read and the write,
 so two people renaming two events to the same thing would both pass the check against their own
 snapshot and both land.
 
@@ -199,14 +199,14 @@ else changed the event in between.
 needs no migration and no new statement. If it did:
 
 ```bash
-pnpm exec wrangler d1 migrations create seating-arrangement-local "event name history"
+$EDITOR migrations/0002_event_name_history.sql   # named after the highest existing number
 # writes migrations/0002_event_name_history.sql
 ```
 
 Write the SQL, mirror the column in `server/db/schema.ts`, apply it locally with
-`pnpm db:migrate` (Node file) and `pnpm db:migrate:worker` (local D1), and add a value for it
-to `tests/fixtures/scenario.ts` if it is NOT NULL. Never edit a migration that has been applied
-anywhere. `docs/database-and-migrations.md` has the rest.
+`pnpm db:migrate`, and add a value for it
+to `tests/fixtures/scenario.ts` if it is NOT NULL. Never edit a migration that has been
+applied anywhere. `docs/database-and-migrations.md` has the rest.
 
 If you add a statement, it must contain `org_id = ?`, or
 `tests/unit/infrastructure/sql-scoping.test.ts` fails. The same test also rejects any quoted
@@ -326,7 +326,6 @@ Evals need a provider key and are release evidence, not a pull-request gate.
 ```bash
 pnpm check
 pnpm test:integration
-pnpm verify:worker
 pnpm test:e2e:full
 ```
 
