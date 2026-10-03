@@ -328,7 +328,7 @@ if (argv[0] === "api") {
     if (!world.protected) notFound("gh: Branch not protected (HTTP 404)");
     ok(
       JSON.stringify({
-        required_status_checks: { strict: false, contexts: ["CI / verify", "CI / e2e"] },
+        required_status_checks: { strict: false, contexts: ["verify", "e2e"] },
         required_pull_request_reviews: { required_approving_review_count: 0 },
         allow_force_pushes: { enabled: false },
         allow_deletions: { enabled: false },

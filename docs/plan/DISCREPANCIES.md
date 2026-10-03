@@ -2353,3 +2353,23 @@ and the framework's twenty-connection pool fails against it — with concurrency
 prepared statements; without, on refused connections. It is not a faithful host for this app.
 The durable fix is a PostgreSQL service container in CI running the integration suite, which
 is a decision, not a patch, and is raised with the maintainer rather than made here.
+
+---
+
+## 2026-10-03 — Branch protection required a check name that no check ever reports
+
+With CI green on every job, `main` refused the migration's pull request: *"the base branch
+policy prohibits the merge"*. `scripts/bootstrap.mjs` had required the status checks
+`CI / verify` and `CI / e2e`. GitHub Actions reports a check run under its **job** name —
+`verify`, `e2e` — and "CI / verify" is only how the web page labels it, workflow name prefixed.
+A rule requiring the label can never be satisfied, so every pull request to `main` was blocked
+from the moment bootstrap ran, and nothing said why beyond "policy".
+
+It went unnoticed for the same reason as the CLI-shape bugs before it: the guard test asserted
+the JSON body bootstrap sends, and the body agreed with the constant. Nothing compared the
+constant to a name a real check run carries; the first comparison was a real merge.
+
+The constant is now `["verify", "e2e"]`, the docs say which is the name and which the label,
+and `main`'s protection on this repository was corrected by hand (same rule, two names) with
+the maintainer's permission. Also on 2026-10-03, at the maintainer's request, the `production`
+environment here no longer requires a reviewer; the template keeps it.

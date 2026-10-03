@@ -292,7 +292,7 @@ What the run leaves behind:
 - GitHub secrets and variables per environment, exactly the set the workflows read —
   `CLEVER_TOKEN` and `CLEVER_SECRET` from the CLI profile, and `CLEVER_APP_NAME` so a workflow
   can link a checkout to the right application.
-- Branch protection on `main`: pull requests required, the `CI / verify` and `CI / e2e` checks
+- Branch protection on `main`: pull requests required, the `verify` and `e2e` checks
   required, no force pushes, no deletions.
 
 An existing GitHub environment is reported `already present` and left exactly as it is, so a

@@ -221,5 +221,5 @@ pnpm test:e2e:full      # when you touched the UI or an action's contract
 ```
 
 Paste the output into the pull request. `pnpm check` plus `pnpm test:integration` is what CI's
-`verify` job runs; `CI / verify` and `CI / e2e` are the required checks on
+`verify` job runs; `verify` and `e2e` (shown as `CI / verify` and `CI / e2e`) are the required checks on
 `main`.
