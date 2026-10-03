@@ -55,13 +55,11 @@ export function resetScenario(): void {
       `e2e state file is gone (${SERVER_STATE_FILE}). scripts/e2e-server.mjs removes it when it stops, so the server behind these tests is no longer running — look for "exited on its own" in the [WebServer] output above, not for a missing file.`,
     );
   }
-  const { databaseFile } = JSON.parse(
+  const { databaseUrl } = JSON.parse(
     readFileSync(SERVER_STATE_FILE, "utf8"),
-  ) as { databaseFile?: unknown };
-  if (typeof databaseFile !== "string" || !path.isAbsolute(databaseFile)) {
-    throw new Error(
-      "e2e state file does not contain an absolute database path",
-    );
+  ) as { databaseUrl?: unknown };
+  if (typeof databaseUrl !== "string" || !databaseUrl.startsWith("postgres")) {
+    throw new Error("e2e state file does not contain a PostgreSQL URL");
   }
   const scenario = scenarioSql();
   const directory = mkdtempSync(
@@ -75,7 +73,7 @@ export function resetScenario(): void {
     );
     execFileSync(
       process.execPath,
-      ["scripts/lib/apply-sql.mjs", "--db", databaseFile, "--file", file],
+      ["scripts/lib/apply-sql.mjs", "--url", databaseUrl, "--file", file],
       { cwd: repoRoot, stdio: "pipe" },
     );
   } finally {

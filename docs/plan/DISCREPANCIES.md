@@ -2373,3 +2373,26 @@ The constant is now `["verify", "e2e"]`, the docs say which is the name and whic
 and `main`'s protection on this repository was corrected by hand (same rule, two names) with
 the maintainer's permission. Also on 2026-10-03, at the maintainer's request, the `production`
 environment here no longer requires a reviewer; the template keeps it.
+
+---
+
+## 2026-10-03 — Framework 0.176.5 → 0.198.2 in this application
+
+The ten framework changes found during the upgrade are listed in the template's
+`DISCREPANCIES.md` under this date; all ten applied here unchanged. What was specific to this
+repository:
+
+- **Identity policies.** The framework refuses to remove a member until every email-shaped
+  column has a declared policy. Here that is `events.created_by` and
+  `seating_tables.created_by` (`server/plugins/db.ts`): attribution, which follows an email
+  change and stays when the person leaves. Nobody owns a table by having placed it.
+- **The integration suite passed on PGlite at the first attempt** — 36 tests, including the
+  free-space predicate, the seat array's round trip through its JSON column, and the
+  conflicting-move cases. These are the tests that had only ever run on SQLite.
+- **A local `.env` that still says `file:./data/app.db` stops `pnpm dev`.** The framework
+  refuses SQLite outright. `.env.example` has the new value; `pnpm db:migrate` creates the
+  database.
+- **A browser run that hangs for minutes is not always the application.** One test "failed"
+  after 17 minutes with Chromium's DevTools session closed; replayed step by step, the
+  application did everything the test asked for in under three seconds. `--global-timeout`
+  turns that kind of hang into a fast failure.

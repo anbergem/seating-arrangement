@@ -82,7 +82,7 @@ const databaseUrl = parsed.values.addon
   ? addonDatabaseUrl(parsed.values.addon)
   : process.env.DATABASE_URL || // guard:allow-env-credential — connection string, never logged
     process.env.POSTGRESQL_ADDON_URI || // guard:allow-env-credential — platform-injected, never logged
-    "file:./data/app.db";
+    "pglite:./data/pglite";
 
 const baseUrl = (parsed.values["base-url"] ?? "http://localhost:8080").replace(
   /\/+$/,
@@ -150,19 +150,6 @@ function loadScenario() {
 // ---------------------------------------------------------------------------
 
 /**
- * `file:./data/app.db` (the framework's own default spelling) is not a valid file URL, so only
- * the `file://` form goes through `fileURLToPath`. Same helper as `scripts/migrate.mjs`.
- * @param {string} databaseUrl
- * @returns {string}
- */
-function databaseFilePath(databaseUrl) {
-  const raw = databaseUrl.startsWith("file://")
-    ? fileURLToPath(databaseUrl)
-    : databaseUrl.slice("file:".length);
-  return path.resolve(repoRoot, raw);
-}
-
-/**
  * `organizations` and `org_members` are framework-owned (F6) and are created by the
  * framework's own migration runner during the first request that touches the database (F10) —
  * not by `migrations/`, which this repository owns. A database that has been reset but never
@@ -174,7 +161,12 @@ function databaseFilePath(databaseUrl) {
  * @returns {string} a hint to append to the failure, or an empty string
  */
 function missingOrgTableHint(output) {
-  if (!/no such table:\s*(organizations|org_members)/i.test(output)) return "";
+  if (
+    !/(no such table:\s*|relation "?)(organizations|org_members)"?( does not exist)?/i.test(
+      output,
+    )
+  )
+    return "";
   return `\nThe framework creates \`organizations\` and \`org_members\` itself, during the first request that touches the database (F10). Start the server once and let it answer \`/_agent-native/ping\`, then seed: \`pnpm dev\` (or \`pnpm start\`), then \`pnpm db:seed\`.`;
 }
 
@@ -188,16 +180,10 @@ function missingOrgTableHint(output) {
  */
 async function execute(statements) {
   const client = await createDbExec({ url: databaseUrl });
-  const label = databaseUrl.startsWith("file:")
-    ? path.relative(repoRoot, databaseFilePath(databaseUrl))
+  const label = databaseUrl.startsWith("pglite:")
+    ? `${databaseUrl.slice("pglite:".length)} (pglite)`
     : `${new URL(databaseUrl).host.split(".")[0]} (postgres)`;
   try {
-    // Foreign keys on, so the seats → tables reference is checked rather than silently
-    // producing orphans; the statement order below satisfies it. PostgreSQL enforces them
-    // always and has no such pragma, so this is SQLite-only housekeeping.
-    if (databaseUrl.startsWith("file:")) {
-      await client.execute("PRAGMA foreign_keys = ON");
-    }
     if (!client.transaction) {
       fail(
         "the database exposes no interactive transaction; refusing a partial seed",
@@ -321,3 +307,6 @@ if (skipUsers) {
 }
 
 step("done");
+// A PGlite handle keeps the event loop alive after `close()`, and with it the directory
+// lock a dev server needs; exiting releases both. Harmless against PostgreSQL.
+process.exit(0);

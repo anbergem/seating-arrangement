@@ -2,7 +2,7 @@
 @import "@fontsource-variable/inter";
 
 @import "tailwindcss";
-@import "@agent-native/core/styles/agent-native.css";
+@import "@agent-native/toolkit/styles.css";
 @import "@agent-native/toolkit/styles.css";
 
 @source "./**/*.{ts,tsx}";
@@ -98,5 +98,13 @@
    rather than leave a button that only ever fails. The server guard is the
    fix; this is cosmetics on top of it. */
 .invite-only-team #email-domain {
+  display: none;
+}
+
+/* Settings › Organization › Authentication (framework 0.197+) puts the same control in its
+   own "Joining" section, next to a "Between apps" shared secret for an A2A surface this app
+   does not have. Whole sections go, so no empty heading is left behind. */
+.invite-only-team #joining,
+.invite-only-team #between-apps {
   display: none;
 }

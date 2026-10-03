@@ -38,7 +38,7 @@ const FORBIDDEN_KEYS = [
 // The only non-empty values the committed example files may carry (T01 step 6, B13).
 const ALLOWED_EXAMPLE_VALUES = {
   APP_ENV: "local",
-  DATABASE_URL: "file:./data/app.db",
+  DATABASE_URL: "postgres://localhost:5432/seating-arrangement-dev",
   APP_URL: "http://localhost:8080",
   AUTO_CREATE_DEFAULT_ORG: "0",
   AGENT_NATIVE_DISABLE_AUTO_DEV_ACCOUNT: "1",

@@ -502,7 +502,7 @@ flowchart TB
     APP["app-owned (4 tables)<br/>events, seating_tables,<br/>operations, idempotency_keys"]
   end
   R1["the framework's own migration runners<br/>_better_auth_migrations, _org_migrations, …"] --> FW
-  R2["migrations/*.sql<br/>scripts/migrate.mjs — SQLite or PostgreSQL"] --> APP
+  R2["migrations/*.sql<br/>scripts/migrate.mjs — PostgreSQL or PGlite"] --> APP
 ```
 
 **The framework owns its tables and migrates them itself, at runtime, on the first database
@@ -575,8 +575,8 @@ it checks that SHA out and refuses unless `git rev-parse HEAD` and the manifest 
 ```mermaid
 flowchart LR
   subgraph LOCAL["local"]
-    L1["pnpm dev — Node, file:./data/app.db"]
-    L2["pnpm build &amp;&amp; pnpm start — the built server, same file"]
+    L1["pnpm dev — Node, PostgreSQL on this machine"]
+    L2["pnpm build &amp;&amp; pnpm start — the built server, same database"]
   end
   subgraph STAGING["staging"]
     S["&lt;app&gt;-staging<br/>PostgreSQL &lt;app&gt;-staging-db (Paris)<br/>seeded QA org, password sign-in allowed"]
@@ -591,14 +591,14 @@ flowchart LR
 Separate applications, separate databases, separate settings, separate GitHub environments.
 Nothing is shared, and no credential reaches both.
 
-|                  | local                | CI               | staging           | production                 |
-| ---------------- | -------------------- | ---------------- | ----------------- | -------------------------- |
-| `APP_ENV`        | `local`              | `ci`             | `staging`         | `production`               |
-| Database         | `file:./data/app.db` | a temporary file | PostgreSQL        | PostgreSQL                 |
-| Password sign-up | yes                  | yes              | yes (QA)          | **refused**                |
-| Google sign-in   | —                    | —                | configured        | required, per organization |
-| `SEED_ENABLED`   | `1`                  | `1`              | `1` (QA org only) | **forbidden**              |
-| Audit retention  | —                    | —                | 365 days          | forever (`0`)              |
+|                  | local            | CI             | staging           | production                 |
+| ---------------- | ---------------- | -------------- | ----------------- | -------------------------- |
+| `APP_ENV`        | `local`          | `ci`           | `staging`         | `production`               |
+| Database         | local PostgreSQL | a throwaway DB | PostgreSQL        | PostgreSQL                 |
+| Password sign-up | yes              | yes            | yes (QA)          | **refused**                |
+| Google sign-in   | —                | —              | configured        | required, per organization |
+| `SEED_ENABLED`   | `1`              | `1`            | `1` (QA org only) | **forbidden**              |
+| Audit retention  | —                | —              | 365 days          | forever (`0`)              |
 
 `server/plugins/00-env-check.ts` refuses to start a misconfigured deployment. Production
 requires `BETTER_AUTH_SECRET` (32+ characters), `OAUTH_STATE_SECRET`, an https `APP_URL`, the

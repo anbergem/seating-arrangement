@@ -8,8 +8,8 @@ when only the UI works.
 | Domain | `tests/unit/domain` | `pnpm test:unit` | Node, no I/O |
 | Application | `tests/unit/application` | `pnpm test:unit` | Node, in-memory doubles |
 | Guards | `tests/guards` | `pnpm test:guards` | Node, the scripts themselves |
-| Integration | `tests/integration` | `pnpm test:integration` | Node, a real SQLite file |
-| Smoke | `scripts/smoke.mjs` | inside `pnpm test:e2e` | The built server, a throwaway SQLite file |
+| Integration | `tests/integration` | `pnpm test:integration` | Node, PGlite (in-process PostgreSQL) |
+| Smoke | `scripts/smoke.mjs` | inside `pnpm test:e2e` | The built server, a throwaway PostgreSQL database |
 | Browser | `tests/e2e` | `pnpm test:e2e:full` | Chromium against the built server |
 | Evals | `evals/` | `pnpm eval` | The real model, opt-in |
 
@@ -70,7 +70,7 @@ load-bearing as the application and easier to break silently.
 | File | What it covers |
 | --- | --- |
 | `boundaries.test.mjs` | Fixtures for every import form — multiline, side-effect, dynamic, type-only, re-export — proving the checker still catches each |
-| `core-patch.test.mjs` | That the framework patch is pinned to the installed version, applied, and still needed — it fails when upstream stops doing the thing it works around |
+| `framework-bounds.test.mjs` | That no framework patch is carried, and that upstream still bounds every statement and probes the audit table before changing it — the two facts that retired the 0.176.5 patch. It fails when a framework upgrade takes either away |
 | `deployment-validation.test.mjs` | Every promotion refusal: failed run, unrelated workflow, wrong branch, wrong repository, incomplete run, wrong SHA, mismatched manifest, tampered bundle hash |
 | `smoke.test.mjs` | The smoke script's own argument handling, check selection and SSE reader |
 | `i18n-catalogs.test.mjs` | That two catalogs agreeing on a *broken* placeholder still fail the guard |
@@ -150,7 +150,8 @@ up.
 ## Browser tests
 
 `pnpm test:e2e:full` builds the server and runs Playwright against it — one worker, Chromium,
-no mocks. `scripts/e2e-server.mjs` creates a SQLite file in a fresh temporary directory,
+no mocks. `scripts/e2e-server.mjs` creates a throwaway database on the PostgreSQL in
+`E2E_POSTGRES_URL` (default: the one on this machine; in CI, the job's service container),
 applies migrations, starts the built server against it, waits for `ping`, requests
 `/_agent-native/health` once so the framework creates its tables, then applies the scenario SQL
 while the server keeps running. It strips anything credential-shaped out of the environment it
@@ -158,10 +159,17 @@ passes on and supplies its own throwaway `BETTER_AUTH_SECRET`, so the suite is i
 any developer's `.env` and a real `ANTHROPIC_API_KEY` never reaches a test database.
 
 **Use `test:e2e:full`, not `test:e2e`, after touching anything under `app/`.** Playwright serves
-the built bundle in `dist/`, and the bare `pnpm test:e2e` does not rebuild it — so a UI change
+the built server in `.output/`, and the bare `pnpm test:e2e` does not rebuild it — so a UI change
 that is already correct will fail against the previous build, and a UI bug that is already fixed
 will keep failing until you notice. `pnpm test:e2e` is for iterating on a spec against a bundle
-you have just built; `pnpm build:worker` is the same thing by hand.
+you have just built; `pnpm build` is the same thing by hand.
+
+Why two engines: the framework refuses PGlite inside a production build, and the browser suite
+tests the production build, so it needs a real PostgreSQL. The integration suite runs no
+server, so it uses PGlite and needs nothing installed. PGlite allows one process per database
+at a time, which that harness respects by running each step to completion. Both are
+PostgreSQL; neither is SQLite, which is what let two PostgreSQL-only bugs reach staging
+before (DISCREPANCIES.md, 2026-09-25).
 
 `global-setup.ts` registers the five seed users over HTTP, signs each in, and stores a storage
 state per role. The fixtures are `ownerPage`, `adminPage`, `memberPage`, `outsiderPage`.
@@ -233,7 +241,7 @@ Read a report carefully: a scorer that asserts an *absence* passes vacuously whe
 ran, so `no-mutations` and `persisted-state` can score 1 on a run that made no model call at all.
 A per-eval `error` field means nothing was evaluated, whatever the scores beside it say.
 
-`scripts/run-evals.mjs` creates a temporary SQLite database, applies `migrations/` and seeds the
+`scripts/run-evals.mjs` creates a temporary PGlite database, applies `migrations/` and seeds the
 scenario **only** for `RUN_MODEL_EVALS=1`, and sets `NODE_OPTIONS=--import tsx` because
 `agent-native eval` loads the eval files in a plain Node process whose type stripping cannot
 resolve the extensionless imports the application layers use. A skipped run touches no

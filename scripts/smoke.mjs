@@ -194,18 +194,23 @@ export async function runSmoke(
     }
     throw new Error(last);
   });
-  // Local runs a SQLite file and deployments run PostgreSQL, and the point of the check is
-  // that the app reached a real database rather than a default it invented — so it asserts
-  // the dialect the mode actually implies rather than one spelling everywhere (T28).
-  const expectedDialect = options.mode === "local" ? "sqlite" : "postgres";
-  await check(`health uses ${expectedDialect}`, async () => {
+  // Every environment is PostgreSQL now — PGlite locally, the add-on when deployed — so the
+  // check is the same in every mode. What it proves is that the app reached the database it
+  // was given (`source`), not a default it fell back to. Framework 0.198 reports a
+  // `postgres:` fingerprint where 0.176 reported `dialect`; both are accepted so a smoke run
+  // spans the upgrade.
+  await check("health uses the configured PostgreSQL", async () => {
     const { response, body } = await client.json("/_agent-native/health", {
       signal: deadline,
     });
+    const database = body?.database;
     assert(
       response.status === 200 &&
         body?.db === true &&
-        body?.database?.dialect === expectedDialect,
+        database?.configured === true &&
+        database?.source === "DATABASE_URL" &&
+        (database?.dialect === "postgres" ||
+          String(database?.fingerprint ?? "").startsWith("postgres:")),
       `HTTP ${response.status}: ${detail(body)}`,
     );
   });
@@ -359,6 +364,18 @@ export async function runSmoke(
         body: JSON.stringify({ message: "List our events." }),
         signal: deadline,
       });
+      // Locally there is deliberately no provider key. Framework 0.193 refuses chat with a
+      // 403 before streaming when no provider is ready; earlier versions streamed a
+      // `missing_credentials` error event instead. Both say the same thing, and only locally
+      // is it the expected answer — a deployed environment must stream (below).
+      if (options.mode === "local" && response.status === 403) {
+        const refusal = await response.text();
+        assert(
+          /provider|api key/i.test(refusal),
+          `403 without a missing-provider reason: ${refusal.slice(0, 200)}`,
+        );
+        return;
+      }
       assert(
         response.status === 200 &&
           /text\/event-stream/i.test(

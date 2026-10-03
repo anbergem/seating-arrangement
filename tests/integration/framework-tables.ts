@@ -5,6 +5,9 @@
  * v1002 and v1010), after inspecting that installed version.  The application
  * migrations intentionally do not own these tables, and no integration test
  * starts the framework server that would normally apply them.
+ *
+ * Timestamps are epoch milliseconds, so `BIGINT`: PostgreSQL's `INTEGER` stops at
+ * about 2.1 billion. The framework widened its own columns the same way in 0.177.
  */
 
 export const FRAMEWORK_TABLE_DDL = [
@@ -12,14 +15,14 @@ export const FRAMEWORK_TABLE_DDL = [
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     created_by TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    created_at BIGINT NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS org_members (
     id TEXT PRIMARY KEY,
     org_id TEXT NOT NULL,
     email TEXT NOT NULL,
     role TEXT NOT NULL,
-    joined_at INTEGER NOT NULL,
+    joined_at BIGINT NOT NULL,
     UNIQUE(org_id, email)
   )`,
   `CREATE UNIQUE INDEX IF NOT EXISTS org_members_org_lower_email_uidx

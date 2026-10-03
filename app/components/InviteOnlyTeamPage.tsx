@@ -1,9 +1,6 @@
 import { useT } from "@agent-native/core/client/i18n";
-import {
-  TeamPage,
-  useAcceptInvitation,
-  useOrg,
-} from "@agent-native/core/client/org";
+import { useAcceptInvitation, useOrg } from "@agent-native/core/client/org";
+import { TeamPage } from "@agent-native/toolkit/app/org/TeamPage";
 
 export function InviteOnlyTeamPage() {
   const t = useT();

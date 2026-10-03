@@ -152,34 +152,44 @@ describe("validateEnvironment — production requires a server DATABASE_URL", ()
     expect(violations[0]).toContain("DATABASE_URL must be set in production");
   });
 
-  it("a file: DATABASE_URL is a violation, because the container loses it", () => {
-    const violations = validateEnvironment({
-      ...validProductionEnv(),
-      DATABASE_URL: "file:./data/app.db",
-    });
-    expect(violations).toHaveLength(1);
-    expect(violations[0]).toContain("must not be a file: URL in production");
-  });
+  it.each(["pglite:./data/pglite", "file:./data/app.db"])(
+    "a local database (%s) is a violation, because the container loses it",
+    (url) => {
+      const violations = validateEnvironment({
+        ...validProductionEnv(),
+        DATABASE_URL: url,
+      });
+      expect(violations).toHaveLength(1);
+      expect(violations[0]).toContain(
+        "must be a postgres:// URL in production",
+      );
+    },
+  );
 });
 
 describe("validateEnvironment — local", () => {
-  it("a non-file DATABASE_URL is a violation", () => {
+  it.each([
+    "postgres://user:pass@db.example.com:5432/app",
+    "postgresql://10.0.0.5/app",
+    "file:./data/app.db",
+  ])("anything not on this machine (%s) is a violation", (url) => {
     const violations = validateEnvironment({
       APP_ENV: "local",
-      DATABASE_URL: "libsql://x",
+      DATABASE_URL: url,
     });
     expect(violations).toHaveLength(1);
     expect(violations[0]).toBe(
-      "DATABASE_URL must be a file: URL when APP_ENV is local",
+      "DATABASE_URL must be a PostgreSQL on this machine (localhost) or a pglite: URL when APP_ENV is local",
     );
   });
 
-  it("a file: DATABASE_URL is not a violation", () => {
+  it.each([
+    "postgres://localhost:5432/seating-arrangement-dev",
+    "postgresql://127.0.0.1/app",
+    "pglite:./data/pglite",
+  ])("a database on this machine (%s) is not a violation", (url) => {
     expect(
-      validateEnvironment({
-        APP_ENV: "local",
-        DATABASE_URL: "file:./data/app.db",
-      }),
+      validateEnvironment({ APP_ENV: "local", DATABASE_URL: url }),
     ).toEqual([]);
   });
 });
@@ -191,7 +201,7 @@ describe("validateEnvironment — violation strings never contain a value from t
   // What must never appear is the actual configured value of a variable the
   // validator is complaining about.
   it("does not leak the DATABASE_URL or ACCESS_TOKEN values it forbids", () => {
-    const secretDatabaseUrl = "file:./secret-path-xyz123.db";
+    const secretDatabaseUrl = "pglite:./secret-path-xyz123";
     const secretAccessToken = "super-secret-token-abc";
     const violations = validateEnvironment({
       ...validProductionEnv(),
