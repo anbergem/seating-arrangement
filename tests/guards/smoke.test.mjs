@@ -67,7 +67,14 @@ test("production smoke performs no authenticated or application writes", async (
     if (url.pathname.endsWith("/ping"))
       return Response.json({ message: "pong" });
     if (url.pathname.endsWith("/health"))
-      return Response.json({ db: true, database: { dialect: "postgres" } });
+      return Response.json({
+        db: true,
+        database: {
+          configured: true,
+          source: "DATABASE_URL",
+          fingerprint: "postgres:db.example.invalid:5432/app",
+        },
+      });
     if (url.pathname === "/api/ready")
       return Response.json({ migrations: { applied: 1, expected: 1 } });
     if (url.pathname === "/sign-in" || url.pathname === "/")

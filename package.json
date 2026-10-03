@@ -9,9 +9,9 @@
   "scripts": {
     "dev": "agent-native dev",
     "build": "agent-native build",
-    "db:migrate": "node scripts/gen-migrations-manifest.mjs && node scripts/migrate.mjs",
-    "db:reset": "node scripts/reset-local.mjs",
-    "db:seed": "node scripts/seed.mjs",
+    "db:migrate": "node scripts/gen-migrations-manifest.mjs && node --env-file-if-exists=.env scripts/migrate.mjs",
+    "db:reset": "node --env-file-if-exists=.env scripts/reset-local.mjs",
+    "db:seed": "node --env-file-if-exists=.env scripts/seed.mjs",
     "start": "agent-native start",
     "lint": "oxlint . && oxfmt --check .",
     "typecheck": "agent-native typecheck",
@@ -31,8 +31,8 @@
     "lint:workflows": "github-actionlint .github/workflows/*.yml"
   },
   "dependencies": {
-    "@agent-native/core": "0.176.5",
-    "@agent-native/toolkit": "0.19.3",
+    "@agent-native/core": "0.198.2",
+    "@agent-native/toolkit": "0.198.2",
     "@ai-sdk/anthropic": "^3.0.127",
     "@ai-sdk/cohere": "^3.0.67",
     "@ai-sdk/google": "^3.0.130",
@@ -57,6 +57,7 @@
   },
   "devDependencies": {
     "@babel/parser": "7.29.9",
+    "@electric-sql/pglite": "^0.5.8",
     "@playwright/test": "1.63.0",
     "@radix-ui/react-accordion": "^1.2.20",
     "@radix-ui/react-alert-dialog": "^1.1.23",

@@ -21,7 +21,7 @@ Two hosted environments, one promoted commit. Nothing is ever rebuilt from a dif
 | `APP_ENV` | `local` | `ci` | `staging` | `production` |
 | `NODE_ENV` | unset | `production` | `production` | `production` |
 | Runtime | Node (`pnpm dev`, or `pnpm build && pnpm start`) | Node | Node on Clever Cloud | Node on Clever Cloud |
-| Database | `file:./data/app.db` | a throwaway SQLite file | PostgreSQL add-on `<app>-staging-db` | PostgreSQL add-on `<app>-production-db` |
+| Database | local PostgreSQL `<app>-dev` | a throwaway PostgreSQL database | PostgreSQL add-on `<app>-staging-db` | PostgreSQL add-on `<app>-production-db` |
 | `APP_URL` | `http://localhost:3000` | the e2e listener | the staging origin | the production origin |
 | `AUTH_REQUIRE_EMAIL_VERIFICATION` | `0` | `0` | `0` | `1` |
 | `SEED_ENABLED` | `1` | `1` | `1` (QA org only) | **forbidden** |
@@ -145,8 +145,8 @@ server is built **once**:
 | `verify` | — | `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm test:integration`, `pnpm build`, uploads `.output/` as `server-build` |
 | `e2e` | `verify` | Downloads that artifact, installs Chromium, runs `pnpm test:e2e`, uploads `playwright-report/` on failure |
 
-`scripts/e2e-server.mjs` starts that built server against a SQLite file in a fresh temporary
-directory, migrates it, seeds the scenario and runs the smoke from the global setup, so the
+`scripts/e2e-server.mjs` starts that built server against a throwaway database on the job's
+PostgreSQL service container, migrates it, seeds the scenario and runs the smoke from the global setup, so the
 browser suite is independent of any developer file and touches no cloud resource.
 
 Concurrency is grouped per ref with cancellation, and `verify` and `e2e` are the
@@ -256,7 +256,7 @@ node scripts/smoke.mjs --base-url "$PRODUCTION_URL" --mode production
 
 The production mode does not sign in, does not write and does not touch agent chat: a
 deployment check must not create rows in a client's database. It verifies `ping`, `health`
-with `db: true` and the dialect the mode implies (`sqlite` locally, `postgres` deployed),
+with `db: true` and the configured PostgreSQL (every mode is PostgreSQL now),
 `/api/ready` with `applied === expected`, `GET /sign-in`, `GET /` (200 — the static shell;
 **never** expect a 302), an unauthenticated action returning 401, and `POST /mcp` returning 401
 with a `WWW-Authenticate` challenge.

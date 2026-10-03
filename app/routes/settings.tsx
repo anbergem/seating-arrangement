@@ -1,4 +1,5 @@
-import { LanguagePicker, useT } from "@agent-native/core/client/i18n";
+import { useT } from "@agent-native/core/client/i18n";
+import { useSetPageTitle } from "@agent-native/toolkit/app-shell";
 import {
   AccountSettingsCard,
   SettingsGroup,
@@ -6,11 +7,12 @@ import {
   SettingsTabsPage,
   useAgentSettingsTabs,
   type SettingsSearchEntry,
-} from "@agent-native/core/client/settings";
-import { useSetPageTitle } from "@agent-native/toolkit/app-shell";
+} from "@agent-native/toolkit/app/settings";
+import { LanguagePicker } from "@agent-native/toolkit/app/shared";
 import { useMemo } from "react";
 
 import { InviteOnlyTeamPage } from "@/components/InviteOnlyTeamPage";
+import "@/components/settings-pages";
 import { APP_TITLE } from "@/lib/app-config";
 
 export function meta() {

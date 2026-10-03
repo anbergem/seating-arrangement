@@ -1,3 +1,4 @@
+import { OWNER_EMAIL } from "../fixtures/scenario";
 import { expect, test } from "./fixtures";
 
 const UNINVITED_EMAIL = "uninvited@example.invalid";
@@ -63,8 +64,9 @@ test("an uninvited signed-in user cannot self-admit through organization routes"
     );
     expect(create.status()).toBe(403);
 
-    await page.goto("/settings");
-    await page.getByRole("tab", { name: "Organization" }).click();
+    // The team page is where someone without an organization lands, and where
+    // an invitation is accepted.
+    await page.goto("/team");
     await expect(page.getByText("Organization access required")).toBeVisible();
     await expect(
       page.getByRole("button", { name: /create organization/i }),
@@ -88,7 +90,9 @@ test("an uninvited signed-in user cannot self-admit through organization routes"
     expect(acceptedAccess.status()).toBe(200);
     const removed = await ownerPage.request.delete(
       `/_agent-native/org/members/${encodeURIComponent(UNINVITED_EMAIL)}`,
-      { data: {} },
+      // Since framework 0.181 a removal names who inherits the member's
+      // framework-owned resources; the owner is always a member.
+      { data: { transferTo: OWNER_EMAIL } },
     );
     expect(removed.status(), await removed.text()).toBe(200);
   } finally {
@@ -136,7 +140,7 @@ test("a signed-out caller remains unauthenticated and invitation membership stil
   expect(ownJobs.status()).toBe(200);
   const removed = await ownerPage.request.delete(
     `/_agent-native/org/members/${encodeURIComponent("outsider@example.invalid")}`,
-    { data: {} },
+    { data: { transferTo: OWNER_EMAIL } },
   );
   expect(removed.status(), await removed.text()).toBe(200);
 });
@@ -157,9 +161,13 @@ test("an owner cannot enable email-domain auto-join, and the control is not offe
   const body = (await me.json()) as { allowedDomain?: string | null };
   expect(body.allowedDomain ?? null).toBeNull();
 
+  // Since framework 0.197 the control lives on Settings › Organization ›
+  // Authentication, next to the sign-in policy that has to stay.
   await ownerPage.goto("/settings");
-  await ownerPage.getByRole("tab", { name: "Organization" }).click();
+  await ownerPage.getByRole("link", { name: "Authentication" }).click();
+  await expect(ownerPage.getByText("Organization sign-in")).toBeVisible();
   await expect(ownerPage.getByText("Email domain auto-join")).toBeHidden();
+  await expect(ownerPage.getByText("Shared secret")).toBeHidden();
 
   // Organization switching, the other PUT on this prefix, still works.
   const switched = await ownerPage.request.put("/_agent-native/org/switch", {

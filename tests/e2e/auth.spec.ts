@@ -12,6 +12,8 @@ test("the owner's stored session lands on the events list with organization chro
   ).toBeVisible();
 
   const header = ownerPage.getByRole("banner").first();
-  await expect(header.getByText(OWNER_EMAIL)).toBeVisible();
+  // The framework's account menu (0.196) shows the email as the person's name once
+  // the profile has loaded, next to the app's own. Either one proves the session.
+  await expect(header.getByText(OWNER_EMAIL).first()).toBeVisible();
   await expect(header.getByText(ORG_ACME_NAME)).toBeVisible();
 });

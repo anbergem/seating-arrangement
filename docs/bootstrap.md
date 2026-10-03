@@ -163,8 +163,8 @@ pnpm db:reset
 pnpm dev
 ```
 
-One database, one seed: both `pnpm dev` and `pnpm start` read `DATABASE_URL`, which defaults to
-`data/app.db`. A sign-in page that rejects every password usually means that database is empty
+One database, one seed: both `pnpm dev` and `pnpm start` read `DATABASE_URL` from `.env` — a
+PostgreSQL on this machine (README, "One database, one seed", has the one-time install). A sign-in page that rejects every password usually means that database is empty
 rather than the password wrong.
 
 `pnpm test:e2e` needs no `.env` at all: it starts the built server on its own temporary
@@ -188,7 +188,7 @@ Everything CI runs, in the order CI runs it:
 
 ```bash
 pnpm check              # lint, typecheck, framework doctor, boundaries, config, unit, guards, i18n
-pnpm test:integration   # the repositories and the CLI surface against a real SQLite file
+pnpm test:integration   # the repositories and the CLI surface against PGlite (in-process PostgreSQL)
 pnpm test:e2e:full      # builds the server and runs the browser suite against it
 ```
 

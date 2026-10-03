@@ -335,3 +335,25 @@ promoted is a commit rather than a bundle — a narrower guarantee, stated as su
 One rule inverted with the platform rather than merely going stale: production refused to boot
 when `DATABASE_URL` was set, which is the opposite of right against an add-on. See
 `DISCREPANCIES.md`, 2026-09-24.
+
+## D30 — Framework 0.198, PostgreSQL in every environment (2026-10-03)
+
+Revises D05 and D29's local database. Taken in the template and adopted here; the template's
+D30 and its `DISCREPANCIES.md` entry of the same date have the full findings.
+
+From 0.177 the framework is PostgreSQL-only and its production builds refuse PGlite, the
+in-process PostgreSQL it offers for local development. So:
+
+- **Local development and the browser suite run a real PostgreSQL on the developer's machine**
+  (Homebrew `postgresql@18`, the add-on's major version, databases created with its
+  `en_GB.UTF-8` collation); CI's browser job gets a `postgres:18` service container.
+- **The integration suite and the evals run PGlite**, which needs nothing installed.
+- Nothing runs on SQLite any more, so every test has PostgreSQL semantics — the gap that let
+  `json_valid()` and `INSERT OR IGNORE` reach staging (DISCREPANCIES.md, 2026-09-25) is closed.
+
+The 0.176.5 framework patch is retired; `tests/guards/framework-bounds.test.mjs` watches the two
+upstream facts that made it unnecessary.
+
+Decided by the maintainer: Settings (now the framework's) shows only the pages this app uses
+and its Authentication page drops email-domain auto-join and the A2A shared secret; the sign-in
+page's Google Fonts links are stripped, so visitors' IP addresses are not sent to Google (D17).

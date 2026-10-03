@@ -1,6 +1,4 @@
 import {
-  AgentSidebar,
-  focusAgentChat,
   isAgentChatHomeHandoffActive,
   navigateWithAgentChatViewTransition,
   useAgentChatHomeHandoff,
@@ -8,6 +6,7 @@ import {
 } from "@agent-native/core/client/agent-chat";
 import { useT } from "@agent-native/core/client/i18n";
 import { HeaderActionsProvider } from "@agent-native/toolkit/app-shell";
+import { AgentSidebar, focusAgentChat } from "@agent-native/toolkit/app/chat";
 import { IconMenu2 } from "@tabler/icons-react";
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router";

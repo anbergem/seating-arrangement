@@ -13,8 +13,11 @@ const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
-const databaseUrl = "file:./data/test-integration.db";
-const databaseFile = path.join(repoRoot, "data", "test-integration.db");
+// PGlite — real PostgreSQL, in-process — since the framework went PostgreSQL-only (0.177).
+// It locks its directory to one process at a time, which this harness already respects:
+// migrate, seed, vitest and the CLI checks each run to completion before the next starts.
+const databaseUrl = "pglite:./data/test-integration";
+const databaseDirectory = path.join(repoRoot, "data", "test-integration");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -40,8 +43,11 @@ function assertSuccess(result, label) {
 }
 
 function initialiseDatabase() {
-  for (const suffix of ["", "-wal", "-shm"])
-    rmSync(`${databaseFile}${suffix}`, { force: true });
+  for (const target of [
+    databaseDirectory,
+    `${databaseDirectory}.agent-native-pglite.lock`,
+  ])
+    rmSync(target, { recursive: true, force: true });
   assertSuccess(
     run(process.execPath, ["scripts/migrate.mjs"], { inherit: true }),
     "migrate",

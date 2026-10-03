@@ -19,6 +19,10 @@ import { parseArgs } from "node:util";
 import { createDbExec } from "@agent-native/core/db";
 
 import { addonDatabaseUrl } from "./lib/addon-url.mjs";
+import {
+  ensureLocalDatabase,
+  isLocalPostgresUrl,
+} from "./lib/local-postgres.mjs";
 
 const repoRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -38,27 +42,22 @@ const url = options.addon
   ? addonDatabaseUrl(options.addon)
   : process.env.DATABASE_URL || // guard:allow-env-credential — connection string, never logged
     process.env.POSTGRESQL_ADDON_URI || // guard:allow-env-credential — platform-injected, never logged
-    "file:./data/app.db";
+    "pglite:./data/pglite";
 
-const isFile = url.startsWith("file:");
-if (!isFile && !/^postgres(ql)?:\/\//.test(url)) {
+// The framework has been PostgreSQL-only since 0.177: local development runs PGlite, the
+// real PostgreSQL engine in-process, and deployments run PostgreSQL. A SQLite `file:` URL is
+// refused here with the reason, rather than by the framework with a bare format error.
+if (url.startsWith("file:")) {
   console.error(
-    `db:migrate: DATABASE_URL must be a "file:" or "postgres://" URL. Got a ${url.split(":")[0]}: URL.`,
+    "db:migrate: SQLite is no longer supported. Use DATABASE_URL=pglite:./data/pglite locally (see .env.example).",
   );
   process.exit(1);
 }
-
-/**
- * `file:./data/app.db` (the framework's own default spelling) is not a valid file URL, so
- * only the `file://` form goes through `fileURLToPath`.
- * @param {string} databaseUrl
- * @returns {string} absolute path to the database file
- */
-function databaseFilePath(databaseUrl) {
-  const raw = databaseUrl.startsWith("file://")
-    ? fileURLToPath(databaseUrl)
-    : databaseUrl.slice("file:".length);
-  return path.resolve(repoRoot, raw);
+if (!url.startsWith("pglite:") && !/^postgres(ql)?:\/\//.test(url)) {
+  console.error(
+    `db:migrate: DATABASE_URL must be a "pglite:" or "postgres://" URL. Got a ${url.split(":")[0]}: URL.`,
+  );
+  process.exit(1);
 }
 
 /**
@@ -79,7 +78,16 @@ function splitStatements(sql) {
     });
 }
 
-if (isFile) mkdirSync(path.dirname(databaseFilePath(url)), { recursive: true });
+if (url.startsWith("pglite:")) {
+  mkdirSync(path.dirname(path.resolve(repoRoot, url.slice("pglite:".length))), {
+    recursive: true,
+  });
+}
+// A PostgreSQL on this machine gets its database created on first use, so a fresh checkout
+// needs no `createdb`. Hosted databases are created by their platform, never here.
+if (isLocalPostgresUrl(url) && (await ensureLocalDatabase(url))) {
+  console.log(`created database ${new URL(url).pathname.slice(1)}`);
+}
 
 const client = await createDbExec({ url });
 

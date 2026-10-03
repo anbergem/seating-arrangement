@@ -9,7 +9,9 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = mkdtempSync(
   path.join(tmpdir(), "seating-arrangement-evals-"),
 );
-const databaseUrl = `file:${path.join(temporary, "evals.db")}`;
+// A private PGlite directory: real PostgreSQL in-process, which the framework requires since
+// 0.177. Each step below runs to completion before the next, as PGlite's lock demands.
+const databaseUrl = `pglite:${path.join(temporary, "evals")}`;
 const env = {
   ...process.env,
   DATABASE_URL: databaseUrl,

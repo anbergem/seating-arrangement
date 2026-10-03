@@ -90,6 +90,17 @@ export function resolveEnvironmentClass(
   return isEnvironmentClass(raw) ? raw : null;
 }
 
+/** A database on this machine: PGlite, or PostgreSQL on a loopback address. */
+function isLocalDatabaseUrl(url: string): boolean {
+  if (url.startsWith("pglite:")) return true;
+  if (!/^postgres(ql)?:\/\//.test(url)) return false;
+  try {
+    return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Every way this environment is misconfigured, one sentence each. An empty
  * array means the configuration is usable.
@@ -165,27 +176,32 @@ export function validateEnvironment(
     // database through a Cloudflare binding, so a `DATABASE_URL` there meant
     // somebody had pointed production somewhere by hand. A managed PostgreSQL
     // add-on is reached through the connection string, so now its *absence* is
-    // the misconfiguration — and a `file:` URL is worse than absence, because
-    // production would come up on a SQLite file inside a container that is
-    // replaced on every deploy, losing every write with it.
+    // the misconfiguration — and a local database is worse than absence,
+    // because production would come up on a SQLite file or a PGlite directory
+    // inside a container that is replaced on every deploy, losing every write
+    // with it.
     if (!isPresent(env, "DATABASE_URL")) {
       violations.push(
         "DATABASE_URL must be set in production; server/plugins/00-database-url.ts maps it from POSTGRESQL_ADDON_URI, so an unset one means no database add-on is linked",
       );
-    } else if (value(env, "DATABASE_URL").startsWith("file:")) {
+    } else if (!/^postgres(ql)?:\/\//.test(value(env, "DATABASE_URL"))) {
       violations.push(
-        "DATABASE_URL must not be a file: URL in production; a container's SQLite file is lost on every deploy",
+        "DATABASE_URL must be a postgres:// URL in production; a local database inside a container is lost on every deploy",
       );
     }
   }
 
   if (appEnv === "local") {
     // A laptop pointed at a hosted database is the accident this catches.
+    // Local development runs a PostgreSQL on this machine, or PGlite, the
+    // framework's in-process PostgreSQL.
     if (
       isPresent(env, "DATABASE_URL") &&
-      !value(env, "DATABASE_URL").startsWith("file:")
+      !isLocalDatabaseUrl(value(env, "DATABASE_URL"))
     ) {
-      violations.push("DATABASE_URL must be a file: URL when APP_ENV is local");
+      violations.push(
+        "DATABASE_URL must be a PostgreSQL on this machine (localhost) or a pglite: URL when APP_ENV is local",
+      );
     }
   }
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
-// Built Node server for Playwright (T28). Its SQLite file is freshly created in tmp and is
-// never a caller-selected deletion target.
+// Built Node server for Playwright (T28). Its database is a throwaway PostgreSQL database,
+// created for this run on a server on this machine and dropped when the run ends. The
+// framework's production builds refuse PGlite, and the browser suite tests that build.
 
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -14,6 +15,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  dropLocalDatabase,
+  ensureLocalDatabase,
+} from "./lib/local-postgres.mjs";
 import { assertPortAvailable, terminateProcessGroup } from "./lib/process.mjs";
 
 const repoRoot = path.resolve(
@@ -26,9 +31,14 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error("E2E_PORT must be an integer from 1 to 65535");
 }
 const baseUrl = `http://127.0.0.1:${port}`;
-const temporary = mkdtempSync(path.join(tmpdir(), "seating-arrangement-e2e-"));
-const databaseFile = path.join(temporary, "e2e.db");
-const databaseUrl = `file:${databaseFile}`;
+// The server to create the run's database on: Homebrew's PostgreSQL locally, the CI job's
+// service container in CI. Only a server on this machine is accepted (local-postgres.mjs).
+const postgresServer = new URL(
+  process.env.E2E_POSTGRES_URL ?? "postgres://localhost:5432/postgres", // guard:allow-env-credential — local test server, never logged
+);
+postgresServer.pathname = `/seating-arrangement-e2e-${process.pid}`;
+const databaseUrl = postgresServer.toString();
+const databaseName = postgresServer.pathname.slice(1);
 // Playwright passes this path explicitly (`--state-file`) so the reset helper can reach
 // this server's private database without a test-only environment variable.
 const stateFileIndex = process.argv.indexOf("--state-file");
@@ -119,8 +129,14 @@ if (!stateFile || !path.isAbsolute(stateFile))
 let server;
 let stopped = false;
 
-function cleanup() {
-  rmSync(temporary, { recursive: true, force: true });
+async function cleanup() {
+  try {
+    await dropLocalDatabase(databaseUrl);
+  } catch (error) {
+    console.error(
+      `e2e-server: dropping ${databaseName} failed: ${error instanceof Error ? error.message : error}`,
+    );
+  }
   // The state file names paths that no longer exist once the server stops, and its absence
   // is how the global setup knows this server is not ready yet.
   rmSync(stateFile, { force: true });
@@ -146,7 +162,7 @@ async function teardown() {
       `e2e-server: stopping the server failed: ${error instanceof Error ? error.message : error}`,
     );
   } finally {
-    cleanup();
+    await cleanup();
   }
 }
 process.once("SIGINT", () => void stop());
@@ -156,6 +172,9 @@ try {
   // A leftover file from an earlier run must never look like this server.
   rmSync(stateFile, { force: true });
   await assertPortAvailable(port);
+  // A database left by a crashed run with a recycled pid must not look like this one.
+  await dropLocalDatabase(databaseUrl);
+  await ensureLocalDatabase(databaseUrl);
   run(["exec", "node", "scripts/migrate.mjs"]);
 
   /**
@@ -191,8 +210,8 @@ try {
       "exec",
       "node",
       "scripts/lib/apply-sql.mjs",
-      "--db",
-      databaseFile,
+      "--url",
+      databaseUrl,
       "--file",
       sqlFile,
     ]);
@@ -203,7 +222,7 @@ try {
   // scenario exists, so this file is what tells the global setup and the reset fixture that
   // the database is seeded (T11: seed only after the app has touched the database).
   mkdirSync(path.dirname(stateFile), { recursive: true });
-  writeFileSync(stateFile, JSON.stringify({ databaseFile }));
+  writeFileSync(stateFile, JSON.stringify({ databaseUrl }));
   // The server is expected to outlive the tests and to end by our own signal. When it ends
   // by itself the run used to die in the worst possible way: this process exited, `finally`
   // deleted the state file, and every remaining test failed inside `resetScenario` with
@@ -225,7 +244,7 @@ try {
       );
     }
     console.error(
-      `e2e-server: the server exited on its own (code ${exit.code}, ${exit.signal}) — restarting ${restarts}/${MAX_RESTARTS}, ${databaseFile} is unaffected`,
+      `e2e-server: the server exited on its own (code ${exit.code}, ${exit.signal}) — restarting ${restarts}/${MAX_RESTARTS}, ${databaseName} is unaffected`,
     );
     await startServer();
   }

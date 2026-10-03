@@ -66,6 +66,3 @@ minimumReleaseAgeExclude:
   - "@modelcontextprotocol/node"
   - "@modelcontextprotocol/core"
   - "@modelcontextprotocol/client"
-
-patchedDependencies:
-  "@agent-native/core@0.176.5": patches/@agent-native__core@0.176.5.patch

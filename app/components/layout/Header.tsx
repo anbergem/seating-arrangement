@@ -1,11 +1,11 @@
-import { AgentToggleButton } from "@agent-native/core/client/agent-chat";
 import { useSession } from "@agent-native/core/client/hooks";
 import { useT } from "@agent-native/core/client/i18n";
-import { OrgSwitcher } from "@agent-native/core/client/org";
 import {
   useHeaderTitle,
   useHeaderActions,
 } from "@agent-native/toolkit/app-shell";
+import { AgentToggleButton } from "@agent-native/toolkit/app/chat";
+import { OrgSwitcher } from "@agent-native/toolkit/app/org";
 import { IconMenu2 } from "@tabler/icons-react";
 import { useLocation } from "react-router";
 

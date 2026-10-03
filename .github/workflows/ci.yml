@@ -43,6 +43,24 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The browser suite runs the production build, which the framework will not
+    # start on PGlite, so it gets a real PostgreSQL — the add-on's major version.
+    # The launcher creates and drops its own database on it per run.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      E2E_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/postgres
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -56,8 +74,8 @@ jobs:
           name: server-build
           path: .output
       - run: pnpm exec playwright install --with-deps chromium
-      # The e2e server migrates a private SQLite file, seeds the scenario and
-      # runs the smoke from the global setup (B18, B20).
+      # The e2e server creates a throwaway database on the service above,
+      # migrates and seeds it, and runs the smoke from the global setup (B18, B20).
       - run: pnpm test:e2e
       - uses: actions/upload-artifact@v4
         if: failure()

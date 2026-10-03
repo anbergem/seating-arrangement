@@ -33,7 +33,7 @@ says why in measurements rather than opinions.
   request and a CLI invocation all reach the same action and the same use case.
 - **PostgreSQL** with hand-written parameterized SQL, an `org_id = ?` predicate on every
   statement, optimistic-concurrency version guards and atomic multi-statement writes. The same
-  statements run against a local SQLite file in development, unchanged.
+  PostgreSQL runs locally too, so development and tests use the same engine as production.
 - **An audit trail and a semantic undo ledger.** Every mutation writes an operation row with
   its inverse; undo replays that inverse through the domain and refuses when newer changes
   exist. Redo re-runs the forward command.
@@ -77,10 +77,18 @@ To run the built production server instead of the dev server:
 pnpm build && pnpm start              # serves on http://localhost:3000 (PORT overrides it)
 ```
 
-**One database, one seed.** Both `pnpm dev` and `pnpm start` read `DATABASE_URL`, which
-defaults to the SQLite file at `data/app.db`, and `pnpm db:seed` fills it. The order matters:
-the server has to boot first, because the framework creates its own tables on the first
-request that touches the database.
+**One database, one seed.** Local development runs PostgreSQL on your machine (the framework
+is PostgreSQL-only). Once:
+
+```bash
+brew install postgresql@18 && brew services start postgresql@18
+cp .env.example .env    # DATABASE_URL=postgres://localhost:5432/seating-arrangement-dev
+pnpm db:migrate         # creates the database on first use
+```
+
+Both `pnpm dev` and `pnpm start` read `DATABASE_URL` from `.env`, and `pnpm db:seed` fills it.
+The order matters: the server has to boot first, because the framework creates its own tables
+on the first request that touches the database.
 
 So if the sign-in page rejects every password, the likely cause is an unseeded database rather
 than a wrong one — no account exists to sign in to. Run `pnpm db:seed` while the server is up.
