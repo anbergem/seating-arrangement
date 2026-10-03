@@ -144,11 +144,9 @@ export function validateEnvironment(
         violations.push(`${name} must be set in production (Google sign-in)`);
       }
     }
-    if (!isPresent(env, "ANTHROPIC_API_KEY")) {
-      violations.push(
-        "ANTHROPIC_API_KEY must be set in production (the embedded agent has no other provider)",
-      );
-    }
+    // No ANTHROPIC_API_KEY rule: since framework 0.193 a deployed app never uses a
+    // deployment-level provider key for chat. Each organization saves its own under
+    // Settings › Model (D31).
 
     // Development conveniences that would be a data leak in production.
     if (isEnabled(env, "AUTH_DISABLED")) {

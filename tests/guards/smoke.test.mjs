@@ -8,6 +8,7 @@ import {
   terminateProcessGroup,
 } from "../../scripts/lib/process.mjs";
 import {
+  isAiSetupRequired,
   parseOptions,
   readSseEvidence,
   runSmoke,
@@ -236,3 +237,18 @@ child.unref();`,
     await waitForNoSuchProcess(childPid);
   },
 );
+
+test("the AI-setup refusal is recognised by code or by text, and nothing else is", () => {
+  assert.equal(
+    isAiSetupRequired('{"data":{"code":"AGENT_CHAT_AI_SETUP_REQUIRED"}}'),
+    true,
+  );
+  assert.equal(
+    isAiSetupRequired(
+      "Connect Builder AI or a provider API key before chatting.",
+    ),
+    true,
+  );
+  assert.equal(isAiSetupRequired("Forbidden"), false);
+  assert.equal(isAiSetupRequired('{"error":"Not a member"}'), false);
+});

@@ -221,7 +221,6 @@ carries names only. Every key is documented in the example itself. The required 
 | `APP_NAME` | The kebab name from step 5. Must equal `app.id` in `server/plugins/config.ts`. |
 | `GITHUB_REPO` | `owner/name` of the repository from step 8. |
 | `GOOGLE_SIGN_IN_CLIENT_ID`, `GOOGLE_SIGN_IN_CLIENT_SECRET` | Step 3 — which you may not have done yet; see the note there. |
-| `ANTHROPIC_API_KEY` | <https://console.anthropic.com/> → API keys. The embedded agent uses it (D15). |
 | `SEED_PASSWORD` | Invent one, 16 characters or more. Staging QA accounts only. |
 
 Optional but recommended:
@@ -286,7 +285,7 @@ What the run leaves behind:
   nowhere else.
 - Every application setting per environment, including `BETTER_AUTH_SECRET` and
   `OAUTH_STATE_SECRET` generated separately for each from 32 random bytes and never written to
-  any file; the two Google credentials; `ANTHROPIC_API_KEY`; and `SEED_PASSWORD` on staging
+  any file; the two Google credentials; and `SEED_PASSWORD` on staging
   only, because production is never seeded.
 - Two GitHub environments: `staging` (no reviewers) and `production` (required reviewers).
 - GitHub secrets and variables per environment, exactly the set the workflows read —
@@ -375,6 +374,18 @@ Production additionally sets `AUTH_REQUIRE_EMAIL_VERIFICATION=1` with no email p
 configured, which is what makes the framework refuse password sign-up there at all (D11). The
 two mechanisms are complementary: the application setting closes sign-up, the organization
 setting closes sign-in.
+
+### 15a. Save the organization's AI provider key
+
+The agent chat answers "Connect … a provider API key" until the organization has one: a
+deployed application never uses a key from its environment (D31). As the organization's owner
+or an admin, open **Settings** → **Model** → **Add provider**, choose Anthropic, paste a key
+(<https://console.anthropic.com/> → API keys) and set **Who can use it** to **Organization**.
+
+Do it once per organization and per environment — staging and production are separate
+databases. On staging, the QA organization (`owner@example.invalid`, the seed password) needs
+one too if the deploy's smoke is to verify a real chat stream; without it the smoke prints a
+`[note]` and verifies only the refusal.
 
 ### 16. Check the backups exist
 

@@ -602,7 +602,7 @@ Nothing is shared, and no credential reaches both.
 
 `server/plugins/00-env-check.ts` refuses to start a misconfigured deployment. Production
 requires `BETTER_AUTH_SECRET` (32+ characters), `OAUTH_STATE_SECRET`, an https `APP_URL`, the
-Google credentials and `ANTHROPIC_API_KEY`, and forbids `AUTH_DISABLED`, `SEED_ENABLED`,
+Google credentials, and forbids `AUTH_DISABLED`, `SEED_ENABLED`,
 `ACCESS_TOKEN(S)` and `AGENT_PROD_CODE_EXECUTION`. Local refuses `APP_ENV=production`.
 Violation messages never contain a value. `scripts/check-config-hygiene.mjs` fails the build if
 a telemetry key appears anywhere or an example file carries a value.

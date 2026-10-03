@@ -357,3 +357,28 @@ upstream facts that made it unnecessary.
 Decided by the maintainer: Settings (now the framework's) shows only the pages this app uses
 and its Authentication page drops email-domain auto-join and the A2A shared secret; the sign-in
 page's Google Fonts links are stripped, so visitors' IP addresses are not sent to Google (D17).
+
+## D31 — Each organization saves its own AI provider key (2026-10-03)
+
+Revises D15 (a deployment-level `ANTHROPIC_API_KEY`).
+
+Context: since framework 0.193 a production build on a real database never resolves a model
+provider key from the environment (`canUseDeployCredentialFallbackForRequest` in
+`@agent-native/core/server`): chat answers 403 `AGENT_CHAT_AI_SETUP_REQUIRED` unless the caller,
+or the caller's organization, has a key saved in the framework's encrypted credential store.
+The first staging deploy on 0.198 found it — every smoke check passed except the agent chat.
+
+Decision, chosen by the maintainer over copying the deployment's key into every organization
+at startup, and over staying on 0.176.5: **follow the framework**. An owner or admin adds the
+provider under Settings › Model (Add provider → Anthropic → Organization), once per
+organization and per environment. `ANTHROPIC_API_KEY` leaves `bootstrap`, the production environment check and
+`.bootstrap.env.example`. Locally the environment variable still works, for chat and the evals.
+
+Consequences:
+
+- A new environment's chat answers 403 until a key is saved. The smoke accepts exactly that
+  refusal in every mode and prints a `[note]`; once a key exists it verifies the stream.
+- Saved keys live in the database (`app_secrets`), encrypted with a key derived from
+  `BETTER_AUTH_SECRET`. They are in every database backup, and unreadable after that secret
+  changes — regenerating it means saving the keys again.
+- An `ANTHROPIC_API_KEY` already set on an application is ignored and can be removed.
