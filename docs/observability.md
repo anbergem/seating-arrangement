@@ -238,7 +238,7 @@ Nothing phones home. Concretely:
 | Browser analytics to `analytics.agent-native.com` | `VITE_AGENT_NATIVE_ANALYTICS_PUBLIC_KEY` is set | **Never** |
 | Builder.io APIs (`api.builder.io/agent-native/…`) | `BUILDER_PRIVATE_KEY` or a Builder connection exists | **Never** — `onboarding.firstRun: "off"` |
 | Sentry | `SENTRY_DSN` is set | **Never** |
-| Anthropic | The agent is used | Yes, by design: `ANTHROPIC_API_KEY`, deployment-level, owned by the customer |
+| Anthropic | The agent is used | Yes, by design: the key an organization's owner saved under Settings › Model (D31) |
 
 Two independent checks keep it that way, and they check different things:
 

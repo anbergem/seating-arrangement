@@ -10,8 +10,9 @@ import {
  *
  * Since framework 0.197 `/settings` is the framework's own Settings, with a page for every
  * feature the framework has. Pages for features this app does not offer are hidden:
- * automations, channels, labs, integrations and skills are not part of it, and API keys are
- * deployment configuration here, never a member's to add (D15). Hiding is presentation
+ * automations, channels, labs, integrations and skills are not part of it, and neither is
+ * API keys, which holds keys for services this app does not call. The agent's own provider
+ * key is saved on the Model page, which stays (D31). Hiding is presentation
  * only — every action behind a page still enforces its own permissions on the server.
  */
 const HIDDEN_PAGE_IDS = new Set([

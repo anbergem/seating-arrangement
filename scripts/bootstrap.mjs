@@ -57,7 +57,6 @@ const REQUIRED_KEYS = [
   "GITHUB_REPO",
   "GOOGLE_SIGN_IN_CLIENT_ID",
   "GOOGLE_SIGN_IN_CLIENT_SECRET",
-  "ANTHROPIC_API_KEY",
   "SEED_PASSWORD",
 ];
 
@@ -106,7 +105,6 @@ const OPTIONAL_KEYS = [
 const SECRET_KEYS = new Set([
   "GOOGLE_SIGN_IN_CLIENT_ID",
   "GOOGLE_SIGN_IN_CLIENT_SECRET",
-  "ANTHROPIC_API_KEY",
   "SEED_PASSWORD",
 ]);
 
@@ -862,7 +860,6 @@ function stepAppEnv(ctx) {
       ["OAUTH_STATE_SECRET", keep("OAUTH_STATE_SECRET")],
       ["GOOGLE_SIGN_IN_CLIENT_ID", inputs.GOOGLE_SIGN_IN_CLIENT_ID],
       ["GOOGLE_SIGN_IN_CLIENT_SECRET", inputs.GOOGLE_SIGN_IN_CLIENT_SECRET],
-      ["ANTHROPIC_API_KEY", inputs.ANTHROPIC_API_KEY],
     ];
     // Staging runs the QA scenario; production is never seeded (B13).
     if (environment === "staging")
@@ -1426,6 +1423,13 @@ function printManualChecklist(ctx) {
   say(
     `       node scripts/bootstrap-org.mjs --env production --name "<Org>" --owner <email>`,
   );
+  say(
+    "  8. In each environment, as the organization's owner: save an AI provider key under",
+  );
+  say(
+    "     Settings › Model. The agent chat answers 403 until one is saved — a deployed",
+  );
+  say("     application never uses a key from its environment (D31).");
   say("");
   say(
     ctx.apply

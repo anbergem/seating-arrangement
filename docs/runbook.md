@@ -472,7 +472,7 @@ above is a command and not a description.
 | `BETTER_AUTH_SECRET` | Application setting, production | `bootstrap --only app-env` | Yes, with account access |
 | `OAUTH_STATE_SECRET` | Application setting, production | `bootstrap --only app-env` | Yes, with account access |
 | `GOOGLE_SIGN_IN_CLIENT_ID` / `_SECRET` | Application setting, production | `bootstrap --only app-env` | Yes, with account access |
-| `ANTHROPIC_API_KEY` | Application setting, production | `bootstrap --only app-env` | Yes, with account access |
+| AI provider key | The application's database, encrypted with a key derived from `BETTER_AUTH_SECRET`, one per organization | Settings › Model, by an owner or admin | No — replace it there |
 | `SEED_PASSWORD` | Application setting **staging only**; GitHub `staging` environment | `bootstrap`, `gh secret set` | On the platform yes, on GitHub no |
 | `CLEVER_TOKEN` / `CLEVER_SECRET` | GitHub environment secrets | `bootstrap --only github-secrets`, from the CLI profile | No |
 | The database connection string | The add-on, injected as `POSTGRESQL_ADDON_URI` | The platform, when the add-on is linked | Yes, with account access |

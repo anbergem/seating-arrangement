@@ -45,7 +45,6 @@ process.once("exit", () => {
 const SECRETS = {
   GOOGLE_SIGN_IN_CLIENT_ID: "111111.apps.googleusercontent.com",
   GOOGLE_SIGN_IN_CLIENT_SECRET: "GOCSPX-secret-value-0000000000",
-  ANTHROPIC_API_KEY: "sk-ant-api03-0000000000000000000000",
   SEED_PASSWORD: "Example-Seed-Password-2026",
 };
 
@@ -118,7 +117,6 @@ function writeStubs({ dir, log, state, world, loggedIn = true }) {
     OAUTH_STATE_SECRET: "b".repeat(64),
     GOOGLE_SIGN_IN_CLIENT_ID: SECRETS.GOOGLE_SIGN_IN_CLIENT_ID,
     GOOGLE_SIGN_IN_CLIENT_SECRET: SECRETS.GOOGLE_SIGN_IN_CLIENT_SECRET,
-    ANTHROPIC_API_KEY: SECRETS.ANTHROPIC_API_KEY,
     ...(environment === "staging"
       ? { SEED_PASSWORD: SECRETS.SEED_PASSWORD }
       : {}),
@@ -599,7 +597,8 @@ test("--yes issues exactly the expected argument arrays and stdin bodies", () =>
 
   // The settings travel on stdin, never on a command line, so they never reach a shell
   // history or a process list.
-  assert.match(result.calls, /<<< ANTHROPIC_API_KEY=/);
+  // No AI provider key: a deployed app ignores a deployment-level one (D31).
+  assert.doesNotMatch(result.calls, /ANTHROPIC_API_KEY/);
   assert.match(result.calls, /<<< BETTER_AUTH_SECRET=/);
   assert.match(result.calls, /<<< CC_NODE_DEV_DEPENDENCIES=install/);
   // Staging is seeded; production never is (B13).
@@ -820,7 +819,6 @@ test("the committed example file yields a fill-in report and exit 0", () => {
     "APP_NAME",
     "GITHUB_REPO",
     "GOOGLE_SIGN_IN_CLIENT_ID",
-    "ANTHROPIC_API_KEY",
     "SEED_PASSWORD",
   ]) {
     assert.match(result.stdout, new RegExp(key));

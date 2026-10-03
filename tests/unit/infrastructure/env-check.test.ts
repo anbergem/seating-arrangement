@@ -17,7 +17,6 @@ function validProductionEnv(): Env {
     APP_URL: "https://app.example.invalid",
     GOOGLE_SIGN_IN_CLIENT_ID: "google-client-id",
     GOOGLE_SIGN_IN_CLIENT_SECRET: "google-client-secret",
-    ANTHROPIC_API_KEY: "anthropic-key",
     DATABASE_URL: "postgresql://user:pass@host:5432/db",
   };
 }
@@ -67,7 +66,6 @@ describe("validateEnvironment — production, one missing required var at a time
     "APP_URL",
     "GOOGLE_SIGN_IN_CLIENT_ID",
     "GOOGLE_SIGN_IN_CLIENT_SECRET",
-    "ANTHROPIC_API_KEY",
   ] as const;
 
   for (const name of requiredVars) {
@@ -219,8 +217,8 @@ describe("validateEnvironment — violation strings never contain a value from t
     const env: Env = {
       APP_ENV: "production",
       BETTER_AUTH_SECRET: "short-secret-value",
-      // OAUTH_STATE_SECRET, APP_URL, GOOGLE_SIGN_IN_CLIENT_ID/SECRET,
-      // ANTHROPIC_API_KEY: left unset, each its own violation.
+      // OAUTH_STATE_SECRET, APP_URL, GOOGLE_SIGN_IN_CLIENT_ID/SECRET: left unset,
+      // each its own violation.
     };
     const violations = validateEnvironment(env);
     expect(violations.length).toBeGreaterThan(1);

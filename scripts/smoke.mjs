@@ -75,6 +75,14 @@ const MEANINGFUL_SSE_TYPES = new Set([
   "tool_result",
 ]);
 
+/** The framework's "no AI provider is set up for this caller" refusal, by code or by text. */
+export function isAiSetupRequired(body) {
+  return (
+    body.includes("AGENT_CHAT_AI_SETUP_REQUIRED") ||
+    /provider api key|connect builder ai/i.test(body)
+  );
+}
+
 export async function readSseEvidence(response, maxBytes = 8192) {
   const reader = response.body?.getReader();
   if (!reader) return { text: "", events: [], evidence: undefined };
@@ -364,15 +372,20 @@ export async function runSmoke(
         body: JSON.stringify({ message: "List our events." }),
         signal: deadline,
       });
-      // Locally there is deliberately no provider key. Framework 0.193 refuses chat with a
-      // 403 before streaming when no provider is ready; earlier versions streamed a
-      // `missing_credentials` error event instead. Both say the same thing, and only locally
-      // is it the expected answer — a deployed environment must stream (below).
-      if (options.mode === "local" && response.status === 403) {
+      // Framework 0.193 refuses chat with a 403 before streaming when the caller's
+      // organization has no provider key, and a deployed application never falls back to
+      // one in its environment: the key is something an owner saves under Settings › API
+      // keys (D31). So "no key saved yet" is a correct answer in every mode — the first
+      // deploy of a new environment always gives it — and it is reported, not hidden.
+      // Any other 403, and anything that is not a stream once a key exists, still fails.
+      if (response.status === 403) {
         const refusal = await response.text();
         assert(
-          /provider|api key/i.test(refusal),
+          isAiSetupRequired(refusal),
           `403 without a missing-provider reason: ${refusal.slice(0, 200)}`,
+        );
+        console.log(
+          "[note] agent chat: this organization has no AI provider key saved (Settings › Model); the refusal was verified, the stream was not",
         );
         return;
       }

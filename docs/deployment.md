@@ -37,8 +37,9 @@ Nothing is shared and no credential reaches both.
 message and never a value:
 
 - **production requires** `BETTER_AUTH_SECRET` (32+ characters), `OAUTH_STATE_SECRET`, an https
-  `APP_URL`, `GOOGLE_SIGN_IN_CLIENT_ID`, `GOOGLE_SIGN_IN_CLIENT_SECRET` and
-  `ANTHROPIC_API_KEY`;
+  `APP_URL`, `GOOGLE_SIGN_IN_CLIENT_ID` and `GOOGLE_SIGN_IN_CLIENT_SECRET` — and no AI provider
+  key: a deployed application ignores one in its environment, and each organization's owner
+  saves theirs under Settings › Model (D31);
 - **production forbids** `ACCESS_TOKEN` and `ACCESS_TOKENS` whenever they are present at all,
   and `AUTH_DISABLED`, `SEED_ENABLED` and `AGENT_PROD_CODE_EXECUTION` when they are enabled
   (`""`, `0`, `false`, `off`, `no` pass, so `SEED_ENABLED=0` may be stated explicitly);
@@ -109,7 +110,7 @@ AGENT_NATIVE_DISABLE_AUTO_DEV_ACCOUNT  AUTH_REQUIRE_EMAIL_VERIFICATION
 SEED_ENABLED  AGENT_NATIVE_AUDIT_RETENTION_DAYS
 CC_NODE_BUILD_TOOL  CC_NODE_DEV_DEPENDENCIES  CC_RUN_COMMAND  CC_POST_BUILD_HOOK
 BETTER_AUTH_SECRET  OAUTH_STATE_SECRET
-GOOGLE_SIGN_IN_CLIENT_ID  GOOGLE_SIGN_IN_CLIENT_SECRET  ANTHROPIC_API_KEY
+GOOGLE_SIGN_IN_CLIENT_ID  GOOGLE_SIGN_IN_CLIENT_SECRET
 SEED_PASSWORD (staging only)
 ```
 

@@ -31,10 +31,11 @@ its own argument against using it for anything real.
 - **Anything outside the database.** Uploaded files, if the application ever has any, need a
   second backup path.
 - **Application settings.** `BETTER_AUTH_SECRET`, `OAUTH_STATE_SECRET`, the Google client
-  credentials and `ANTHROPIC_API_KEY` are set on the platform and are readable back with
+  credentials are set on the platform and are readable back with
   `clever env --alias production`, but they are not part of a database backup. Losing the
-  application means re-running `scripts/bootstrap.mjs`, which regenerates the signing secrets
-  and signs everyone out.
+  application means re-running `scripts/bootstrap.mjs`, which regenerates the signing secrets,
+  signs everyone out, and leaves every saved AI provider key unreadable — an owner saves
+  it again under Settings › Model (D31).
 - **The deployed code.** A promotion is a commit, so git is the backup. The rollback is to
   re-promote the previous staging run.
 
