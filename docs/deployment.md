@@ -149,7 +149,7 @@ server is built **once**:
 directory, migrates it, seeds the scenario and runs the smoke from the global setup, so the
 browser suite is independent of any developer file and touches no cloud resource.
 
-Concurrency is grouped per ref with cancellation, and `CI / verify` and `CI / e2e` are the
+Concurrency is grouped per ref with cancellation, and `verify` and `e2e` are the
 required checks on `main`.
 
 ## Staging

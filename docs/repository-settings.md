@@ -7,11 +7,15 @@ would rather configure it by hand.
 
 ## Branch protection on `main`
 
-Protect `main` with pull requests, block force pushes and block deletions. Require these three
-status checks, which are the three jobs of `ci.yml`:
+Protect `main` with pull requests, block force pushes and block deletions. Require these two
+status checks, which are the two jobs of `ci.yml`:
 
-- `CI / verify`
-- `CI / e2e`
+- `verify`
+- `e2e`
+
+Those are the check names GitHub Actions reports, which are the job names. The web page
+shows them as `CI / verify` and `CI / e2e`; requiring that label instead of the name makes the
+rule impossible to satisfy, and every pull request blocked with every check green.
 
 Requiring branches to be current before merge is optional, and it serialises merges on a small
 team; linear history is optional too. `scripts/bootstrap.mjs` therefore sets `strict: false`,

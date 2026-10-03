@@ -84,7 +84,10 @@ const CLEVER_REGIONS = [
 // the smallest plan that can, and it is the default for that reason.
 const POSTGRES_PLANS = ["xxs_sml", "xs_sml", "s_sml", "m_sml"];
 
-const REQUIRED_STATUS_CHECKS = ["CI / verify", "CI / e2e"];
+// The names GitHub Actions reports as check runs, which are the job names. "CI / verify" is how
+// the web page *labels* that check, not its name: a rule requiring it can never be satisfied, and
+// it left `main` unmergeable with every check green (DISCREPANCIES.md, 2026-10-03).
+const REQUIRED_STATUS_CHECKS = ["verify", "e2e"];
 
 const OPTIONAL_KEYS = [
   // Only for a custom domain. Left empty, each application answers on the
