@@ -193,6 +193,11 @@ const messages = {
     teamInvitationError:
       "The invitation could not be accepted. Please try again.",
   },
+  environment: {
+    ci: "CI environment",
+    development: "Development environment",
+    staging: "Staging environment",
+  },
   root: {
     commandActions: "Actions",
     commandAppearance: "Appearance",
