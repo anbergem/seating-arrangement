@@ -31,8 +31,8 @@
     "lint:workflows": "github-actionlint .github/workflows/*.yml"
   },
   "dependencies": {
-    "@agent-native/core": "0.198.2",
-    "@agent-native/toolkit": "0.198.2",
+    "@agent-native/core": "0.200.0",
+    "@agent-native/toolkit": "0.200.0",
     "@ai-sdk/anthropic": "^3.0.127",
     "@ai-sdk/cohere": "^3.0.67",
     "@ai-sdk/google": "^3.0.130",
