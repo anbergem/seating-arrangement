@@ -55,6 +55,7 @@ client session gate still sends an anonymous visitor to `/sign-in`.
 | Password sign-up | allowed | allowed | allowed (QA) | **refused** |
 | Password sign-in | seeded accounts | seeded accounts | seeded QA accounts | refused for members of a Google-required organization |
 | Google sign-in | optional | — | configured | **the only way in** |
+| Sign-in page | password form (+ Google when configured) | password form | password form + Google | **Google button only** |
 | `AUTH_REQUIRE_EMAIL_VERIFICATION` | `0` | `0` | `0` | `1` |
 | Email provider configured | no | no | no | **no** |
 | `AUTO_CREATE_DEFAULT_ORG` | `0` | `0` | `0` | `0` |

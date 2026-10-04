@@ -1,7 +1,10 @@
 import { createAuthPlugin } from "@agent-native/core/server";
 
 import { readAppEnv } from "../../src/infrastructure/env";
-import { environmentLabel } from "../../src/infrastructure/env-check";
+import {
+  environmentLabel,
+  isGoogleOnlySignIn,
+} from "../../src/infrastructure/env-check";
 
 // No `workspaceAppPublicPaths`: every page requires sign-in, including `/`
 // (D11 — membership is invite-only and there is no marketing surface).
@@ -19,10 +22,16 @@ import { environmentLabel } from "../../src/infrastructure/env-check";
 // `appName` as the heading and in the page title, as text; this plugin runs
 // once per process, where `APP_ENV` is known, so one build shows the right
 // label wherever it is promoted. Production gets no label and an unchanged page.
-const label = environmentLabel(readAppEnv());
+const appEnv = readAppEnv();
+const label = environmentLabel(appEnv);
 
 export default createAuthPlugin({
   rootAuth: false,
+  // Production offers Google and nothing else (D11). Password sign-up is already refused
+  // there by configuration, so a password form on the page would be a door painted on a
+  // wall: this removes the form. Every other environment keeps it, for the seeded and QA
+  // accounts.
+  googleOnly: isGoogleOnlySignIn(appEnv),
   // The readiness probe (B19) must answer before anyone can sign in — and a load balancer
   // or a smoke test has no session. It exposes migration file names and nothing else.
   publicPaths: ["/api/ready"],
