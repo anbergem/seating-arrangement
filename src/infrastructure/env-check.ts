@@ -92,6 +92,15 @@ export function resolveEnvironmentClass(
   return isEnvironmentClass(raw) ? raw : null;
 }
 
+/**
+ * Whether the sign-in page offers Google and nothing else. Production only (D11): it is
+ * the one environment with no password accounts — sign-up is refused there and nobody is
+ * seeded — while local, CI and staging sign in with seeded passwords.
+ */
+export function isGoogleOnlySignIn(appEnv: EnvironmentClass): boolean {
+  return appEnv === "production";
+}
+
 /** A database on this machine: PGlite, or PostgreSQL on a loopback address. */
 function isLocalDatabaseUrl(url: string): boolean {
   if (url.startsWith("pglite:")) return true;

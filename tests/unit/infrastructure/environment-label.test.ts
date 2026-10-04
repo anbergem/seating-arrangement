@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   ENVIRONMENT_CLASSES,
   environmentLabel,
+  isGoogleOnlySignIn,
 } from "../../../src/infrastructure/env-check";
 
 describe("environmentLabel", () => {
@@ -19,6 +20,15 @@ describe("environmentLabel", () => {
   it("covers every environment class", () => {
     for (const environment of ENVIRONMENT_CLASSES) {
       expect(() => environmentLabel(environment)).not.toThrow();
+    }
+  });
+});
+
+describe("isGoogleOnlySignIn", () => {
+  it("is true in production and nowhere else", () => {
+    expect(isGoogleOnlySignIn("production")).toBe(true);
+    for (const appEnv of ["local", "ci", "staging"] as const) {
+      expect(isGoogleOnlySignIn(appEnv)).toBe(false);
     }
   });
 });
