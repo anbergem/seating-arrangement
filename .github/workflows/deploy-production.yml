@@ -35,9 +35,8 @@ jobs:
         run: '[[ "$STAGING_RUN_ID" =~ ^[1-9][0-9]*$ ]]'
       # First, before anything else: the one step that needs no repository, and
       # it exercises the exact pairing a wrong credential breaks. A stale
-      # Cloudflare token once sent a promotion through three minutes of install
-      # and build before failing on a bare "[code: 7403]"
-      # (DISCREPANCIES.md, 2026-09-14). The platform changed; the lesson did not.
+      # credential once sent a promotion through three minutes of install and
+      # build before failing on a bare error code (DISCREPANCIES.md, 2026-09-14).
       - name: Preflight — the Clever Cloud credentials work
         run: |
           if ! npx --yes clever-tools@latest profile > /dev/null 2>&1; then

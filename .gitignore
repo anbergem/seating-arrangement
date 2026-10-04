@@ -33,8 +33,8 @@ dist-ssr
 .env
 .env.*
 !.env.example
-# Bootstrap input (T24): one file holding the Cloudflare API token, the Google client secret,
-# the provider key and the QA password. Only the names-only example is committed.
+# Bootstrap input (T24): one file holding the Google client secret and the QA
+# password. Only the names-only example is committed.
 .bootstrap.env
 !.bootstrap.env.example
 .tmp/
@@ -80,10 +80,3 @@ cookies*.txt
 
 # Clever Cloud application ids, written by `clever create`/`clever link`.
 .clever.json
-
-# Local secrets and leftover Wrangler state. `.dev.vars` was Wrangler's secrets file and
-# nothing reads it any more, but a machine that ran the Cloudflare version still has both —
-# and removing these lines while they exist on disk is how they got committed once.
-.dev.vars
-.dev.vars.*
-.wrangler/
