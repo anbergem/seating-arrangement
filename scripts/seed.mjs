@@ -39,7 +39,7 @@ const repoRoot = path.resolve(
 const USAGE = `usage: node scripts/seed.mjs [--base-url <url>] [--reset] [--skip-users]
 
 Writes the scenario to whatever DATABASE_URL names and registers the seed users over
-HTTP against --base-url. There is one target now: Wrangler owned D1 and is gone (T28).`;
+HTTP against --base-url.`;
 
 /**
  * @param {string} message
@@ -172,8 +172,8 @@ function missingOrgTableHint(output) {
 
 /**
  * Apply the scenario through the framework's own executor, whichever dialect
- * `DATABASE_URL` names (T28). Wrangler owned D1 and is gone; there is one way to reach a
- * database now, and it is the one the application itself uses.
+ * `DATABASE_URL` names: there is one way to reach a database, and it is the one the
+ * application itself uses.
  *
  * @param {string[]} statements
  * @returns {Promise<string>} a description of what was written, for the step line

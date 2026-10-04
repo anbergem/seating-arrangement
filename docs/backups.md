@@ -1,8 +1,7 @@
 # Backups and restore
 
 The database is a managed PostgreSQL add-on, and its backups are the platform's. That is a
-smaller surface than the Cloudflare arrangement this replaced — no nightly export workflow, no
-object-storage credentials, no age recipient — and it is worth being explicit about what that
+small surface — no nightly export workflow, no object-storage credentials — and it is worth being explicit about what that
 does and does not cover.
 
 - [What backs up what](#what-backs-up-what)

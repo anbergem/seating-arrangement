@@ -32,10 +32,9 @@ jobs:
     steps:
       # First, and before install or build: this is the only step that needs no
       # repository, and it exercises the exact pairing a wrong credential
-      # breaks. A stale Cloudflare token once sent the first real deployment
-      # through three minutes of install, build and two artifact uploads before
-      # failing with a bare "[code: 7403]" (DISCREPANCIES.md, 2026-09-14); the
-      # platform changed, the lesson did not.
+      # breaks. A stale credential once sent a deployment through three minutes
+      # of install, build and two artifact uploads before failing with a bare
+      # error code (DISCREPANCIES.md, 2026-09-14).
       - name: Preflight — the Clever Cloud credentials work
         run: |
           if ! npx --yes clever-tools@latest profile > /dev/null 2>&1; then

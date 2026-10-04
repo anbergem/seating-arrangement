@@ -4,12 +4,10 @@
 // One migration source, one runner, two dialects. It goes through the framework's own
 // executor rather than a driver of its own, which is what makes that possible: the
 // executor resolves SQLite or PostgreSQL from the URL and, on PostgreSQL, rewrites `?`
-// placeholders to `$n` through a real parser. The bookkeeping table is still named
-// `d1_migrations` and still holds the bare migration file name, because `/api/ready`
-// asks that one question of every runtime — renaming it would be a migration of its own
-// for no gain beyond tidiness.
-//
-// Wrangler's own runner is gone with Cloudflare, so this is no longer "the local one".
+// placeholders to `$n` through a real parser. The bookkeeping table is named
+// `d1_migrations`, a historical name, and holds the bare migration file name, which is
+// what `/api/ready` compares against — renaming it would be a migration of its own for
+// no gain beyond tidiness.
 
 import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
@@ -117,8 +115,8 @@ try {
       readFileSync(path.join(migrationsDir, name), "utf8"),
     );
     // One transaction per file: a migration either lands whole or not at all, and a failed
-    // file is never recorded, so re-running the script retries it. Both dialects give the
-    // executor a `transaction`; D1's batch-only shape, which did not, is gone.
+    // file is never recorded, so re-running the script retries it. The executor must
+    // offer a `transaction` for that.
     if (!client.transaction) {
       console.error(
         "db:migrate: this database exposes no interactive transaction; refusing to apply a migration that could land half way.",

@@ -1,5 +1,5 @@
 /**
- * The seating plan in a real browser, against the real Worker.
+ * The seating plan in a real browser, against the real built server.
  *
  * The gesture is the point of this screen, so it is driven here rather than
  * asserted about: a real pointer drag over real pixels, and a real keyboard

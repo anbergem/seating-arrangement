@@ -24,7 +24,7 @@ const users = [
   ["outsider", OUTSIDER_EMAIL],
 ] as const;
 
-/** Playwright's own readiness probe is `ping`, which the Worker answers before
+/** Playwright's own readiness probe is `ping`, which the server answers before
  * `scripts/e2e-server.mjs` has applied the scenario SQL. Registering users
  * against an unseeded database would produce accounts with no membership, so
  * wait for the server's state file — it is written after the seed — and for the
@@ -47,7 +47,7 @@ async function waitForSeededServer(baseURL: string): Promise<void> {
     }
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
-  throw new Error(`e2e setup: Worker did not become ready (${lastStatus})`);
+  throw new Error(`e2e setup: server did not become ready (${lastStatus})`);
 }
 
 export default async function globalSetup(config: FullConfig): Promise<void> {
@@ -89,7 +89,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
     }
   }
 
-  // Run the Worker contract against the exact process Playwright will use;
+  // Run the smoke contract against the exact process Playwright will use;
   // reset fixtures restore the deterministic scenario before every browser
   // test, so its disposable smoke rows cannot leak into assertions.
   execFileSync(

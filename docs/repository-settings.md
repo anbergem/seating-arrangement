@@ -34,10 +34,8 @@ already has a successful same-repository `CI` run on `main`.
 `PRODUCTION_URL`; **required reviewers**, so an artifact promotion cannot start without human
 approval. No `SEED_PASSWORD`: production is never seeded.
 
-There is no third environment. The Cloudflare arrangement had a `production-backup` one, so
-that a nightly export could run unattended without waiting for a reviewer. The database plan
-takes its own backups now, so nothing schedules a workflow and nothing needs a
-lower-privilege credential.
+There is no third environment. The database plan takes its own backups, so nothing schedules
+a workflow and nothing needs a lower-privilege credential.
 
 `STAGING_URL` and `PRODUCTION_URL` are the origins the smoke script calls, and
 `CLEVER_APP_NAME` is what lets a workflow link its checkout to the right application. All

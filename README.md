@@ -11,10 +11,6 @@ reaching another, an audit row for every change, undo that refuses to overwrite 
 else's work, tests that run against the real built server, and a restore procedure that has
 actually been tested.
 
-It ran on Cloudflare Workers first. It does not any more, and
-[`docs/plan/tasks/T28-clever-cloud-migration.md`](docs/plan/tasks/T28-clever-cloud-migration.md)
-says why in measurements rather than opinions.
-
 ## What it includes
 
 - **Agent-Native 0.176.5** — actions, an embedded agent, an MCP endpoint, an audit log, an

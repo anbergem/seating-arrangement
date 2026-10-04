@@ -61,15 +61,12 @@ breaks the static-shell render, and a smoke test must expect 200 from `/`, never
 `/_agent-native/events`. `app/root.tsx` passes `sseUrl: false`, so the framework's
 `/_agent-native/poll` transport is used instead.
 
-That choice was forced: on Cloudflare Workers a response held open with no pending I/O is cancelled by the
-runtime. On an always-on Node process it no longer is, so switching back to the event stream is
-now _available_ — a lower-latency sync channel for one line of change. It has not been taken,
-because polling works and a change to how every client receives updates deserves its own
-measurement rather than riding along with a migration.
+An always-on Node process could hold the event stream instead — a lower-latency sync channel
+for one line of change. It has not been taken, because polling works and a change to how every
+client receives updates deserves its own measurement.
 
 The build is `agent-native build` with the Node preset, producing `.output/`, which `pnpm start`
-serves. No bundle patching, no runtime surgery — the two stub patches this repository used to
-carry existed only because of the Cloudflare bundle and went with it.
+serves. No bundle patching, no runtime surgery.
 
 ## 2. Request flow
 
@@ -558,8 +555,8 @@ flowchart TB
 
 What is promoted is a **commit**. The platform builds from the git push, so production cannot
 download the bytes staging ran; what the chain guarantees instead is that the commit production
-builds is the commit staging deployed and smoked. That is a narrower promise than the Cloudflare
-arrangement's, and stating it honestly is better than implying the old one still holds.
+builds is the commit staging deployed and smoked. That is a narrower promise than promoting
+a built artifact, and it is stated here rather than implied away.
 
 Provenance is a manifest, not a workflow-run field. A `workflow_run`-triggered run's `head_sha`
 describes the context the workflow file was loaded from, so two runs can report the same
@@ -627,8 +624,7 @@ exchange. `docs/runbook.md` § _Verify the most recent backup_ is how you stop t
 blindly.
 
 Three things a backup does not cover, and it matters: uploaded files (this starter stores
-none), application settings (`clever env` can read them back, which the Worker secrets it
-replaced could not — but a restore paired with a different `BETTER_AUTH_SECRET` still
+none), application settings (`clever env` can read them back — but a restore paired with a different `BETTER_AUTH_SECRET` still
 invalidates every session), and the deployed code, which is git.
 
 Rolling the code back does **not** roll back the database. A migration that ran is still

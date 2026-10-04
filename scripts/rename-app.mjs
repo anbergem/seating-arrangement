@@ -2,8 +2,8 @@
 // Renames the sample application (docs/bootstrap.md step 1, decision D18).
 //
 // The starter ships as `example-jobs` / "Example Jobs" (D18) and a real application is not
-// called that. This replaces both strings everywhere they are load-bearing: the Worker and
-// the framework's `app.id`, package.json's name and the agent-chat plugin's
+// called that. This replaces both strings everywhere they are load-bearing: the
+// framework's `app.id`, package.json's name and the agent-chat plugin's
 // `appId` (which must agree with it), the sign-in page's app name, the browser bundle's app
 // slug, the PWA manifest, the deployment workflows, the scripts and the documents.
 //

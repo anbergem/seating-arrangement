@@ -155,7 +155,7 @@ action is the mechanism.
 `/observability` renders the framework's `ObservabilityDashboard`
 (`@agent-native/core/client/observability`): the framework's own view of recent activity, agent
 runs and errors, scoped to the signed-in user's organization. It is the non-technical answer to
-"what has been happening", and it needs no Cloudflare access.
+"what has been happening", and it needs no access to the hosting platform.
 
 `/activity` is the application's own view — the operation ledger with Undo and Redo — and is
 the one a user actually works in. `docs/undo-and-history.md` covers it.
@@ -194,8 +194,8 @@ noise:
 1. **`/api/ready` returning 503** for more than a minute or two. The schema and the code
    disagree — usually a partial deploy.
 2. **`/_agent-native/health` failing or `db: false`.** The database is unreachable.
-3. **A missing nightly backup run.** `gh run list --workflow=backup-d1.yml` should have one run
-   per day. The gap between "backups stopped" and "somebody noticed" is the window you cannot
+3. **A missing daily backup.** `clever database backups <addon-id>` should list one per day
+   (`docs/backups.md`). The gap between "backups stopped" and "somebody noticed" is the window you cannot
    recover.
 4. **A burst of `level: "error"` action lines**, especially `errorCode: "INTERNAL"` (a bug) or a
    run of `AUTHORIZATION` (somebody probing).

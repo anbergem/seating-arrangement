@@ -4,8 +4,6 @@ import { validateEnvironment } from "../../src/infrastructure/env-check";
  * Refuse to start on a misconfigured deployment (blueprint B13, decision D16).
  *
  * `00-` so Nitro's lexical plugin order runs this before auth and agent-chat.
- * On Workers plugins are lazy, so this runs inside the first request instead of
- * at boot; that is acceptable — the first request fails with the same message.
  *
  * The rules live in `src/infrastructure/env-check.ts`. This file only reads the
  * environment and turns findings into one error, so the reads stay in one small,

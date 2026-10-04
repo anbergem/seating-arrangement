@@ -170,11 +170,8 @@ export function validateEnvironment(
         "AGENT_PROD_CODE_EXECUTION must not be enabled in production; the agent runs actions, not code",
       );
     }
-    // T28 inverted this rule with the platform. Production used to reach its
-    // database through a Cloudflare binding, so a `DATABASE_URL` there meant
-    // somebody had pointed production somewhere by hand. A managed PostgreSQL
-    // add-on is reached through the connection string, so now its *absence* is
-    // the misconfiguration — and a local database is worse than absence,
+    // A managed PostgreSQL add-on is reached through the connection string, so
+    // its absence is a misconfiguration — and a local database is worse than absence,
     // because production would come up on a SQLite file or a PGlite directory
     // inside a container that is replaced on every deploy, losing every write
     // with it.

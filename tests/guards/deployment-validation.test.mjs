@@ -107,5 +107,6 @@ test("deployment workflows keep provenance gates and non-cancelling serializatio
   assert.match(staging, /deployment-manifest/);
   assert.match(production, /validate-staging-run\.mjs/);
   assert.match(production, /verify-promoted-commit\.mjs/);
-  assert.doesNotMatch(production, /pnpm build:worker/);
+  // Production never builds: it promotes the commit staging proved.
+  assert.doesNotMatch(production, /pnpm build\b/);
 });
