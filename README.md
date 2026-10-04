@@ -18,7 +18,8 @@ actually been tested.
 - **React 19 + React Router 8 + TypeScript** in strict mode, with the framework's toolkit
   components.
 - **Better Auth** through the framework: email/password for local and QA, Google sign-in for
-  production, invite-only membership.
+  production. Membership is invite-only by default; one line makes the application
+  open, so that anyone who signs in can create an organization of their own.
 - **Organizations with roles** (`owner`, `admin`, `member`) mapped to capabilities in one
   policy module. Cross-organization access is impossible by construction and tested at three
   levels.
@@ -163,8 +164,9 @@ one Undo that takes all of it back) and `undo-operation` (refuses when the recor
 | Staging     | The same seeded QA accounts, plus Google once it is configured.                                      |
 | Production  | **Google only.** Password sign-up is refused by configuration, and the organization requires Google. |
 
-Membership is invite-only everywhere: no environment creates an organization for a stray
-account, so an authenticated stranger can read nothing. `docs/authentication-and-authorization.md`
+Membership is invite-only by default: no environment creates an organization for a stray
+account, so an authenticated stranger can read nothing. An application meant for anyone sets
+`APP_MEMBERSHIP_MODE` to `open` instead. `docs/authentication-and-authorization.md`
 has the Google client setup, the redirect URI, the roles table and how to add another provider.
 
 ## Deployment

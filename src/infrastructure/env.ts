@@ -12,6 +12,8 @@
  * plugin (T03), so the fallback below only keeps this function total.
  */
 
+import type { MembershipMode } from "../domain/membership";
+import { APP_MEMBERSHIP_MODE, parseMembershipMode } from "../domain/membership";
 import type { EnvironmentClass } from "./env-check";
 import { resolveEnvironmentClass } from "./env-check";
 
@@ -19,4 +21,17 @@ export function readAppEnv(): EnvironmentClass {
   // guard:allow-env-credential — environment class selection, value is never logged
   const appEnv = process.env.APP_ENV;
   return resolveEnvironmentClass({ APP_ENV: appEnv }) ?? "local";
+}
+
+/**
+ * The membership mode this process runs in (D32): the application's own, unless
+ * `MEMBERSHIP_MODE` overrides it for one environment — which is how the browser suite
+ * exercises the mode the application does not ship, and how a staging environment can
+ * try `open` before production does. An unknown value is rejected at startup by the
+ * environment check, so the fallback only keeps this function total.
+ */
+export function readMembershipMode(): MembershipMode {
+  // guard:allow-env-credential — a fixed enum, never a credential, never logged
+  const raw = process.env.MEMBERSHIP_MODE;
+  return parseMembershipMode(raw) ?? APP_MEMBERSHIP_MODE;
 }

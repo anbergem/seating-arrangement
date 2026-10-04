@@ -44,6 +44,11 @@ const databaseName = postgresServer.pathname.slice(1);
 const stateFileIndex = process.argv.indexOf("--state-file");
 const stateFile =
   stateFileIndex < 0 ? undefined : process.argv[stateFileIndex + 1];
+// The membership mode this run exercises (D32). An argument rather than an inherited
+// variable, like the state file: the launcher decides exactly what the server sees.
+const membershipModeIndex = process.argv.indexOf("--membership-mode");
+const membershipMode =
+  membershipModeIndex < 0 ? undefined : process.argv[membershipModeIndex + 1];
 const required = [path.join(repoRoot, ".output", "server", "index.mjs")];
 
 /**
@@ -69,6 +74,7 @@ function serverEnvironment() {
     AUTH_REQUIRE_EMAIL_VERIFICATION: "0",
     SEED_ENABLED: "1",
     BETTER_AUTH_SECRET: "e2e-only-secret-32-characters-long",
+    ...(membershipMode ? { MEMBERSHIP_MODE: membershipMode } : {}),
   };
 }
 

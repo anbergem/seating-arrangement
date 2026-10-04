@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   blocksOrganizationSelfAdmission,
+  isOrganizationCreation,
   organizationRequestTail,
 } from "../../../server/organization-request-policy";
 
@@ -56,5 +57,36 @@ describe("organization self-admission request policy", () => {
     expect(blocksOrganizationSelfAdmission("POST", "/_agent-native/org")).toBe(
       true,
     );
+  });
+});
+
+describe("organization self-admission request policy, open membership (D32)", () => {
+  it("allows the documented create endpoint and nothing else new", () => {
+    expect(blocksOrganizationSelfAdmission("POST", "", "open")).toBe(false);
+    expect(isOrganizationCreation("POST", "")).toBe(true);
+  });
+
+  it.each([
+    "/unmatched-framework-tail",
+    "/join-by-domain",
+    "/_agent-native/org",
+  ])("still blocks POST %s", (tail) => {
+    expect(blocksOrganizationSelfAdmission("POST", tail, "open")).toBe(true);
+    expect(isOrganizationCreation("POST", tail)).toBe(false);
+  });
+
+  it("still blocks the domain auto-join write", () => {
+    expect(blocksOrganizationSelfAdmission("PUT", "/domain", "open")).toBe(
+      true,
+    );
+  });
+
+  it("keeps invitations working", () => {
+    expect(
+      blocksOrganizationSelfAdmission("POST", "/invitations", "open"),
+    ).toBe(false);
+    expect(
+      blocksOrganizationSelfAdmission("POST", "/invitations/i1/accept", "open"),
+    ).toBe(false);
   });
 });

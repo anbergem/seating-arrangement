@@ -251,7 +251,9 @@ agent's system prompt and describes the same actions in the same terms.
 Two different questions, answered in two different places, in this order. Before either one,
 the global request policy rejects framework organization self-admission routes; only invitation
 acceptance can give a signed-in person a membership. The first owner is provisioned by the
-trusted operator bootstrap procedure in `docs/bootstrap.md`.
+trusted operator bootstrap procedure in `docs/bootstrap.md`. That is the default, invite-only
+mode; in an open application (D32) the same policy also lets a signed-in person create an
+organization of their own, up to a bound, and nothing else.
 
 ```mermaid
 flowchart TB

@@ -201,7 +201,39 @@ reimplement it; `app/routes/team.tsx` renders the framework's `TeamPage`.
 
 The active organization is the user's `active-org-id` setting, or the first membership if there
 is none. With one membership per user — the expected shape for a single-company application —
-the membership *is* the active organization.
+the membership *is* the active organization. In an open application a person can belong to
+several, and the organization switcher in the header changes the active one.
+
+### Membership mode: invite-only or open
+
+One line decides who may become a member — `APP_MEMBERSHIP_MODE` in
+`src/domain/membership.ts` (D32):
+
+| | `invite-only` (the default) | `open` |
+| --- | --- | --- |
+| For | One company's application | An application anyone may use, each in their own organization |
+| Organizations are created by | An operator, with `scripts/bootstrap-org.mjs` | Whoever signs in, from the screen shown to someone without one |
+| Someone signed in without an organization | Sees "ask an administrator"; every action answers 403 | Sees the create-organization form and any pending invitations |
+| Invitations | The only way in | Still work, for bringing others into your organization |
+| Email-domain auto-join | Refused | Refused — it would let one organization absorb every sign-up at a shared domain |
+| Organizations one person may own | — | `MAX_OWNED_ORGANIZATIONS` (3) |
+
+Isolation is the same in both: every statement is scoped to the caller's organization, and
+`tests/e2e/isolation.spec.ts` does not know which mode it runs in. What changes is that in an
+open application the other organization belongs to a stranger, so that suite is no longer
+defence in depth — it is the product.
+
+The mode sets the framework's `access.orgCreation` (`server/plugins/config.ts`) and what
+`server/plugins/organization-self-admission.ts` lets through; nobody is given an organization
+they did not ask for in either mode. `MEMBERSHIP_MODE` in the environment overrides the
+application's own mode for that one environment — the browser suite uses it to prove the mode
+the application does not ship (`pnpm test:e2e` runs both), and a staging environment can use it
+to try `open` before production does.
+
+Opening an application is more than this switch. Before doing it for real, decide: who can
+sign up (production allows Google only, and the OAuth consent screen must then be external),
+whether the smallest database plan is enough, how an abandoned organization gets deleted, and
+what the privacy notice says.
 
 Role lookup inside an action is a query, not a claim: there is no role on `ctx`.
 `src/infrastructure/sql/membership-reader.ts` runs

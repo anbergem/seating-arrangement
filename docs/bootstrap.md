@@ -339,6 +339,9 @@ gh run list --workflow=deploy-staging.yml --limit 5
 
 ### 14. Create the organization
 
+This step is for an invite-only application, the default. An open one (D32) needs no operator
+here: the first person to sign in is offered the create-organization form.
+
 Membership is invite-only and `AUTO_CREATE_DEFAULT_ORG=0` in every environment (D11). The app
 also denies the framework's authenticated organization-creation route, its domain-join route and
 the write that would enable domain auto-join, so the first person to sign in has an account and
