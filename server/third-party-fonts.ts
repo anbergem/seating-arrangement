@@ -8,7 +8,7 @@
  * (decision D17) and which is a GDPR problem in its own right. Without the links the page
  * falls back to the system font; nothing else changes.
  *
- * Pure so it can be unit-tested; `server/plugins/00-no-third-party-fonts.ts` applies it.
+ * Pure so it can be unit-tested; `server/plugins/00-sign-in-page.ts` applies it.
  */
 const GOOGLE_FONT_LINK =
   /<link\b[^>]*\bhref=["']https:\/\/fonts\.(?:googleapis|gstatic)\.com[^"']*["'][^>]*>/gi;
