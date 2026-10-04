@@ -18,6 +18,7 @@ export default function checkEnvironmentPlugin() {
     APP_URL: process.env.APP_URL, // guard:allow-env-credential — deployment validation, values are never logged
     GOOGLE_SIGN_IN_CLIENT_ID: process.env.GOOGLE_SIGN_IN_CLIENT_ID, // guard:allow-env-credential — deployment validation, values are never logged
     GOOGLE_SIGN_IN_CLIENT_SECRET: process.env.GOOGLE_SIGN_IN_CLIENT_SECRET, // guard:allow-env-credential — deployment validation, values are never logged
+    MEMBERSHIP_MODE: process.env.MEMBERSHIP_MODE, // guard:allow-env-credential — deployment validation, values are never logged
     AUTH_DISABLED: process.env.AUTH_DISABLED, // guard:allow-env-credential — deployment validation, values are never logged
     SEED_ENABLED: process.env.SEED_ENABLED, // guard:allow-env-credential — deployment validation, values are never logged
     ACCESS_TOKEN: process.env.ACCESS_TOKEN, // guard:allow-env-credential — deployment validation, values are never logged

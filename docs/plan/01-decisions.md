@@ -382,3 +382,33 @@ Consequences:
   `BETTER_AUTH_SECRET`. They are in every database backup, and unreadable after that secret
   changes — regenerating it means saving the keys again.
 - An `ANTHROPIC_API_KEY` already set on an application is ignored and can be removed.
+
+## D32 — Membership mode: invite-only or open, per application (2026-10-04)
+
+Extends D11 (invite-only membership).
+
+Context: "one company" was never a property of the data model — every row carries an
+organization id and every statement filters on it. It was a policy: an operator creates the
+organization and invitations are the only way in. For a single company's application that is
+right. For an application anyone could use, each in their own organization, it is the only
+thing in the way.
+
+Decision: one constant, `APP_MEMBERSHIP_MODE` in `src/domain/membership.ts`, chosen per
+application; `invite-only` stays the default. `open` sets the framework's own
+`access.orgCreation` to `open` (since 0.18x it has one, with a screen for it) and lets the
+documented create endpoint through the request policy — and nothing else: the prefix fallback,
+join-by-domain and the domain write stay refused in both modes. One person may own at most
+`MAX_OWNED_ORGANIZATIONS`. No organization is created behind a first sign-in.
+
+`MEMBERSHIP_MODE` in the environment overrides the constant for one environment. The browser
+suite uses it to run the tests of the mode the application does not ship, against the same
+build, so the switch stays proven whichever way it points.
+
+Consequences:
+
+- In an open application the isolation tests guard strangers from each other, not colleagues.
+- The switch does not make an application public by itself: sign-up policy, quotas, deleting
+  abandoned organizations and a privacy notice are separate decisions
+  (`docs/authentication-and-authorization.md`).
+- `ORG_CREATION` and `AUTO_CREATE_DEFAULT_ORG` in a deployment's environment no longer decide
+  anything: the application's configuration layer wins.

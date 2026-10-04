@@ -4,101 +4,107 @@ import { expect, test } from "./fixtures";
 const UNINVITED_EMAIL = "uninvited@example.invalid";
 const UNINVITED_PASSWORD = "uninvited-password";
 
-test("an uninvited signed-in user cannot self-admit through organization routes", async ({
-  baseURL,
-  browser,
-  ownerPage,
-  reset,
-}) => {
-  void reset;
-  const context = await browser.newContext({ baseURL });
-  const page = await context.newPage();
-  try {
-    const registered = await page.request.post("/_agent-native/auth/register", {
-      data: { email: UNINVITED_EMAIL, password: UNINVITED_PASSWORD },
-    });
-    expect([200, 409]).toContain(registered.status());
-    const loggedIn = await page.request.post("/_agent-native/auth/login", {
-      data: { email: UNINVITED_EMAIL, password: UNINVITED_PASSWORD },
-    });
-    expect(loggedIn.status()).toBe(200);
-
-    for (const pathname of [
-      "/_agent-native/org",
-      "/_agent-native/org/",
-      "/_agent-native/org/unmatched-framework-tail",
-      "/_agent-native/org/join-by-domain",
-    ]) {
-      const response = await page.request.post(pathname, {
-        data: { name: "Unauthorized Organization", orgId: "org_acme" },
-      });
-      expect(response.status(), `${pathname}: ${await response.text()}`).toBe(
-        403,
-      );
-    }
-
-    const ownerCreate = await ownerPage.request.post("/_agent-native/org", {
-      data: { name: "Owner Cannot Self-Create" },
-    });
-    expect(ownerCreate.status()).toBe(403);
-
-    const me = await page.request.get("/_agent-native/org/me");
-    expect(me.status()).toBe(200);
-    const body = (await me.json()) as {
-      orgId?: string | null;
-      orgs?: unknown[];
-    };
-    expect(body.orgId).toBeNull();
-    expect(body.orgs).toEqual([]);
-
-    const list = await page.request.get("/_agent-native/actions/list-events");
-    expect(list.status()).toBe(403);
-    const create = await page.request.post(
-      "/_agent-native/actions/create-event",
-      {
-        data: {
-          name: "Unauthorized event",
-          startsAt: "2026-12-24T18:00:00.000Z",
+test(
+  "an uninvited signed-in user cannot self-admit through organization routes",
+  {
+    tag: "@invite-only",
+  },
+  async ({ baseURL, browser, ownerPage, reset }) => {
+    void reset;
+    const context = await browser.newContext({ baseURL });
+    const page = await context.newPage();
+    try {
+      const registered = await page.request.post(
+        "/_agent-native/auth/register",
+        {
+          data: { email: UNINVITED_EMAIL, password: UNINVITED_PASSWORD },
         },
-      },
-    );
-    expect(create.status()).toBe(403);
+      );
+      expect([200, 409]).toContain(registered.status());
+      const loggedIn = await page.request.post("/_agent-native/auth/login", {
+        data: { email: UNINVITED_EMAIL, password: UNINVITED_PASSWORD },
+      });
+      expect(loggedIn.status()).toBe(200);
 
-    // The team page is where someone without an organization lands, and where
-    // an invitation is accepted.
-    await page.goto("/team");
-    await expect(page.getByText("Organization access required")).toBeVisible();
-    await expect(
-      page.getByRole("button", { name: /create organization/i }),
-    ).toHaveCount(0);
+      for (const pathname of [
+        "/_agent-native/org",
+        "/_agent-native/org/",
+        "/_agent-native/org/unmatched-framework-tail",
+        "/_agent-native/org/join-by-domain",
+      ]) {
+        const response = await page.request.post(pathname, {
+          data: { name: "Unauthorized Organization", orgId: "org_acme" },
+        });
+        expect(response.status(), `${pathname}: ${await response.text()}`).toBe(
+          403,
+        );
+      }
 
-    const invitation = await ownerPage.request.post(
-      "/_agent-native/org/invitations",
-      { data: { email: UNINVITED_EMAIL, role: "member" } },
-    );
-    expect(invitation.status(), await invitation.text()).toBe(200);
-    await page.reload();
-    const accept = page.getByRole("button", {
-      name: "Accept invitation to Acme Services",
-    });
-    await expect(accept).toBeVisible();
-    await accept.click();
-    await expect(accept).toHaveCount(0);
-    const acceptedAccess = await page.request.get(
-      "/_agent-native/actions/list-events",
-    );
-    expect(acceptedAccess.status()).toBe(200);
-    const removed = await ownerPage.request.delete(
-      `/_agent-native/org/members/${encodeURIComponent(UNINVITED_EMAIL)}`,
-      // Since framework 0.181 a removal names who inherits the member's
-      // framework-owned resources; the owner is always a member.
-      { data: { transferTo: OWNER_EMAIL } },
-    );
-    expect(removed.status(), await removed.text()).toBe(200);
-  } finally {
-    await context.close();
-  }
-});
+      const ownerCreate = await ownerPage.request.post("/_agent-native/org", {
+        data: { name: "Owner Cannot Self-Create" },
+      });
+      expect(ownerCreate.status()).toBe(403);
+
+      const me = await page.request.get("/_agent-native/org/me");
+      expect(me.status()).toBe(200);
+      const body = (await me.json()) as {
+        orgId?: string | null;
+        orgs?: unknown[];
+      };
+      expect(body.orgId).toBeNull();
+      expect(body.orgs).toEqual([]);
+
+      const list = await page.request.get("/_agent-native/actions/list-events");
+      expect(list.status()).toBe(403);
+      const create = await page.request.post(
+        "/_agent-native/actions/create-event",
+        {
+          data: {
+            name: "Unauthorized event",
+            startsAt: "2026-12-24T18:00:00.000Z",
+          },
+        },
+      );
+      expect(create.status()).toBe(403);
+
+      // The team page is where someone without an organization lands, and where
+      // an invitation is accepted.
+      await page.goto("/team");
+      await expect(
+        page.getByText("Organization access required"),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("button", { name: /create organization/i }),
+      ).toHaveCount(0);
+
+      const invitation = await ownerPage.request.post(
+        "/_agent-native/org/invitations",
+        { data: { email: UNINVITED_EMAIL, role: "member" } },
+      );
+      expect(invitation.status(), await invitation.text()).toBe(200);
+      await page.reload();
+      const accept = page.getByRole("button", {
+        name: "Accept invitation to Acme Services",
+      });
+      await expect(accept).toBeVisible();
+      await accept.click();
+      await expect(accept).toHaveCount(0);
+      const acceptedAccess = await page.request.get(
+        "/_agent-native/actions/list-events",
+      );
+      expect(acceptedAccess.status()).toBe(200);
+      const removed = await ownerPage.request.delete(
+        `/_agent-native/org/members/${encodeURIComponent(UNINVITED_EMAIL)}`,
+        // Since framework 0.181 a removal names who inherits the member's
+        // framework-owned resources; the owner is always a member.
+        { data: { transferTo: OWNER_EMAIL } },
+      );
+      expect(removed.status(), await removed.text()).toBe(200);
+    } finally {
+      await context.close();
+    }
+  },
+);
 
 test("a signed-out caller remains unauthenticated and invitation membership still works", async ({
   baseURL,

@@ -11,6 +11,7 @@ import { IconMenu2 } from "@tabler/icons-react";
 import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router";
 
+import { OrganizationGate } from "@/components/OrganizationGate";
 import { Button } from "@/components/ui/button";
 import {
   Sheet,
@@ -138,7 +139,11 @@ export function Layout({ children }: LayoutProps) {
           confuse assistive navigation and make `locator("main")` in the
           end-to-end suite ambiguous. */}
       <main className="agent-native-app-main min-w-0 flex-1 overflow-y-auto overscroll-contain">
-        {children}
+        {location.pathname.startsWith("/settings") ? (
+          children
+        ) : (
+          <OrganizationGate>{children}</OrganizationGate>
+        )}
       </main>
     </div>
   );

@@ -53,6 +53,23 @@ describe("validateEnvironment — unknown APP_ENV", () => {
   });
 });
 
+describe("validateEnvironment — MEMBERSHIP_MODE", () => {
+  it("accepts either mode, and its absence", () => {
+    expect(validateEnvironment({ MEMBERSHIP_MODE: "open" })).toEqual([]);
+    expect(validateEnvironment({ MEMBERSHIP_MODE: "invite-only" })).toEqual([]);
+    expect(validateEnvironment({ MEMBERSHIP_MODE: "" })).toEqual([]);
+  });
+
+  it("refuses anything else, in every environment class", () => {
+    expect(validateEnvironment({ MEMBERSHIP_MODE: "public" })).toEqual([
+      "MEMBERSHIP_MODE must be invite-only or open when it is set",
+    ]);
+    expect(
+      validateEnvironment({ ...validProductionEnv(), MEMBERSHIP_MODE: "Open" }),
+    ).toEqual(["MEMBERSHIP_MODE must be invite-only or open when it is set"]);
+  });
+});
+
 describe("validateEnvironment — a correct production environment", () => {
   it("reports no violations", () => {
     expect(validateEnvironment(validProductionEnv())).toEqual([]);

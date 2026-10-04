@@ -11,6 +11,8 @@
  * and Node imports.
  */
 
+import { parseMembershipMode } from "../domain/membership";
+
 /** The four environment classes, spelled by `APP_ENV`. */
 export const ENVIRONMENT_CLASSES = [
   "local",
@@ -118,6 +120,17 @@ export function validateEnvironment(
   }
 
   const violations: string[] = [];
+
+  // Optional, and a fixed enum when present (D32). A typo here would otherwise fall back
+  // to the application's own mode in silence — the opposite of what was asked for.
+  if (
+    isPresent(env, "MEMBERSHIP_MODE") &&
+    parseMembershipMode(value(env, "MEMBERSHIP_MODE")) === undefined
+  ) {
+    violations.push(
+      "MEMBERSHIP_MODE must be invite-only or open when it is set",
+    );
+  }
 
   if (appEnv === "production") {
     if (value(env, "BETTER_AUTH_SECRET").length < MINIMUM_SECRET_LENGTH) {
