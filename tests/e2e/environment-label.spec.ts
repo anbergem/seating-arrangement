@@ -12,6 +12,28 @@ test("the sign-in page names the environment", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("the sign-in page carries none of the framework's own badges or sign-up wording", async ({
+  page,
+}) => {
+  await page.goto("/events");
+  // Proves the page has rendered before asserting on what is absent.
+  await expect(
+    page.getByText("Development environment. Sign in to continue."),
+  ).toBeVisible();
+  // The elements still exist — the framework draws them — so these check visibility. A
+  // framework upgrade that renames a class makes one of them visible again
+  // (`server/sign-in-chrome.ts`).
+  for (const text of [
+    /^alpha$/i,
+    /free & open source/i,
+    /create your account/i,
+  ]) {
+    for (const element of await page.getByText(text).all()) {
+      await expect(element).toBeHidden();
+    }
+  }
+});
+
 test("every signed-in page carries the environment strip", async ({
   ownerPage,
 }) => {

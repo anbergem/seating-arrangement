@@ -1,6 +1,7 @@
 import { defineNitroPlugin } from "@agent-native/core/server";
 
-import { hasThirdPartyFonts, stripThirdPartyFonts } from "../third-party-fonts";
+import { hideFrameworkChrome } from "../sign-in-chrome";
+import { stripThirdPartyFonts } from "../third-party-fonts";
 
 type Fetch = (request: Request) => Response | Promise<Response>;
 
@@ -8,7 +9,9 @@ type Fetch = (request: Request) => Response | Promise<Response>;
 const SIGN_IN_PATHS = new Set(["/sign-in", "/_agent-native/sign-in"]);
 
 /**
- * Keep the framework's sign-in page from loading Google Fonts (see `../third-party-fonts.ts`).
+ * Two corrections to the framework's sign-in page, which has no option for either: it must
+ * not load Google Fonts (`../third-party-fonts.ts`), and it must not carry the framework's
+ * own badges and sign-up wording (`../sign-in-chrome.ts`).
  *
  * It wraps `nitroApp.fetch`, the application's single entry point: Nitro's node server reads
  * it once, after the plugins have run, so every response passes through here exactly once
@@ -28,7 +31,7 @@ export default defineNitroPlugin((nitroApp) => {
   const app = nitroApp as { fetch?: Fetch };
   if (typeof app.fetch !== "function") {
     throw new Error(
-      "00-no-third-party-fonts: nitroApp.fetch is not a function; re-check after a Nitro upgrade",
+      "00-sign-in-page: nitroApp.fetch is not a function; re-check after a Nitro upgrade",
     );
   }
   const original = app.fetch.bind(nitroApp);
@@ -40,10 +43,11 @@ export default defineNitroPlugin((nitroApp) => {
       return response;
     }
     const html = await response.clone().text();
-    if (!hasThirdPartyFonts(html)) return response;
+    const corrected = hideFrameworkChrome(stripThirdPartyFonts(html));
+    if (corrected === html) return response;
     const headers = new Headers(response.headers);
     headers.delete("content-length");
-    return new Response(stripThirdPartyFonts(html), {
+    return new Response(corrected, {
       status: response.status,
       statusText: response.statusText,
       headers,
