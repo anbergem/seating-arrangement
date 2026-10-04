@@ -366,7 +366,7 @@ unexpected(92);
  * Copies the parts of the repository the script reads into a scratch tree, and writes the
  * CLI profile it reads the CI credentials from. Nothing in the repository is written by a
  * run any more — the applications, their databases and their settings all live on the
- * platform — so unlike the Cloudflare version there is no configuration file to stage.
+ * platform — so there is no configuration file to stage.
  * @param {string} destination
  * @param {{ appName?: string, withProfile?: boolean, profile?: unknown }} [options]
  */
@@ -771,7 +771,7 @@ test("refuses malformed inputs before touching anything", () => {
 });
 
 test("refuses an unknown --only step and --plan together with --yes", () => {
-  const unknown = bootstrap({ args: ["--only", "d1"] });
+  const unknown = bootstrap({ args: ["--only", "nonsense"] });
   assert.notEqual(unknown.status, 0);
   assert.match(unknown.stderr, /unknown --only step/i);
 
@@ -835,6 +835,6 @@ test("the committed example file carries names only", () => {
     if (line.trim() === "" || line.trim().startsWith("#")) continue;
     assert.match(line, /^[A-Z_]+=$/, `${line} carries a value`);
   }
-  // The credential this migration removed must not come back by accident.
-  assert.equal(/CLEVER_TOKEN|CLEVER_SECRET|CLOUDFLARE/.test(source), false);
+  // No platform credential belongs in this file: the CLI's own profile carries it.
+  assert.equal(/CLEVER_TOKEN|CLEVER_SECRET/.test(source), false);
 });

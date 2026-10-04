@@ -53,10 +53,8 @@ export function validateDeploymentManifest(manifest, repository) {
  * Proves the commit checked out for a promotion is the commit staging proved (T20 step 2,
  * D21: production never rebuilds a different tree).
  *
- * What is promoted changed with the platform. Cloudflare took a file — a Worker bundle
- * built once and uploaded — so this used to compare its hash against the patch marker
- * beside it. Clever Cloud takes a git push and builds from it, so what has to be proven is
- * narrower and stronger: that the checkout is the commit the staging run deployed and
+ * Clever Cloud takes a git push and builds from it, so what is promoted is a commit, and
+ * what has to be proven is that the checkout is the commit the staging run deployed and
  * smoked. The artifact chain (deployment manifest → source CI run → staging run)
  * establishes which commit that is; this establishes that it is the one in hand.
  *

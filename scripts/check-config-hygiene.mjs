@@ -30,10 +30,8 @@ const FORBIDDEN_KEYS = [
   "AGENT_PROD_CODE_EXECUTION",
 ];
 
-// Secret names used to be checked against `wrangler.jsonc` `vars`, to catch a secret
-// committed as a plain Worker variable. Clever Cloud has no committed variables file —
-// `clever env import` reads them from stdin — so there is nothing left here to scan, and
-// the list went with the check (T28).
+// Clever Cloud has no committed variables file — `clever env import` reads them from
+// stdin — so there is no committed configuration to scan for secret names.
 
 // The only non-empty values the committed example files may carry (T01 step 6, B13).
 const ALLOWED_EXAMPLE_VALUES = {
@@ -48,7 +46,7 @@ const ALLOWED_EXAMPLE_VALUES = {
 };
 
 // `.bootstrap.env.example` joins the list so the same "names only" rule covers the bootstrap
-// input, whose real form holds the Cloudflare token and the Google client secret (T24).
+// input, whose real form holds the Google client secret (T24).
 const EXAMPLE_FILES = [".env.example", ".bootstrap.env.example"];
 
 // B15/T02: the deploy-time placeholder belongs only in the `staging` and `production` blocks

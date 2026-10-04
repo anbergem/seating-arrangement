@@ -1,13 +1,10 @@
 /**
  * The one place a multi-statement write happens (blueprint B11, decision D07).
  *
- * PostgreSQL and the local SQLite file both expose `transaction`, so today this
- * seam costs nothing — but it is the reason the move off Cloudflare touched no
- * repository (T28). D1 exposed `atomicBatch` and no interactive transactions, and
- * `runAtomic` absorbed that difference: repositories build a list of statements
- * and never learn which runtime applied them. The `atomicBatch` branch is kept
- * for the same reason it was written, which is that the next runtime may not
- * look like this one either.
+ * PostgreSQL exposes `transaction`, so today this seam costs nothing. It exists so that
+ * repositories build a list of statements and never learn which runtime applied them:
+ * an executor that offers only `atomicBatch` and no interactive transactions is handled
+ * here and nowhere else, because the next runtime may not look like this one.
  *
  * The type is structural on purpose: `DbExecLike` is the subset of the
  * framework's `DbExec` this application uses, so a test can pass the real

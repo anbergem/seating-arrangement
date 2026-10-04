@@ -157,7 +157,7 @@ plan's no-overlap rule does: `seating_cells` carries one row per cell a table co
 primary key on `(org_id, event_id, x, y)`, so the loser of a race violates it and the whole
 batch is rolled back. A uniqueness rule here would be a `UNIQUE (org_id, lower(name))` index
 plus a repository that maps the violation onto an `AppError` — see `isCellCollision` in
-`src/infrastructure/d1/seating-tables-repository.ts` for that shape.
+`src/infrastructure/sql/seating-tables-repository.ts` for that shape.
 
 Step 4 is for validation the database genuinely cannot express and a stale answer genuinely
 cannot hurt — "is this email a member of the organization", which is a bad *argument* rather

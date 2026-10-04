@@ -94,13 +94,10 @@ function DbSyncSetup() {
   useDbSync({
     queryClient: qc,
     ignoreSource: TAB_ID,
-    // Polling only. This was forced on Cloudflare, where the framework's SSE
-    // fast path held a response open with no pending I/O and the runtime
-    // cancelled it. That constraint left with the platform (T28): a long-lived
-    // Node process can hold the stream. It stays polling because nothing here
-    // has been measured against SSE yet, and polling is a transport the
-    // framework supports on both. Switching is a deliberate change with its own
-    // verification, not a leftover to tidy. See docs/plan/DISCREPANCIES.md.
+    // Polling only. A long-lived Node process could hold the framework's SSE
+    // stream instead, but nothing here has been measured against SSE yet, and
+    // polling is a transport the framework supports. Switching is a deliberate
+    // change with its own verification, not a leftover to tidy.
     sseUrl: false,
   });
   return null;

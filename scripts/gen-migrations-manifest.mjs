@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Generates `src/infrastructure/migrations-manifest.ts` from the contents of `migrations/`.
 //
-// The Worker bundle has no filesystem, so `/api/ready` cannot count migration files at
-// runtime; it compares what the database recorded against this list, embedded at build time.
+// `/api/ready` asks what *this build* expects, not what files happen to sit next to the
+// running process, so it compares what the database recorded against this list, embedded
+// at build time.
 // The generated file is committed so a plain `pnpm dev`, `pnpm typecheck` or `vitest` run
-// never depends on the build having run first; `scripts/build-worker.mjs` and `db:migrate`
-// regenerate it.
+// never depends on the build having run first; `db:migrate` regenerates it.
 
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";

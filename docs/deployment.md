@@ -129,8 +129,7 @@ No `SEED_PASSWORD` on production: production is never seeded.
 
 `CLEVER_TOKEN` and `CLEVER_SECRET` are the CLI's own profile, written by `clever login` and
 copied into GitHub by `bootstrap`. Nobody pastes them, and **no Clever Cloud credential goes in
-`.bootstrap.env` at all** — which is the one thing this arrangement has over the Cloudflare
-token it replaced.
+`.bootstrap.env` at all**.
 
 The database connection string is in neither list. CI reaches it with
 `node scripts/migrate.mjs --addon <app>-db`, which resolves it through the CLI in-process;
@@ -231,10 +230,8 @@ re-validates all three and then verifies its own checkout against it.
 unrelated workflow, the wrong branch, the wrong repository, an incomplete run, the wrong SHA
 and a mismatched manifest.
 
-What is promoted changed with the platform, and the guarantee narrowed honestly. Cloudflare
-promoted a *file* — a bundle built once and uploaded — so the old check could hash it. Clever
-Cloud builds from the git push, so what is promoted is a *commit*, and what the chain proves is
-that the commit production builds is the commit staging deployed and smoked.
+Clever Cloud builds from the git push, so what is promoted is a *commit*, not a built file,
+and what the chain proves is that the commit production builds is the commit staging deployed and smoked.
 
 **No platform-side git integration.** Deployments come from GitHub Actions only, because a
 build triggered inside the platform cannot be tied to the run that verified it — which is the
@@ -288,7 +285,7 @@ once so the shape of it is known rather than theoretical.
 
 The application layer is portable by construction: nothing under `src/` or `server/` imports a
 platform type or calls a platform API, and `runAtomic` is the one seam that ever knew the
-difference between runtimes. Moving off Cloudflare needed **one** SQL change in 1,346 lines of
+difference between runtimes. Moving from SQLite to PostgreSQL needed **one** SQL change in 1,346 lines of
 repositories — `INSERT OR IGNORE` became `ON CONFLICT DO NOTHING` — because the framework's
 executor rewrites `?` placeholders for PostgreSQL itself.
 

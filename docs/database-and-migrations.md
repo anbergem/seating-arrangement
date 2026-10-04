@@ -300,8 +300,8 @@ project.
 
 ## Moving somewhere else
 
-The repository layer is portable by construction, and this repository has now proved it rather
-than claimed it: moving off Cloudflare D1 to PostgreSQL needed **one** change in 1,346 lines of
+The repository layer is portable by construction, and this repository has proved it rather
+than claimed it: moving from SQLite to PostgreSQL needed **one** change in 1,346 lines of
 repositories, `INSERT OR IGNORE` → `ON CONFLICT DO NOTHING`. Nothing under `src/` or `server/`
 imports a platform type or calls a platform API.
 

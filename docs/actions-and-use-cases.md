@@ -164,7 +164,7 @@ version can express them, because the two writers are touching different rows. T
 constraints instead: `seating_cells` carries one row per cell a table covers, keyed
 `(org_id, event_id, x, y)`, and every seating commit rewrites its table's cells in the same
 atomic batch. The second writer violates the key, the batch is rolled back, and
-`isCellCollision` in `src/infrastructure/d1/seating-tables-repository.ts` turns that into a
+`isCellCollision` in `src/infrastructure/sql/seating-tables-repository.ts` turns that into a
 `CONFLICT`.
 
 ## Idempotency

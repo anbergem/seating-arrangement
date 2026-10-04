@@ -403,8 +403,7 @@ function stepPreflight(ctx) {
   record("preflight", "clever-tools", "ok", version.stdout.trim());
 
   // Authentication is the CLI's own profile, established once by `clever login`. No
-  // Clever Cloud credential is ever written to the env file — which is the one thing this
-  // arrangement has over the Cloudflare token it replaces. Checked here rather than at the
+  // Clever Cloud credential is ever written to the env file. Checked here rather than at the
   // first mutating call, so an unauthenticated run creates nothing before it stops.
   const profile = clever(["profile"]);
   if (profile.status !== 0) {

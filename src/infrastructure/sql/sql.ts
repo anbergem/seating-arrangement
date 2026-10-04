@@ -12,8 +12,7 @@
  *
  * - Guarded insert — `INSERT INTO t (...) SELECT ?, ?, … WHERE EXISTS (…)`.
  *   The precondition is expressed inside the statement rather than checked in
- *   application code between two statements — see `atomic.ts` for why that
- *   survived the move off D1 (T28). The insert then affects zero rows when the guard fails,
+ *   application code between two statements — see `atomic.ts` for why. The insert then affects zero rows when the guard fails,
  *   and the caller decides what that means (B11).
  * - Versioned update — `… WHERE org_id = ? AND id = ? AND version = ?`. A
  *   stale write affects zero rows rather than overwriting a newer one, and the

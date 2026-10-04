@@ -1,10 +1,6 @@
 #!/usr/bin/env node
-// Process and port helpers shared by the e2e launcher (T28).
-//
-// They were part of `scripts/verify-worker.mjs`, which existed to prove a built Worker
-// bundle booted on workerd. The bundle is gone; these two are not Worker-specific and the
-// e2e launcher still needs them: one refuses to start on an occupied port, the other kills
-// a detached process group without leaving orphans.
+// Process and port helpers shared by the e2e launcher: one refuses to start on an
+// occupied port, the other kills a detached process group without leaving orphans.
 
 import { createServer } from "node:net";
 
@@ -73,6 +69,6 @@ export async function terminateProcessGroup(child, graceMs = 3_000) {
   if (await waitForGroupExit(graceMs)) return;
   signalGroup("SIGKILL");
   if (!(await waitForGroupExit(graceMs))) {
-    throw new Error(`owned Worker process group ${child.pid} did not exit`);
+    throw new Error(`owned process group ${child.pid} did not exit`);
   }
 }

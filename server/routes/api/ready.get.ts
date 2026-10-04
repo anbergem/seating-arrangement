@@ -9,8 +9,8 @@ import { MIGRATION_FILES } from "../../../src/infrastructure/migrations-manifest
  *
  * The runner records the bare file name: `scripts/migrate.mjs` inserts `"0001_init.sql"`
  * into `d1_migrations`, whichever dialect it is applying to. The table keeps its
- * Wrangler-era name because renaming it would be a migration of its own for no gain
- * (T28). So the recorded names compare directly against `MIGRATION_FILES`, which
+ * historical name because renaming it would be a migration of its own for no gain.
+ * So the recorded names compare directly against `MIGRATION_FILES`, which
  * `scripts/gen-migrations-manifest.mjs` embeds at build time. Embedded rather than read from
  * `migrations/` at runtime because the question is what *this build* expects, not what files
  * happen to sit next to the running process.

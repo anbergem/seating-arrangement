@@ -1,14 +1,10 @@
-# `workerd` is not ours and is not a leftover: it arrives as an optional
-# transitive dependency of the framework's Cloudflare support (miniflare,
-# wrangler) and is still resolved into the lockfile. Removing it from this list
-# fails `pnpm install` with ERR_PNPM_IGNORED_BUILDS, so it stays until the
-# framework stops resolving it (T28).
 allowBuilds:
   tesseract.js: true
   node-pty: true
   esbuild: true
   better-sqlite3: true
-  workerd: true
+  # A transitive optional dependency of the framework. Never built: nothing here runs it.
+  workerd: false
 
 overrides:
   "@tiptap/starter-kit": "3.28.0"

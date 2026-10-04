@@ -128,9 +128,9 @@ export async function runSmoke(
   { fetchImpl = fetch, log = console.log } = {},
 ) {
   const deadline = AbortSignal.timeout(options.timeoutMs);
-  // 15s is generous against a local Worker, where every request answers in
+  // 15s is generous against a local server, where every request answers in
   // milliseconds, and tight against one that was deployed seconds ago: a runner
-  // measured 5.1s for a bare `ping` and 6.1s for a login on a cold Worker,
+  // measured 5.1s for a bare `ping` and 6.1s for a login on a cold deployment,
   // settling to 1-2s once warm (DISCREPANCIES.md, 2026-09-15). A remote smoke
   // runs in exactly that cold window, so it gets a ceiling to match while the
   // local one keeps the tight bound that makes a genuine hang obvious fast.
@@ -300,7 +300,7 @@ export async function runSmoke(
       );
       created = await action("create-seating-table", {
         eventId: event.id,
-        name: `Worker smoke ${options.runId}`,
+        name: `Smoke ${options.runId}`,
         size: 2,
         idempotencyKey: `smoke-${options.runId}`,
       });
