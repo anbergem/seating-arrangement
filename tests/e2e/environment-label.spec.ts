@@ -15,7 +15,7 @@ test("the sign-in page names the environment", async ({ page }) => {
 test("the sign-in page carries none of the framework's own badges or sign-up wording", async ({
   page,
 }) => {
-  await page.goto("/jobs");
+  await page.goto("/events");
   // Proves the page has rendered before asserting on what is absent.
   await expect(
     page.getByText("Development environment. Sign in to continue."),
